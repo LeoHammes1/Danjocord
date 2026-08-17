@@ -45,6 +45,11 @@ pnpm install && pnpm build   # build do protocol é pré-requisito dos apps
 pnpm dev                     # protocol -w + server :8080 + client :5173
 pnpm typecheck
 pnpm smoke                   # e2e do gateway (precisa do server rodando)
+pnpm --filter @danjocord/server test   # testes unitários (node --test)
+
+# allowlist (doc §5) — rodar de apps/server; usa o build (dist) e o mesmo
+# DB_PATH do servidor (em produção: kubectl exec no pod):
+node scripts/allowlist.ts <add|remove|list> [discord_id] [--by <discord_id>]
 ```
 
 A imagem do ghcr é publicada pelo `.github/workflows/release.yml` a cada push
@@ -56,9 +61,11 @@ deployment no cluster.
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.
 - Todo payload que entra (WS ou REST) passa por schema Zod de
   `packages/protocol` — nada de `JSON.parse` cru virando objeto confiável.
-- Auth de desenvolvimento: token `dev.<username>` (só com
-  `DANJOCORD_DEV_AUTH=1`, default fora de produção). Some no M1 (OAuth
-  Discord + allowlist + sessões na tabela `sessions`).
+- Auth (M1): OAuth do Discord + allowlist → sessão própria — JWT de acesso
+  curto (HS256, iss/aud `danjocord`) + refresh opaco rotativo com detecção de
+  reuso, na tabela `sessions`. A auth de desenvolvimento continua existindo:
+  token `dev.<username>` e `POST /auth/dev` (só com `DANJOCORD_DEV_AUTH=1`,
+  default fora de produção — NUNCA ligar em produção).
 - Migrations: arquivos `NNN_nome.sql` em `apps/server/migrations`, aplicados
   em ordem no boot. Nunca editar migration aplicada; criar a próxima.
 - Estado efêmero (presença, voice states, ring buffers) vive **em memória** —

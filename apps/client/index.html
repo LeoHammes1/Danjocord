@@ -22,6 +22,64 @@
         color: var(--ink);
         font-family: "Segoe UI", system-ui, sans-serif;
         height: 100vh;
+      }
+      /* #login e #app têm display próprio, que venceria o [hidden] do UA */
+      [hidden] { display: none !important; }
+
+      /* --- tela de login --- */
+      #login {
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .login-card {
+        width: min(340px, 92vw);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 2rem 1.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        text-align: center;
+      }
+      .login-card h1 { margin: 0; font-size: 1.35rem; }
+      .login-sub { margin: -0.6rem 0 0; color: var(--muted); font-size: 0.85rem; }
+      #login-error { margin: 0; color: var(--accent); font-size: 0.85rem; }
+      #login-discord {
+        background: #5865f2; /* blurple — o botão é literalmente o Discord */
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        padding: 0.65rem 1rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #login-discord:hover { filter: brightness(1.08); }
+      .login-dev {
+        border-top: 1px solid var(--line);
+        padding-top: 0.9rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .login-dev h2 {
+        margin: 0;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        text-align: left;
+      }
+      .login-dev form { display: flex; gap: 0.5rem; }
+      .login-dev button[type="submit"] { background: var(--surface-2); color: var(--muted); font-weight: 500; }
+      .login-dev button[type="submit"]:hover { color: var(--ink); }
+
+      /* --- app --- */
+      #app {
+        height: 100vh;
         display: grid;
         grid-template-columns: 220px 1fr;
         grid-template-rows: 48px 1fr auto;
@@ -45,6 +103,19 @@
       }
       #status.online { color: var(--ok); }
       #status.offline { color: var(--accent); }
+      #me { margin-left: auto; display: flex; align-items: center; gap: 0.55rem; }
+      #me-avatar { width: 24px; height: 24px; border-radius: 50%; }
+      #me-name { font-size: 0.88rem; }
+      #logout {
+        background: none;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        border-radius: 6px;
+        padding: 0.25rem 0.7rem;
+        font-size: 0.78rem;
+        cursor: pointer;
+      }
+      #logout:hover { color: var(--ink); border-color: var(--muted); }
       aside {
         grid-area: side;
         background: var(--surface);
@@ -84,7 +155,7 @@
       .msg .author { font-weight: 600; margin-right: 0.5rem; }
       .msg .time { color: var(--muted); font-size: 0.75rem; margin-left: 0.5rem; }
       .msg.pending { opacity: 0.45; }
-      form {
+      #composer {
         grid-area: form;
         display: flex;
         gap: 0.6rem;
@@ -113,25 +184,50 @@
     </style>
   </head>
   <body>
-    <aside>
-      <div>
-        <h2>Canais</h2>
-        <div id="channels"></div>
+    <!-- as duas views começam ocultas; main.ts decide qual mostrar no boot -->
+    <div id="login" hidden>
+      <div class="login-card">
+        <h1>Danjocord</h1>
+        <p class="login-sub">uma guild, os amigos, self-hosted</p>
+        <p id="login-error" hidden></p>
+        <button id="login-discord">Entrar com Discord</button>
+        <!-- visível sempre: em produção o /auth/dev responde 404 e o erro aparece aqui mesmo -->
+        <div class="login-dev">
+          <h2>dev</h2>
+          <form id="dev-form">
+            <input id="dev-username" autocomplete="off" placeholder="username" />
+            <button type="submit">Entrar</button>
+          </form>
+        </div>
       </div>
-      <div>
-        <h2>Membros</h2>
-        <ul id="members"></ul>
-      </div>
-    </aside>
-    <header>
-      <h1>Danjocord</h1>
-      <span id="status">conectando…</span>
-    </header>
-    <main id="messages"></main>
-    <form id="composer">
-      <input id="input" autocomplete="off" placeholder="Mensagem em #geral" />
-      <button type="submit">Enviar</button>
-    </form>
+    </div>
+
+    <div id="app" hidden>
+      <aside>
+        <div>
+          <h2>Canais</h2>
+          <div id="channels"></div>
+        </div>
+        <div>
+          <h2>Membros</h2>
+          <ul id="members"></ul>
+        </div>
+      </aside>
+      <header>
+        <h1>Danjocord</h1>
+        <span id="status">conectando…</span>
+        <div id="me">
+          <img id="me-avatar" alt="" hidden />
+          <span id="me-name"></span>
+          <button id="logout">Sair</button>
+        </div>
+      </header>
+      <main id="messages"></main>
+      <form id="composer">
+        <input id="input" autocomplete="off" placeholder="Mensagem em #geral" />
+        <button type="submit">Enviar</button>
+      </form>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

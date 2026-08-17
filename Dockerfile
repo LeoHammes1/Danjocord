@@ -27,10 +27,16 @@ RUN pnpm --filter @danjocord/protocol build
 EXPOSE 8080 5173
 CMD ["pnpm", "dev"]
 
-# ---- build: compila protocol + server ----
+# ---- build: compila protocol + server + client ----
 FROM deps AS build
 COPY . .
-RUN pnpm --filter @danjocord/protocol build && pnpm --filter @danjocord/server build
+# VITE_API_BASE vazio: em produção o cliente é servido pela MESMA origem do
+# backend (static-client.ts) — chamadas relativas, sem CORS. O default
+# localhost:8080 é só para o vite dev server.
+ENV VITE_API_BASE=""
+RUN pnpm --filter @danjocord/protocol build \
+ && pnpm --filter @danjocord/server build \
+ && pnpm --filter @danjocord/client build
 
 # ---- prod-deps: node_modules só de produção (instalação limpa) ----
 FROM base AS prod-deps
@@ -52,6 +58,10 @@ COPY --from=build /app/packages/protocol/package.json ./packages/protocol/packag
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/server/migrations ./apps/server/migrations
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json
+# scripts/ entra pela CLI de allowlist (node scripts/allowlist.ts — doc §5)
+COPY --from=build /app/apps/server/scripts ./apps/server/scripts
+# build do vite → cliente estático servido pelo próprio server (static-client.ts)
+COPY --from=build /app/apps/client/dist ./apps/server/client-dist
 WORKDIR /app/apps/server
 RUN mkdir -p data && chown -R node:node data
 USER node

@@ -1,6 +1,7 @@
 # deps / build
 node_modules/
 dist/
+apps/server/client-dist/
 
 # banco local (SQLite)
 data/

@@ -48,8 +48,8 @@ pnpm build        # compila o protocol (os apps importam o dist)
 pnpm dev          # protocol (tsc -w) + server (:8080) + client (:5173)
 ```
 
-Abra http://localhost:5173 — o login de desenvolvimento pede só um username
-(token `dev.<username>`; o OAuth do Discord chega no M1). Abra duas abas com
+Abra http://localhost:5173 — em dev o login pede só um username (`POST
+/auth/dev`, sem passar pelo Discord; ver [Login](#login)). Abra duas abas com
 usernames diferentes para ver mensagens, presença e o render otimista.
 
 Smoke test do protocolo (com o servidor rodando):
@@ -58,12 +58,42 @@ Smoke test do protocolo (com o servidor rodando):
 pnpm smoke
 ```
 
+## Login
+
+Em produção o acesso é **OAuth do Discord + allowlist** (doc §5). Em dev nada
+disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
+`POST /auth/dev` emite uma sessão completa só com um username.
+
+1. Crie um app em https://discord.com/developers/applications e, em
+   **OAuth2 → Redirects**, cadastre:
+   - `https://danjocord.leohammes.dev/auth/discord/callback` (produção)
+   - `http://localhost:8080/auth/discord/callback` (dev)
+2. Envs do servidor: `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` e
+   `JWT_SECRET` (no cluster vêm do Secret `danjocord-credentials`, populado
+   pelo `apply-secrets.sh` do KubeCluster), mais `PUBLIC_BASE_URL` e `APP_URL`
+   (`https://danjocord.leohammes.dev` em produção; em dev os defaults já
+   apontam para localhost).
+3. Só passa do OAuth quem está na allowlist. Administre pela CLI (de
+   `apps/server`; em dev, rode `pnpm --filter @danjocord/server build` antes —
+   o script abre o banco pelo código compilado):
+
+   ```bash
+   node scripts/allowlist.ts add 123456789012345678 --by 987654321098765432
+   node scripts/allowlist.ts remove 123456789012345678
+   node scripts/allowlist.ts list
+   ```
+
+   A CLI respeita o mesmo `DB_PATH` do servidor. Em produção:
+   `kubectl -n production exec deploy/danjocord -- node scripts/allowlist.ts list`.
+
 ## Estado do roadmap
 
 - [x] **M0 — Fundação**: monorepo, gateway (Hello/Identify/Ready, heartbeat,
   Resume com replay), REST mínimo de mensagens, SQLite com migrations,
   cliente de referência. *Falta: imagem ghcr + aplicar `deploy/danjocord.yaml`.*
-- [ ] **M1 — Identidade**: OAuth do Discord + allowlist + sessões próprias
+- [x] **M1 — Identidade**: OAuth do Discord + allowlist + sessões próprias
+  (JWT de acesso curto + refresh rotativo na tabela `sessions`), CLI de
+  allowlist, cliente estático servido pelo próprio server em produção
 - [ ] **M2 — Chat** completo (typing, edição, MEMBER_ADD, paginação na UI)
 - [ ] **M3 — Voz** (mediasoup, áudio)
 - [ ] **M4 — Vídeo** (simulcast)

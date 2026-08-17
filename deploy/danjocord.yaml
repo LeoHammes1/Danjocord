@@ -9,8 +9,11 @@
 #   1. Abrir 40000/UDP (+TCP) no firewall de borda da Hostinger
 #      (mesmo runbook do 31700/UDP do gateway LoRa).
 #   2. Publicar a imagem em ghcr (pública, multi-arch) — padrão pcb2stl.
-#   3. Criar o Secret danjocord-credentials via apply-secrets.sh
-#      (DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, JWT_SECRET — a partir do M1).
+#   3. Criar o app no Discord Developer Portal (OAuth2 → Redirects):
+#        https://danjocord.leohammes.dev/auth/discord/callback   (produção)
+#        http://localhost:8080/auth/discord/callback             (dev)
+#   4. Criar o Secret danjocord-credentials via apply-secrets.sh do KubeCluster
+#      (DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, JWT_SECRET).
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -45,6 +48,11 @@ spec:
         # Brasil: RTT de voz (10–40 ms) + IP público direto + PVC local.
         # Os workers Oracle ficam nos EUA (~150–200 ms) — vetados para mídia.
         kubernetes.io/hostname: hostinger
+      securityContext:
+        # local-path monta o PVC root:root; sem isto o processo (USER node,
+        # uid 1000) não cria o SQLite em /data e o pod entra em CrashLoop —
+        # mesmo fix do zookeeper.yaml/artemis.yaml do KubeCluster
+        fsGroup: 1000
       containers:
         - name: danjocord
           image: ghcr.io/leohammes1/danjocord:latest  # publicada pelo release.yml; deixar o package PÚBLICO no GitHub
@@ -60,6 +68,20 @@ spec:
               value: "72.61.44.156"
             - name: RTC_PORT
               value: "40000"
+            # --- identidade (M1, doc §5) ---
+            - name: DISCORD_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: danjocord-credentials, key: DISCORD_CLIENT_ID }
+            - name: DISCORD_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: danjocord-credentials, key: DISCORD_CLIENT_SECRET }
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef: { name: danjocord-credentials, key: JWT_SECRET }
+            - name: PUBLIC_BASE_URL           # o redirect_uri do OAuth aponta para cá
+              value: "https://danjocord.leohammes.dev"
+            - name: APP_URL                   # navegador volta para cá com o one-time code
+              value: "https://danjocord.leohammes.dev"
           ports:
             - containerPort: 8080           # HTTP + WS → via Traefik
             - containerPort: 40000          # mídia SRTP (M3) — direto no nó

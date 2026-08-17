@@ -16,7 +16,8 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     if (!user) return reply.code(401).send({ error: "não autenticado" });
 
     const { channelId } = req.params as { channelId: string };
-    if (!store.channelExists(channelId, "text")) {
+    // id não-numérico faria BigInt() lançar dentro do store → 500; 404 antes
+    if (!/^\d+$/.test(channelId) || !store.channelExists(channelId, "text")) {
       return reply.code(404).send({ error: "canal de texto não encontrado" });
     }
 
@@ -34,7 +35,9 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     if (!user) return reply.code(401).send({ error: "não autenticado" });
 
     const { channelId } = req.params as { channelId: string };
-    if (!store.channelExists(channelId)) return reply.code(404).send({ error: "canal não encontrado" });
+    if (!/^\d+$/.test(channelId) || !store.channelExists(channelId)) {
+      return reply.code(404).send({ error: "canal não encontrado" });
+    }
 
     const q = req.query as { before?: string; limit?: string };
     const before = q.before && /^\d+$/.test(q.before) ? q.before : null;
