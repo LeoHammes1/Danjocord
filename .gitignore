@@ -1,0 +1,17 @@
+# deps / build
+node_modules/
+dist/
+
+# banco local (SQLite)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ambiente
+.env
+.env.*
+
+# artefatos de editor/SO
+.DS_Store
+Thumbs.db

@@ -1,0 +1,17 @@
+{
+  "name": "danjocord",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Servidor de Discord simplificado, self-hosted, para estudo de streaming de voz/vídeo (WebRTC/SFU)",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --parallel -r dev",
+    "typecheck": "pnpm -r typecheck",
+    "smoke": "pnpm --filter @danjocord/server smoke"
+  }
+}
