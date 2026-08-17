@@ -94,7 +94,8 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
 - [x] **M1 — Identidade**: OAuth do Discord + allowlist + sessões próprias
   (JWT de acesso curto + refresh rotativo na tabela `sessions`), CLI de
   allowlist, cliente estático servido pelo próprio server em produção
-- [ ] **M2 — Chat** completo (typing, edição, MEMBER_ADD, paginação na UI)
+- [x] **M2 — Chat completo**: typing, edição/exclusão (autor + admin), MEMBER_ADD
+  ao vivo, paginação com scroll infinito e janela de DOM, CLI de admin
 - [ ] **M3 — Voz** (mediasoup, áudio)
 - [ ] **M4 — Vídeo** (simulcast)
 - [ ] **M5 — Go Live** (screen share)

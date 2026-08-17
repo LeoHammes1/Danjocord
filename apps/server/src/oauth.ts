@@ -3,7 +3,6 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { config } from "./config.js";
 import type { Db } from "./db/index.js";
-import { idToString, nextId } from "./db/snowflake.js";
 import type { Store } from "./store.js";
 import type { Sessions } from "./sessions.js";
 
@@ -45,7 +44,6 @@ const CallbackQuery = z.object({
 });
 
 export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, sessions: Sessions): void {
-  void store; // a assinatura é contrato do integrador; o fluxo fala direto com o Db
   const pending = new Map<string, PendingAuth>();
   const redirectUri = config.publicBaseUrl + "/auth/discord/callback";
 
@@ -116,24 +114,21 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
       return reply.redirect(config.appUrl + "/?auth_error=not_allowed", 302);
     }
 
-    // Upsert por discord_id: re-login atualiza nome/avatar, mas o NOSSO id é
-    // estável (mensagens antigas continuam apontando para o mesmo autor).
+    // Upsert por discord_id (vive no Store desde o M2): re-login atualiza
+    // nome/avatar, mas o NOSSO id é estável (mensagens antigas continuam
+    // apontando para o mesmo autor). Usuário novo dispara store.onUserCreated
+    // → MEMBER_ADD, sem este fluxo conhecer o gateway.
     const displayName = discordUser.global_name ?? discordUser.username;
     const avatarUrl =
       discordUser.avatar != null
         ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
         : null;
-    db.prepare(
-      "INSERT INTO users (id, discord_id, username, avatar_url, created_at) VALUES (?, ?, ?, ?, ?) " +
-        "ON CONFLICT(discord_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url",
-    ).run(nextId(), discordUser.id, displayName, avatarUrl, Date.now());
-    // o upsert acima garante a linha; INTEGER volta como BigInt (defaultSafeIntegers)
-    const row = db.prepare("SELECT id FROM users WHERE discord_id = ?").get(discordUser.id) as { id: bigint };
+    const { user } = store.upsertDiscordUser(discordUser.id, displayName, avatarUrl);
 
     // O token do Discord já cumpriu o papel dele (um /users/@me) — revoga.
     await revokeDiscordToken(app, accessToken);
 
-    const otc = sessions.issueOtc(idToString(row.id));
+    const otc = sessions.issueOtc(user.id);
     // fragment (#) e não query (?): o fragment nunca é enviado ao servidor,
     // então o OTC não aparece no access log do Fastify nem em Referer
     return reply.redirect(config.appUrl + "/#otc=" + otc, 302);

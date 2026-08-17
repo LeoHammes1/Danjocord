@@ -34,8 +34,10 @@ app.addHook("onSend", async (_req, reply) => {
 
 // Em produção o Traefik serve tudo na mesma origem; o CORS aberto existe só
 // para o vite dev server (localhost:5173) falar com o backend (localhost:8080).
+// methods explícito: o default do @fastify/cors é só GET/HEAD/POST, o que faz
+// o navegador barrar PATCH/DELETE depois do preflight (pego em verificação de UI).
 if (config.devAuth) {
-  await app.register(cors, { origin: true });
+  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"] });
 }
 
 const db = openDb();
@@ -43,6 +45,10 @@ const store = new Store(db);
 const gateway = new Gateway(store);
 // UMA instância: os OTCs do fluxo OAuth vivem em memória dentro dela
 const sessions = new Sessions(db, store);
+
+// usuário novo (dev ou OAuth) aparece na sidebar de todo mundo na hora;
+// atribuição pós-construção porque Store e Gateway não se conhecem
+store.onUserCreated = (u) => gateway.broadcast("MEMBER_ADD", u);
 
 registerRoutes(app, store, gateway);
 registerAuthRoutes(app, store, sessions);

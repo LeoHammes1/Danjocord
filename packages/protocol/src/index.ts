@@ -51,6 +51,8 @@ export const User = z.object({
   id: z.string(),
   username: z.string(),
   avatar_url: z.string().nullable(),
+  /** ausente = false; só o servidor popula (nunca vem de payload de cliente) */
+  is_admin: z.boolean().optional(),
 });
 export type User = z.infer<typeof User>;
 
@@ -68,6 +70,8 @@ export const Message = z.object({
   author_id: z.string(),
   content: z.string().min(1).max(4000),
   created_at: z.number().int(),
+  /** ausente/null = nunca editada */
+  edited_at: z.number().int().nullable().optional(),
   /** eco do nonce do cliente, para reconciliar o render otimista */
   nonce: z.string().optional(),
 });
@@ -108,6 +112,18 @@ export const PresenceUpdateData = z.object({
 });
 export type PresenceUpdateData = z.infer<typeof PresenceUpdateData>;
 
+export const MessageDeleteData = z.object({
+  id: z.string(),
+  channel_id: z.string(),
+});
+export type MessageDeleteData = z.infer<typeof MessageDeleteData>;
+
+export const TypingStartData = z.object({
+  channel_id: z.string(),
+  user_id: z.string(),
+});
+export type TypingStartData = z.infer<typeof TypingStartData>;
+
 // ---------------------------------------------------------------------------
 // Eventos Dispatch (op 0), discriminados por `t`
 // ---------------------------------------------------------------------------
@@ -117,6 +133,13 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("RESUMED"), d: z.object({}) }),
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_CREATE"), d: Message }),
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("PRESENCE_UPDATE"), d: PresenceUpdateData }),
+  // mensagem editada: d é a mensagem completa, com edited_at preenchido
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_UPDATE"), d: Message }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_DELETE"), d: MessageDeleteData }),
+  // sem evento de stop: o cliente ignora o próprio user_id e expira o indicador em ~10s
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("TYPING_START"), d: TypingStartData }),
+  // usuário NOVO criado (dev ou OAuth) — re-login de usuário conhecido não dispara
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_ADD"), d: User }),
 ]);
 export type DispatchEvent = z.infer<typeof DispatchEvent>;
 export type DispatchName = DispatchEvent["t"];
@@ -158,3 +181,9 @@ export const CreateMessageBody = z.object({
   nonce: z.string().max(64).optional(),
 });
 export type CreateMessageBody = z.infer<typeof CreateMessageBody>;
+
+/** PATCH de mensagem (M2) — sem nonce: o cliente já conhece o id da mensagem */
+export const UpdateMessageBody = z.object({
+  content: z.string().min(1).max(4000),
+});
+export type UpdateMessageBody = z.infer<typeof UpdateMessageBody>;

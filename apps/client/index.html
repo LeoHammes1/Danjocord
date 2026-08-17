@@ -82,8 +82,8 @@
         height: 100vh;
         display: grid;
         grid-template-columns: 220px 1fr;
-        grid-template-rows: 48px 1fr auto;
-        grid-template-areas: "side head" "side msgs" "side form";
+        grid-template-rows: 48px 1fr auto auto;
+        grid-template-areas: "side head" "side msgs" "side typing" "side form";
       }
       header {
         grid-area: head;
@@ -150,11 +150,59 @@
       #members li.online { color: var(--ink); }
       #members li.online::before { content: "● "; color: var(--ok); font-size: 0.7em; vertical-align: 0.15em; }
       #members { padding: 0; margin: 0; }
-      main { grid-area: msgs; overflow-y: auto; padding: 1rem; }
-      .msg { margin-bottom: 0.6rem; }
+      /* overflow-anchor: a paginação preserva o ponto de leitura somando o
+         delta de altura no scrollTop; o anchoring nativo faria o ajuste em
+         dobro em alguns navegadores */
+      main { grid-area: msgs; overflow-y: auto; padding: 1rem; overflow-anchor: none; }
+      /* padding-right reserva o canto das ações — hover não sobrepõe texto */
+      .msg { margin-bottom: 0.6rem; position: relative; padding-right: 3.4rem; }
       .msg .author { font-weight: 600; margin-right: 0.5rem; }
       .msg .time { color: var(--muted); font-size: 0.75rem; margin-left: 0.5rem; }
+      .msg .muted { color: var(--muted); font-size: 0.75rem; }
       .msg.pending { opacity: 0.45; }
+      .load-retry {
+        display: block;
+        margin: 1.2rem auto;
+        background: var(--surface-2);
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+      }
+      .load-retry:hover { color: var(--ink); }
+      /* ações (editar/apagar) só no hover — discretas, sem poluir a leitura */
+      .msg .actions { position: absolute; right: 0; top: 0; display: none; gap: 0.2rem; }
+      .msg:hover .actions { display: inline-flex; }
+      .msg .actions button {
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        color: var(--muted);
+        border-radius: 4px;
+        font-size: 0.7rem;
+        line-height: 1;
+        padding: 0.15rem 0.35rem;
+        cursor: pointer;
+      }
+      .msg .actions button:hover { color: var(--ink); border-color: var(--muted); }
+      .msg .edit-input {
+        width: min(480px, 70%);
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--ink);
+        padding: 0.15rem 0.5rem;
+        font-size: 0.9rem;
+      }
+      /* min-height reserva a linha: o indicador aparece/some sem empurrar as
+         mensagens (um pulo de layout bem na hora de ler seria pior que o vão) */
+      #typing {
+        grid-area: typing;
+        min-height: 1.3rem;
+        padding: 0.15rem 1rem 0;
+        font-size: 0.75rem;
+        color: var(--muted);
+      }
       #composer {
         grid-area: form;
         display: flex;
@@ -223,6 +271,8 @@
         </div>
       </header>
       <main id="messages"></main>
+      <!-- aria-live: leitor de tela anuncia "fulano está digitando…" sem roubar o foco -->
+      <div id="typing" aria-live="polite"></div>
       <form id="composer">
         <input id="input" autocomplete="off" placeholder="Mensagem em #geral" />
         <button type="submit">Enviar</button>

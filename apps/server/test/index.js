@@ -6,3 +6,6 @@
  * type stripping não remapeia ".js" → ".ts").
  */
 import "./sessions.test.ts";
+// depois de sessions de propósito: os testes de lá com relógio mockado deixam
+// o gerador de snowflakes "no futuro", e esta suíte usa banco novo — sem risco
+import "./messages.test.ts";
