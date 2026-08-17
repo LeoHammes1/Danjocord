@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+data
+**/data
+*.db
+*.db-wal
+*.db-shm
+Dockerfile
+docker-compose.yml
+deploy
+README.md
+CLAUDE.md

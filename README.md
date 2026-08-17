@@ -30,6 +30,18 @@ deploy/             manifest k8s de referência
 
 ## Desenvolvimento
 
+Caminho padrão — **Docker** (não precisa de Node/pnpm na máquina):
+
+```bash
+docker compose watch
+```
+
+Sobe tudo (server :8080 + cliente :5173) e sincroniza o código ao salvar
+(`sync` do compose watch — file-watching confiável mesmo em host Windows).
+Mudou dependência no `pnpm-lock.yaml`? O compose faz rebuild sozinho.
+
+Alternativa local, sem Docker:
+
 ```bash
 pnpm install
 pnpm build        # compila o protocol (os apps importam o dist)

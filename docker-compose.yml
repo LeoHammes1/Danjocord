@@ -1,0 +1,46 @@
+# Desenvolvimento com Docker:
+#
+#   docker compose watch      # sobe e sincroniza o código ao salvar
+#
+# O watch usa "sync" (compose copia os arquivos alterados para dentro do
+# container) em vez de bind mount — em host Windows, eventos de arquivo não
+# atravessam bind mounts de forma confiável; sync resolve isso e o tsc -w /
+# tsx watch / vite dentro do container reagem normalmente.
+#
+# Server: http://localhost:8080 · Cliente (vite): http://localhost:5173
+services:
+  app:
+    build:
+      context: .
+      target: dev
+    ports:
+      - "8080:8080"
+      - "5173:5173"
+    environment:
+      DANJOCORD_DEV_AUTH: "1"
+      DB_PATH: /app/apps/server/data/danjocord.db
+    volumes:
+      - danjocord-data:/app/apps/server/data
+    develop:
+      watch:
+        - action: sync
+          path: ./packages/protocol/src
+          target: /app/packages/protocol/src
+        - action: sync
+          path: ./apps/server/src
+          target: /app/apps/server/src
+        - action: sync
+          path: ./apps/server/migrations
+          target: /app/apps/server/migrations
+        - action: sync
+          path: ./apps/client/src
+          target: /app/apps/client/src
+        - action: sync
+          path: ./apps/client/index.html
+          target: /app/apps/client/index.html
+        # mudou dependência? rebuild da imagem
+        - action: rebuild
+          path: ./pnpm-lock.yaml
+
+volumes:
+  danjocord-data:

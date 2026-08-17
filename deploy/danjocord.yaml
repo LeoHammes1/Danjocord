@@ -47,7 +47,7 @@ spec:
         kubernetes.io/hostname: hostinger
       containers:
         - name: danjocord
-          image: ghcr.io/CHANGE_ME/danjocord:latest   # TODO: publicar imagem (M0)
+          image: ghcr.io/leohammes1/danjocord:latest  # publicada pelo release.yml; deixar o package PÚBLICO no GitHub
           imagePullPolicy: Always
           env:
             - name: NODE_ENV

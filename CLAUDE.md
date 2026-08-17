@@ -37,11 +37,19 @@ https://claude.ai/code/artifact/849196ea-4925-4066-9ec7-615454afb8d8
 ## Comandos
 
 ```bash
+docker compose watch         # caminho padrão de dev: tudo em container, sync ao salvar
+docker build --target runtime -t danjocord .   # a imagem de produção (ghcr/cluster)
+
+# alternativa local sem Docker:
 pnpm install && pnpm build   # build do protocol é pré-requisito dos apps
 pnpm dev                     # protocol -w + server :8080 + client :5173
 pnpm typecheck
 pnpm smoke                   # e2e do gateway (precisa do server rodando)
 ```
+
+A imagem do ghcr é publicada pelo `.github/workflows/release.yml` a cada push
+na main (amd64 — o pod pina no nó x86). Após publicar: `rollout restart` do
+deployment no cluster.
 
 ## Convenções
 
