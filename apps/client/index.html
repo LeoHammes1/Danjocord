@@ -146,6 +146,80 @@
         font-size: 0.92rem;
       }
       #channels button.active { background: var(--surface-2); color: var(--ink); }
+
+      /* --- voz (M3): participantes sob o canal + rodapé de conexão --- */
+      .voice-users {
+        list-style: none;
+        margin: 0.1rem 0 0.35rem;
+        padding: 0 0 0 1.3rem; /* recuo sob o nome do canal, estilo Discord */
+      }
+      .voice-user {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.12rem 0.2rem;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+      .voice-avatar {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        flex: none;
+        background: var(--surface-2);
+        color: var(--ink);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.6rem;
+        object-fit: cover;
+        /* a borda transparente RESERVA o anel: falar não mexe no layout */
+        border: 2px solid transparent;
+      }
+      /* anel de "falando agora" (VOICE_SPEAKING) na borda do avatar */
+      .voice-user.speaking .voice-avatar { border-color: var(--ok); }
+      .voice-user.speaking .voice-name { color: var(--ink); }
+      .voice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .voice-flags { margin-left: auto; flex: none; font-size: 0.7rem; }
+      #voice-footer {
+        margin-top: auto; /* empurra para o fundo quando a sidebar sobra... */
+        position: sticky; /* ...e cola no fundo quando a sidebar rola */
+        bottom: 0;
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.5rem 0.6rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+      }
+      .voice-footer-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+      #voice-footer-status { font-size: 0.78rem; font-weight: 600; color: var(--ok); }
+      #voice-footer.connecting #voice-footer-status { color: var(--muted); }
+      #voice-footer-channel {
+        font-size: 0.75rem;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .voice-footer-actions { display: flex; gap: 0.4rem; }
+      .voice-footer-actions button {
+        flex: 1;
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        padding: 0.28rem 0;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+      .voice-footer-actions button:hover { color: var(--ink); border-color: var(--muted); }
+      /* mute/deafen LIGADOS gritam de propósito — dá para ver de relance */
+      .voice-footer-actions button.on { background: var(--accent); border-color: var(--accent); color: #14181e; }
+      #voice-leave { font-size: 0.78rem; }
+      #voice-leave:hover { color: var(--accent); border-color: var(--accent); }
+
       #members li { list-style: none; font-size: 0.9rem; color: var(--muted); padding: 0.15rem 0; }
       #members li.online { color: var(--ink); }
       #members li.online::before { content: "● "; color: var(--ok); font-size: 0.7em; vertical-align: 0.15em; }
@@ -259,6 +333,18 @@
         <div>
           <h2>Membros</h2>
           <ul id="members"></ul>
+        </div>
+        <!-- rodapé de voz: só aparece conectado; sticky no fundo da sidebar -->
+        <div id="voice-footer" hidden>
+          <div class="voice-footer-info">
+            <span id="voice-footer-status">Voz conectada</span>
+            <span id="voice-footer-channel"></span>
+          </div>
+          <div class="voice-footer-actions">
+            <button id="voice-mute" type="button" title="Mutar">🎙️</button>
+            <button id="voice-deafen" type="button" title="Ensurdecer">🎧</button>
+            <button id="voice-leave" type="button" title="Desconectar">Sair</button>
+          </div>
         </div>
       </aside>
       <header>

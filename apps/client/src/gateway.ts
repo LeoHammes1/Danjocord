@@ -22,6 +22,12 @@ export class GatewayClient {
   private ackPending = false;
   private reconnectAttempts = 0;
   private closedByUser = false;
+  /** correlação da sinalização de voz (M3): `req` incremental → promise pendente */
+  private reqSeq = 0;
+  private readonly pendingRequests = new Map<
+    number,
+    { resolve: (p: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(
     private readonly url: string,
@@ -41,6 +47,9 @@ export class GatewayClient {
 
     this.ws.addEventListener("close", () => {
       this.stopHeartbeat();
+      // requests de voz em voo morrem com o socket: rejeitar já é melhor que
+      // deixar cada um esperar o próprio timeout de 10s (contrato do M3)
+      this.rejectPending(new Error("gateway desconectado"));
       this.events.status("offline");
       if (!this.closedByUser) this.scheduleReconnect();
     });
@@ -50,6 +59,38 @@ export class GatewayClient {
     this.closedByUser = true;
     this.stopHeartbeat();
     this.ws?.close(1000);
+  }
+
+  /**
+   * Sinalização de voz (M3, doc §3.6): op 20 com id de correlação `req`
+   * incremental; a resposta é o op 21 com o MESMO `req`. ok → resolve com `p`;
+   * !ok → rejeita com Error(error). A promise nunca fica pendurada: timeout de
+   * 10s e o close do socket rejeitam as pendências.
+   */
+  request(m: string, p?: unknown): Promise<unknown> {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      // sem socket aberto o send() abaixo seria descartado em silêncio e a
+      // promise só morreria no timeout — falhar imediatamente é mais honesto
+      return Promise.reject(new Error("gateway desconectado"));
+    }
+    this.reqSeq += 1;
+    const req = this.reqSeq;
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(req);
+        reject(new Error(`voz: timeout em "${m}"`));
+      }, 10_000);
+      this.pendingRequests.set(req, { resolve, reject, timer });
+      this.send({ op: Op.VoiceRequest, d: { req, m, p } });
+    });
+  }
+
+  private rejectPending(err: Error): void {
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
   }
 
   private onMessage(msg: ServerMessage): void {
@@ -86,8 +127,15 @@ export class GatewayClient {
         this.events.dispatch(msg.t, msg.d);
         return;
       }
-      case Op.VoiceResponse:
-        return; // M3
+      case Op.VoiceResponse: {
+        const pending = this.pendingRequests.get(msg.d.req);
+        if (pending === undefined) return; // resposta tardia de um req que já venceu o timeout
+        this.pendingRequests.delete(msg.d.req);
+        clearTimeout(pending.timer);
+        if (msg.d.ok) pending.resolve(msg.d.p);
+        else pending.reject(new Error(msg.d.error ?? "erro de voz"));
+        return;
+      }
     }
   }
 

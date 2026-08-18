@@ -77,6 +77,20 @@ export const Message = z.object({
 });
 export type Message = z.infer<typeof Message>;
 
+/**
+ * Estado de voz de um usuário (M3, doc §3.6). channel_id null = fora de voz
+ * (é assim que um leave viaja no VOICE_STATE_UPDATE). Os flags são
+ * declarativos: o mute REAL acontece no cliente (track.enabled) — o servidor
+ * só espalha a intenção para a UI dos outros.
+ */
+export const VoiceState = z.object({
+  user_id: z.string(),
+  channel_id: z.string().nullable(),
+  self_mute: z.boolean(),
+  self_deaf: z.boolean(),
+});
+export type VoiceState = z.infer<typeof VoiceState>;
+
 // ---------------------------------------------------------------------------
 // Payloads (`d`) de cada opcode
 // ---------------------------------------------------------------------------
@@ -103,6 +117,8 @@ export const ReadyData = z.object({
   /** snapshot completo — com uma guild e ~10 pessoas, cabe numa mensagem */
   channels: z.array(Channel),
   members: z.array(User),
+  /** snapshot de quem está em voz agora (M3) — só entradas com channel_id preenchido */
+  voice_states: z.array(VoiceState),
 });
 export type ReadyData = z.infer<typeof ReadyData>;
 
@@ -124,6 +140,35 @@ export const TypingStartData = z.object({
 });
 export type TypingStartData = z.infer<typeof TypingStartData>;
 
+/**
+ * Producer de áudio novo num canal de voz (M3): quem está no canal consome sob
+ * demanda. Vai para TODO mundo (broadcast simples); o dono do producer se
+ * reconhece pelo user_id e não consome a si mesmo.
+ */
+export const VoiceNewProducerData = z.object({
+  channel_id: z.string(),
+  user_id: z.string(),
+  producer_id: z.string(),
+});
+export type VoiceNewProducerData = z.infer<typeof VoiceNewProducerData>;
+
+export const VoiceProducerClosedData = z.object({
+  channel_id: z.string(),
+  producer_id: z.string(),
+});
+export type VoiceProducerClosedData = z.infer<typeof VoiceProducerClosedData>;
+
+/**
+ * Quem está falando AGORA no canal (audioLevelObserver do mediasoup).
+ * O array SUBSTITUI o conjunto anterior por inteiro — o servidor só emite
+ * quando o conjunto muda, então ausência de evento = nada mudou.
+ */
+export const VoiceSpeakingData = z.object({
+  channel_id: z.string(),
+  speaking: z.array(z.string()),
+});
+export type VoiceSpeakingData = z.infer<typeof VoiceSpeakingData>;
+
 // ---------------------------------------------------------------------------
 // Eventos Dispatch (op 0), discriminados por `t`
 // ---------------------------------------------------------------------------
@@ -140,6 +185,11 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("TYPING_START"), d: TypingStartData }),
   // usuário NOVO criado (dev ou OAuth) — re-login de usuário conhecido não dispara
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_ADD"), d: User }),
+  // voz (M3): join (channel_id preenchido), leave (null) e mudança de mute/deaf
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_STATE_UPDATE"), d: VoiceState }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_NEW_PRODUCER"), d: VoiceNewProducerData }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_PRODUCER_CLOSED"), d: VoiceProducerClosedData }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_SPEAKING"), d: VoiceSpeakingData }),
 ]);
 export type DispatchEvent = z.infer<typeof DispatchEvent>;
 export type DispatchName = DispatchEvent["t"];
@@ -171,6 +221,69 @@ export const ClientMessage = z.union([
   }),
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
+
+// ---------------------------------------------------------------------------
+// Sinalização de voz (op 20/21, M3, doc §3.6) — schemas do `p` por método `m`.
+//
+// O servidor valida o `p` de cada request com o schema do método antes de
+// tocar no mediasoup. Os blobs do próprio mediasoup (rtp/dtls/ice) trafegam
+// como z.unknown() DE PROPÓSITO: são estruturas dele, versionadas por ele, e
+// o worker valida do lado de lá — replicá-las em Zod só criaria drift.
+// Métodos no fio em snake_case, como todo o resto do protocolo.
+// ---------------------------------------------------------------------------
+
+/**
+ * m: "join" → resposta { rtp_capabilities: unknown, producers: VoiceNewProducerData[] }.
+ * `producers` são os já ativos no canal no momento do join — VOICE_NEW_PRODUCER
+ * só alcança quem estava conectado quando o produce aconteceu, então o
+ * recém-chegado recebe o estoque atual aqui e consome sob demanda.
+ */
+export const VoiceJoinParams = z.object({ channel_id: z.string() });
+export type VoiceJoinParams = z.infer<typeof VoiceJoinParams>;
+
+/** m: "create_transport" → { transport_id, ice_parameters, ice_candidates, dtls_parameters } */
+export const VoiceCreateTransportParams = z.object({ direction: z.enum(["send", "recv"]) });
+export type VoiceCreateTransportParams = z.infer<typeof VoiceCreateTransportParams>;
+
+/** m: "connect_transport" → {} (fecha o handshake DTLS do transport) */
+export const VoiceConnectTransportParams = z.object({
+  transport_id: z.string(),
+  dtls_parameters: z.unknown(),
+});
+export type VoiceConnectTransportParams = z.infer<typeof VoiceConnectTransportParams>;
+
+/** m: "produce" → { producer_id }. Só áudio neste milestone; vídeo entra no M5. */
+export const VoiceProduceParams = z.object({
+  transport_id: z.string(),
+  kind: z.literal("audio"),
+  rtp_parameters: z.unknown(),
+});
+export type VoiceProduceParams = z.infer<typeof VoiceProduceParams>;
+
+/** m: "consume" → { consumer_id, producer_id, kind, rtp_parameters } (nasce pausado) */
+export const VoiceConsumeParams = z.object({
+  transport_id: z.string(),
+  producer_id: z.string(),
+  rtp_capabilities: z.unknown(),
+});
+export type VoiceConsumeParams = z.infer<typeof VoiceConsumeParams>;
+
+/** m: "resume_consumer" → {} (o cliente chama depois de plugar o track no <audio>) */
+export const VoiceResumeConsumerParams = z.object({ consumer_id: z.string() });
+export type VoiceResumeConsumerParams = z.infer<typeof VoiceResumeConsumerParams>;
+
+/** m: "restart_ice" → { ice_parameters } (rede trocou por baixo do cliente) */
+export const VoiceRestartIceParams = z.object({ transport_id: z.string() });
+export type VoiceRestartIceParams = z.infer<typeof VoiceRestartIceParams>;
+
+/** m: "update_state" → {} (só flags; o mute real é o cliente desligar o track) */
+export const VoiceUpdateStateParams = z.object({
+  self_mute: z.boolean(),
+  self_deaf: z.boolean(),
+});
+export type VoiceUpdateStateParams = z.infer<typeof VoiceUpdateStateParams>;
+
+// m: "leave" não tem schema: `p` vazio/ausente → resposta {}.
 
 // ---------------------------------------------------------------------------
 // REST (superfície mínima do M0; cresce no M2)

@@ -96,7 +96,10 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
   allowlist, cliente estático servido pelo próprio server em produção
 - [x] **M2 — Chat completo**: typing, edição/exclusão (autor + admin), MEMBER_ADD
   ao vivo, paginação com scroll infinito e janela de DOM, CLI de admin
-- [ ] **M3 — Voz** (mediasoup, áudio)
+- [x] **M3 — Voz**: mediasoup embutido (router por canal, sinalização op 20/21),
+  Opus DTX+FEC, mute/deafen, indicador de "quem fala" (audioLevelObserver),
+  cleanup serializado por sessão. Dev usa porta RTC 41000 (Windows/WSL2 reserva
+  ~39000–40500 de forma invisível); produção usa 40000 via manifest.
 - [ ] **M4 — Vídeo** (simulcast)
 - [ ] **M5 — Go Live** (screen share)
 - [ ] **M6 — App Electron**

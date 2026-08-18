@@ -4,3 +4,6 @@ packages:
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+  mediasoup: true # baixa/compila o worker C++ no postinstall
+minimumReleaseAgeExclude:
+  - mediasoup@3.25.0

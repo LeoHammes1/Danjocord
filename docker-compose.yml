@@ -16,9 +16,12 @@ services:
     ports:
       - "8080:8080"
       - "5173:5173"
+      - "41000:41000/udp" # mídia SRTP (mediasoup; 41000 = default de dev, ver config.ts)
+      - "41000:41000/tcp" # ICE-TCP fallback
     environment:
       DANJOCORD_DEV_AUTH: "1"
       DB_PATH: /app/apps/server/data/danjocord.db
+      ANNOUNCED_IP: "127.0.0.1" # browser no host alcança o worker pela porta mapeada
     volumes:
       - danjocord-data:/app/apps/server/data
     develop:

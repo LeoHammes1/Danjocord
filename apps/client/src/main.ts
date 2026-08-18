@@ -5,10 +5,12 @@ import {
   type Message,
   type ReadyData,
   type User,
+  type VoiceState,
 } from "@danjocord/protocol";
 import { GatewayClient, type GatewayStatus } from "./gateway.js";
 import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, logout, refresh } from "./auth.js";
 import { TypingSender, TypingTracker, typingLabel } from "./typing.js";
+import { VoiceClient } from "./voice.js";
 
 // Em produção same-origin a API é https e o replace produz wss:// (doc §4).
 const GATEWAY = API.replace(/^http/, "ws") + "/gateway";
@@ -35,6 +37,13 @@ const el = {
   typing: document.getElementById("typing")!,
   composer: document.getElementById("composer") as HTMLFormElement,
   input: document.getElementById("input") as HTMLInputElement,
+  // voz (M3)
+  voiceFooter: document.getElementById("voice-footer")!,
+  voiceFooterStatus: document.getElementById("voice-footer-status")!,
+  voiceFooterChannel: document.getElementById("voice-footer-channel")!,
+  voiceMute: document.getElementById("voice-mute") as HTMLButtonElement,
+  voiceDeafen: document.getElementById("voice-deafen") as HTMLButtonElement,
+  voiceLeave: document.getElementById("voice-leave") as HTMLButtonElement,
 };
 
 interface State {
@@ -45,6 +54,10 @@ interface State {
   currentChannel: string | null;
   /** nonce → elemento renderizado otimisticamente, aguardando o Dispatch */
   pending: Map<string, HTMLElement>;
+  /** user_id → estado de voz (M3) — só quem ESTÁ num canal; sair = sai do mapa */
+  voiceStates: Map<string, VoiceState>;
+  /** channel_id → user_ids falando AGORA (cada VOICE_SPEAKING substitui o conjunto) */
+  speaking: Map<string, Set<string>>;
 }
 const state: State = {
   me: null,
@@ -53,6 +66,8 @@ const state: State = {
   online: new Set(),
   currentChannel: null,
   pending: new Map(),
+  voiceStates: new Map(),
+  speaking: new Map(),
 };
 
 // ---------------------------------------------------------------------------
@@ -137,6 +152,11 @@ function resetState(): void {
   state.online = new Set();
   state.currentChannel = null;
   state.pending = new Map();
+  state.voiceStates = new Map();
+  state.speaking = new Map();
+  // mídia local cai junto com o logout (o servidor limpa via sessionGone);
+  // o onChange do leaveLocal esconde o rodapé de voz
+  voice.leaveLocal();
   view = inertView();
   typingTracker.clear(); // timers pendentes disparariam sobre um DOM vazio
   typingSender.clear();
@@ -182,15 +202,74 @@ function renderMe(user: User | null): void {
 
 function renderChannels(): void {
   el.channels.replaceChildren(
-    ...state.channels.map((c) => {
-      const btn = document.createElement("button");
-      btn.textContent = (c.type === "text" ? "# " : "🔊 ") + c.name;
-      btn.className = c.id === state.currentChannel ? "active" : "";
-      btn.disabled = c.type === "voice"; // voz chega no M3
-      btn.onclick = () => selectChannel(c.id);
-      return btn;
-    }),
+    ...state.channels.map((c) => (c.type === "voice" ? voiceChannelEl(c) : textChannelEl(c))),
   );
+}
+
+function textChannelEl(c: Channel): HTMLElement {
+  const btn = document.createElement("button");
+  btn.textContent = "# " + c.name;
+  btn.className = c.id === state.currentChannel ? "active" : "";
+  btn.onclick = () => void selectChannel(c.id);
+  return btn;
+}
+
+/** Canal de voz (M3): botão de join + lista de participantes logo abaixo. */
+function voiceChannelEl(c: Channel): HTMLElement {
+  const wrap = document.createElement("div");
+  const btn = document.createElement("button");
+  btn.textContent = "🔊 " + c.name;
+  // .active aqui marca o canal de voz CONECTADO — independente do canal de
+  // texto ativo (os dois realces coexistem; contrato do M3)
+  btn.className = voice.channelId === c.id ? "active" : "";
+  // entrar em voz NÃO troca o canal de texto atual
+  btn.onclick = () => void joinVoice(c.id);
+  wrap.append(btn);
+
+  const inChannel = [...state.voiceStates.values()].filter((v) => v.channel_id === c.id);
+  if (inChannel.length > 0) {
+    const speaking = state.speaking.get(c.id);
+    const ul = document.createElement("ul");
+    ul.className = "voice-users";
+    for (const v of inChannel) ul.append(voiceUserEl(v, speaking?.has(v.user_id) === true));
+    wrap.append(ul);
+  }
+  return wrap;
+}
+
+function voiceUserEl(v: VoiceState, speaking: boolean): HTMLElement {
+  const li = document.createElement("li");
+  li.className = speaking ? "voice-user speaking" : "voice-user";
+  const member = state.members.get(v.user_id);
+  // mesmo fallback do MESSAGE_CREATE: membro ainda não conhecido vira placeholder
+  const name = member?.username ?? `user-${v.user_id.slice(-4)}`;
+  const avatarUrl = member?.avatar_url ?? null;
+  if (avatarUrl !== null) {
+    const img = document.createElement("img");
+    img.className = "voice-avatar";
+    img.alt = "";
+    img.src = avatarUrl;
+    li.append(img);
+  } else {
+    // sem avatar: círculo com a inicial (o anel de "falando" fica na borda)
+    const initial = document.createElement("span");
+    initial.className = "voice-avatar";
+    initial.textContent = name.slice(0, 1).toUpperCase();
+    li.append(initial);
+  }
+  const label = document.createElement("span");
+  label.className = "voice-name";
+  label.textContent = name;
+  li.append(label);
+  // surdo implica mudo — mostrar um só ícone evita ruído visual
+  if (v.self_deaf || v.self_mute) {
+    const flags = document.createElement("span");
+    flags.className = "voice-flags";
+    flags.textContent = v.self_deaf ? "🔕" : "🔇";
+    flags.title = v.self_deaf ? "ensurdecido" : "mutado";
+    li.append(flags);
+  }
+  return li;
 }
 
 function renderMembers(): void {
@@ -536,11 +615,65 @@ function onDispatch(t: DispatchName, d: unknown): void {
     state.channels = ready.channels;
     state.members = new Map(ready.members.map((m) => [m.id, m]));
     state.online = new Set([ready.user.id]);
+    // snapshot de voz (M3): quem já está em canal quando entramos
+    state.voiceStates = new Map();
+    for (const v of ready.voice_states ?? []) {
+      if (v.channel_id !== null) state.voiceStates.set(v.user_id, v);
+    }
+    state.speaking = new Map(); // "quem fala" não vem no snapshot; o próximo VOICE_SPEAKING repõe
     renderMe(ready.user);
     renderChannels();
     renderMembers();
+    renderVoiceFooter();
+    // READY = sessão NOVA (re-Identify): o estado de voz da sessão antiga
+    // morreu no servidor — se estávamos em voz, re-join limpo, mídia zerada
+    // primeiro (RESUMED não passa aqui: sessão viva, mídia intocada)
+    if (voice.channelId !== null) {
+      const target = voice.channelId;
+      voice.leaveLocal();
+      void joinVoice(target);
+    }
     const first = ready.channels.find((c) => c.type === "text");
     if (first && state.currentChannel === null) void selectChannel(first.id);
+    return;
+  }
+  if (t === "VOICE_STATE_UPDATE") {
+    const v = d as VoiceState;
+    if (v.channel_id === null) {
+      state.voiceStates.delete(v.user_id);
+      // some do anel já — o servidor só esvaziaria no próximo tick do observer
+      for (const set of state.speaking.values()) set.delete(v.user_id);
+      // o SERVIDOR nos tirou da voz (transporte morto, kick por outra sessão)
+      // OU é só o eco do nosso próprio leave — onSelfRemoved distingue os dois
+      // (o eco atrasado matava um re-join rápido em voo; pego em verificação)
+      if (v.user_id === state.me?.id) voice.onSelfRemoved();
+    } else {
+      state.voiceStates.set(v.user_id, v);
+      // fantasma da PRÓPRIA sessão (join que completou no servidor com o WS
+      // caindo antes da resposta): estamos idle mas o servidor nos vê em voz
+      // — um leave de melhor esforço reconcilia (revisão M3 #3)
+      if (v.user_id === state.me?.id) voice.reconcile(v.channel_id);
+    }
+    renderVoiceUi();
+    return;
+  }
+  if (t === "VOICE_NEW_PRODUCER") {
+    const p = d as { channel_id: string; user_id: string; producer_id: string };
+    // o PRÓPRIO user_id não se consome (inclui outra aba do mesmo usuário — eco)
+    if (p.user_id === state.me?.id) return;
+    if (p.channel_id !== voice.channelId) return; // producer de outro canal não nos diz respeito
+    void voice.consume(p.producer_id).catch((err: unknown) => console.warn("voz: consume falhou", err));
+    return;
+  }
+  if (t === "VOICE_PRODUCER_CLOSED") {
+    const p = d as { channel_id: string; producer_id: string };
+    voice.handleProducerClosed(p.producer_id);
+    return;
+  }
+  if (t === "VOICE_SPEAKING") {
+    const s = d as { channel_id: string; speaking: string[] };
+    state.speaking.set(s.channel_id, new Set(s.speaking));
+    renderChannels(); // só os anéis mudam, mas re-render completo é barato nesta escala
     return;
   }
   if (t === "MESSAGE_CREATE") {
@@ -679,12 +812,70 @@ async function onGatewayRetry(): Promise<void> {
 }
 
 async function doLogout(): Promise<void> {
+  // avisa o "leave" de voz ANTES de derrubar o gateway — senão o fantasma
+  // fica no canal para os outros até a sessão expirar no servidor (~2 min)
+  await voice.leave();
   currentGateway?.stop();
   currentGateway = null;
   await logout();
   resetState();
   showLogin();
 }
+
+// ---------------------------------------------------------------------------
+// Voz (M3): o VoiceClient cuida de mídia/sinalização; o estado de QUEM está
+// em voz / falando vive no state acima, alimentado pelos dispatches VOICE_*
+// ---------------------------------------------------------------------------
+
+/**
+ * O request é injetado como delegador (e não a instância do gateway) porque o
+ * AuthGateway é descartado e recriado a cada renovação de token — o VoiceClient
+ * sempre fala com o gateway ATUAL.
+ */
+const voice = new VoiceClient((m, p) => {
+  const gw = currentGateway;
+  if (gw === null) return Promise.reject(new Error("gateway desconectado"));
+  return gw.request(m, p);
+});
+voice.onChange = () => renderVoiceUi();
+
+function renderVoiceUi(): void {
+  renderChannels(); // as listas de participantes moram sob os canais de voz
+  renderVoiceFooter();
+}
+
+async function joinVoice(channelId: string): Promise<void> {
+  if (voice.channelId === channelId) return; // clique repetido no mesmo canal
+  try {
+    await voice.join(channelId);
+  } catch (err) {
+    // getUserMedia negado, canal inexistente, gateway fora: o leaveLocal do
+    // join já zerou o estado e escondeu o rodapé — só registra o motivo
+    console.warn("voz: falha ao entrar no canal", err);
+  }
+}
+
+function renderVoiceFooter(): void {
+  const cid = voice.channelId;
+  if (cid === null) {
+    el.voiceFooter.hidden = true;
+    return;
+  }
+  el.voiceFooter.hidden = false;
+  el.voiceFooter.classList.toggle("connecting", !voice.connected);
+  el.voiceFooterStatus.textContent = voice.connected ? "Voz conectada" : "Conectando voz…";
+  el.voiceFooterChannel.textContent = "#" + (state.channels.find((c) => c.id === cid)?.name ?? "?");
+  el.voiceMute.textContent = voice.muted ? "🔇" : "🎙️";
+  el.voiceMute.title = voice.muted ? "Desmutar" : "Mutar";
+  el.voiceMute.classList.toggle("on", voice.muted);
+  el.voiceDeafen.textContent = voice.deafened ? "🔕" : "🎧";
+  el.voiceDeafen.title = voice.deafened ? "Voltar a ouvir" : "Ensurdecer";
+  el.voiceDeafen.classList.toggle("on", voice.deafened);
+}
+
+el.voiceMute.addEventListener("click", () => void voice.toggleMute());
+el.voiceDeafen.addEventListener("click", () => void voice.toggleDeafen());
+el.voiceLeave.addEventListener("click", () => void voice.leave());
 
 // ---------------------------------------------------------------------------
 // Composer (render otimista do M0 + typing do M2)

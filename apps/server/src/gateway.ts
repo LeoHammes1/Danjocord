@@ -9,6 +9,7 @@ import {
   type DispatchEvent,
   type DispatchName,
   type User,
+  type VoiceState,
 } from "@danjocord/protocol";
 import { config } from "./config.js";
 import type { Store } from "./store.js";
@@ -42,6 +43,17 @@ export class Gateway {
   private readonly wss = new WebSocketServer({ noServer: true });
   private readonly sessions = new Map<string, GatewaySession>();
   private readonly sweeper: NodeJS.Timeout;
+
+  /**
+   * Delegação da sinalização de voz (op 20, M3): o módulo de voz resolve o
+   * método e devolve o payload da resposta; exceção vira op 21 com ok=false.
+   * Atribuído pelo wiring do index.ts — o gateway não conhece o mediasoup.
+   */
+  onVoiceRequest?: (ctx: { userId: string; sessionId: string }, m: string, p: unknown) => Promise<unknown>;
+  /** Sessão saiu do mapa DE VEZ (resume expirou/invalidou) — hora de sair da voz. */
+  onSessionGone?: (ctx: { userId: string; sessionId: string }) => void;
+  /** Snapshot de quem está em voz, para o READY (atribuído pelo index.ts). */
+  voiceStatesProvider?: () => VoiceState[];
 
   constructor(private readonly store: Store) {
     this.sweeper = setInterval(() => this.sweep(), 15_000);
@@ -168,6 +180,7 @@ export class Gateway {
           user,
           channels: this.store.listChannels(),
           members: this.store.listMembers(),
+          voice_states: this.voiceStatesProvider?.() ?? [],
         });
         if (!wasOnline) {
           for (const other of this.sessions.values()) {
@@ -193,6 +206,7 @@ export class Gateway {
         if (msg.d.seq > session.seq || seqTooOld) {
           // fora da janela de replay: joga a sessão fora; o cliente re-Identifica
           this.sessions.delete(session.id);
+          this.onSessionGone?.({ userId: session.user.id, sessionId: session.id });
           this.send(ws, { op: Op.InvalidSession, d: { resumable: false } });
           return;
         }
@@ -211,11 +225,24 @@ export class Gateway {
       }
 
       case Op.VoiceRequest: {
-        // Sinalização de voz chega no M3 (mediasoup) — por ora, resposta honesta.
-        this.send(ws, {
-          op: Op.VoiceResponse,
-          d: { req: msg.d.req, ok: false, error: "voz ainda não implementada (M3)" },
-        });
+        const session = state.session;
+        if (!session) {
+          ws.close(CloseCode.NotAuthenticated);
+          return;
+        }
+        const handler = this.onVoiceRequest;
+        if (!handler) {
+          this.send(ws, { op: Op.VoiceResponse, d: { req: msg.d.req, ok: false, error: "voz indisponível" } });
+          return;
+        }
+        void handler({ userId: session.user.id, sessionId: session.id }, msg.d.m, msg.d.p).then(
+          (result) => this.send(ws, { op: Op.VoiceResponse, d: { req: msg.d.req, ok: true, p: result } }),
+          (err: unknown) =>
+            this.send(ws, {
+              op: Op.VoiceResponse,
+              d: { req: msg.d.req, ok: false, error: err instanceof Error ? err.message : "erro de voz" },
+            }),
+        );
         return;
       }
     }
@@ -231,6 +258,7 @@ export class Gateway {
         }
       } else if (session.disconnectedAt !== null && now - session.disconnectedAt > config.resumeWindowMs) {
         this.sessions.delete(session.id);
+        this.onSessionGone?.({ userId: session.user.id, sessionId: session.id });
         this.broadcastPresenceIfOffline(session.user.id);
       }
     }

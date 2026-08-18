@@ -31,6 +31,27 @@ export const config = {
   /** state + code_verifier guardados server-side durante o fluxo OAuth */
   oauthStateTtlMs: 600_000,
 
+  // --- mídia / mediasoup (M3, doc §3.6 e §9) ---
+  /**
+   * porta ÚNICA do WebRtcServer (UDP e TCP) — a que o firewall/hostPort expõe.
+   * Default 41000 e não 40000: em Windows com Docker Desktop, o WSL2/Hyper-V
+   * reserva faixas de UDP invisíveis ao netstat (~39000–40500 nesta máquina) e
+   * o bind falha com EADDRINUSE fantasma. Produção fixa 40000 via env no
+   * manifest (deploy/danjocord.yaml) — no Linux do cluster não há o problema.
+   */
+  rtcPort: Number(env.RTC_PORT ?? 41_000),
+  /** interface local do worker */
+  rtcListenIp: env.RTC_LISTEN_IP ?? "0.0.0.0",
+  /**
+   * endereço anunciado nos candidatos ICE (ICE-lite anuncia ISTO, não a
+   * interface): produção = IP público do nó (72.61.44.156); dev = 127.0.0.1
+   */
+  rtcAnnouncedIp: env.ANNOUNCED_IP ?? "127.0.0.1",
+  /** bitrate máximo de entrada por producer de áudio (folga sobre Opus 64k) */
+  rtcMaxIncomingBitrate: Number(env.RTC_MAX_INCOMING_BITRATE ?? 128_000),
+  /** intervalo do audioLevelObserver — orçamento de "quem fala" < 200 ms (doc §8) */
+  rtcSpeakingIntervalMs: Number(env.RTC_SPEAKING_INTERVAL_MS ?? 150),
+
   // --- OAuth do Discord (M1) ---
   discordClientId: env.DISCORD_CLIENT_ID ?? "",
   discordClientSecret: env.DISCORD_CLIENT_SECRET ?? "",

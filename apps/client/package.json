@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@danjocord/protocol": "workspace:*",
+    "mediasoup-client": "^3.7.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {

@@ -9,6 +9,7 @@ import { Sessions } from "./sessions.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { registerStaticClient } from "./static-client.js";
+import { Voice } from "./voice.js";
 
 // Sem segredo real em produção, todo JWT emitido seria forjável — aborta já.
 // Checa o env cru: JWT_SECRET="" passaria pelo ?? do config e não é pego pela
@@ -50,6 +51,21 @@ const sessions = new Sessions(db, store);
 // atribuição pós-construção porque Store e Gateway não se conhecem
 store.onUserCreated = (u) => gateway.broadcast("MEMBER_ADD", u);
 
+// --- voz (M3, doc §3.6): o mediasoup vive aqui, atrás da sinalização op 20/21 ---
+const voice = await Voice.create(store).catch((err: unknown) => {
+  // fail-fast com diagnóstico: o EADDRINUSE clássico aqui é porta RTC presa
+  // (em Windows, faixas reservadas invisíveis do WSL2 — ver config.rtcPort)
+  console.error(`voz não subiu (RTC_PORT=${config.rtcPort}):`, err);
+  process.exit(1);
+});
+// As assinaturas são textualmente idênticas, mas o TS não prova equivalência
+// de Extract<> condicional entre dois genéricos independentes (TS2719) — o
+// cast declara o que a estrutura já garante.
+voice.broadcast = gateway.broadcast.bind(gateway) as typeof voice.broadcast;
+gateway.onVoiceRequest = (ctx, m, p) => voice.handleRequest(ctx, m, p);
+gateway.onSessionGone = (ctx) => voice.sessionGone(ctx);
+gateway.voiceStatesProvider = () => voice.voiceStates();
+
 registerRoutes(app, store, gateway);
 registerAuthRoutes(app, store, sessions);
 registerOAuthRoutes(app, db, store, sessions);
@@ -65,6 +81,7 @@ if (config.devAuth) {
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {
+    voice.close();
     gateway.close();
     await app.close();
     db.close();
