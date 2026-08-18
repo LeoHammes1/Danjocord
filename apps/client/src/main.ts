@@ -1,3 +1,6 @@
+// o CSS do cliente inteiro entra por aqui (M7): um único grafo de @import,
+// resolvido pelo vite — o index.html não tem mais <style>
+import "./styles/index.css";
 import {
   CloseCode,
   type Channel,
@@ -11,7 +14,28 @@ import { GatewayClient, type GatewayStatus } from "./gateway.js";
 import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, hydrateAuth, logout, refresh } from "./auth.js";
 import { desktop } from "./bridge.js";
 import { playJoin, playLeave } from "./sounds.js";
-import { TypingSender, TypingTracker, typingLabel } from "./typing.js";
+import { TypingSender, TypingTracker } from "./typing.js";
+import { mountChrome, renderChannelHead, setConnectionStatus } from "./ui/chrome.js";
+import { clearComposer, focusComposer, mountComposer, setComposerChannel, setComposerValue } from "./ui/composer.js";
+import { renderMembers } from "./ui/members.js";
+import {
+  editDraftOf,
+  findMessageEl,
+  messageEl,
+  regroupAll,
+  regroupAt,
+  renderTyping,
+  startEdit,
+  type MessageActions,
+} from "./ui/messages.js";
+import {
+  mountSidebar,
+  renderChannels as renderChannelList,
+  renderUserPanel,
+  renderVoiceFooter as renderVoiceFooterUi,
+  updateSpeaking,
+  type SidebarContext,
+} from "./ui/sidebar.js";
 import { VoiceClient } from "./voice.js";
 
 // Em produção same-origin a API é https e o replace produz wss:// (doc §4).
@@ -27,18 +51,32 @@ const el = {
   loginDiscord: document.getElementById("login-discord") as HTMLButtonElement,
   devForm: document.getElementById("dev-form") as HTMLFormElement,
   devUsername: document.getElementById("dev-username") as HTMLInputElement,
+  loginDev: document.getElementById("login-dev")!,
   // app
   app: document.getElementById("app")!,
+  guildHome: document.getElementById("guild-home") as HTMLButtonElement,
+  sidebarHead: document.getElementById("sidebar-head") as HTMLButtonElement,
+  userPanel: document.getElementById("user-panel")!,
   meAvatar: document.getElementById("me-avatar") as HTMLImageElement,
   meName: document.getElementById("me-name")!,
+  meSub: document.getElementById("me-sub")!,
+  userMute: document.getElementById("user-mute") as HTMLButtonElement,
+  userDeafen: document.getElementById("user-deafen") as HTMLButtonElement,
+  userSettings: document.getElementById("user-settings") as HTMLButtonElement,
   logout: document.getElementById("logout") as HTMLButtonElement,
+  channelHead: document.getElementById("channel-head")!,
+  channelIcon: document.getElementById("channel-icon")!,
+  channelName: document.getElementById("channel-name")!,
+  channelTopic: document.getElementById("channel-topic")!,
+  toggleMembers: document.getElementById("toggle-members") as HTMLButtonElement,
   status: document.getElementById("status")!,
   channels: document.getElementById("channels")!,
+  membersPanel: document.getElementById("members-panel")!,
   members: document.getElementById("members")!,
   messages: document.getElementById("messages")!,
   typing: document.getElementById("typing")!,
   composer: document.getElementById("composer") as HTMLFormElement,
-  input: document.getElementById("input") as HTMLInputElement,
+  input: document.getElementById("input") as HTMLTextAreaElement,
   // voz (M3)
   voiceFooter: document.getElementById("voice-footer")!,
   voiceFooterStatus: document.getElementById("voice-footer-status")!,
@@ -64,6 +102,15 @@ const el = {
   pttLabel: document.getElementById("ptt-label")!,
   pttKey: document.getElementById("ptt-key") as HTMLButtonElement,
 };
+
+// login dev só existe em build de desenvolvimento: em produção o /auth/dev
+// responde 404, e um formulário que só sabe falhar não merece espaço na tela
+if (import.meta.env.DEV) el.loginDev.hidden = false;
+
+// Os botões de ícone nascem vazios no HTML porque o ícone é um SVGElement
+// criado em JS (ui/icons.ts) — o cliente não usa innerHTML em lugar nenhum.
+// Quem os desenha são os módulos de ui/, no mount: mountChrome() cuida do
+// header, mountSidebar() do painel do usuário. Nada de ícone estático aqui.
 
 interface State {
   me: User | null;
@@ -135,7 +182,7 @@ let view: PaginationView = inertView();
 // ---------------------------------------------------------------------------
 
 const typingTracker = new TypingTracker(TYPING_TTL_MS, (channelId) => {
-  if (channelId === state.currentChannel) renderTyping();
+  if (channelId === state.currentChannel) renderTypingBar();
 });
 
 const typingSender = new TypingSender(TYPING_THROTTLE_MS, (channelId) => {
@@ -159,8 +206,9 @@ function showLogin(error?: string): void {
 function startApp(): void {
   el.login.hidden = true;
   el.app.hidden = false;
-  renderMe(getUser()); // snapshot do storage; o READY corrige se estiver velho
-  setStatus("connecting");
+  state.me = getUser(); // snapshot do storage; o READY corrige se estiver velho
+  renderUserPanel(ui);
+  setConnectionStatus("connecting");
   startGateway();
 }
 
@@ -183,6 +231,9 @@ function resetState(): void {
   el.members.replaceChildren();
   el.messages.replaceChildren();
   el.typing.textContent = "";
+  setComposerChannel(null);
+  clearComposer();
+  renderChannelHead(ui); // devolve o título da janela para "Danjocord"
 }
 
 function authErrorMessage(code: string): string {
@@ -210,252 +261,43 @@ function desktopLoginErrorMessage(err: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Render (inalterado do M0, mais o usuário no header)
+// Ponte com os módulos de ui/ (M7). O render deixou de morar aqui: sidebar,
+// membros, mensagens, header e composer são módulos próprios. O que sobra
+// neste arquivo é a cola — o contexto (montado junto do VoiceClient, mais
+// abaixo, porque os getters de voz dependem dele) e os atalhos que preservam
+// os call sites antigos.
 // ---------------------------------------------------------------------------
-
-function setStatus(status: GatewayStatus): void {
-  el.status.textContent =
-    status === "online" ? "online" : status === "resuming" ? "retomando…" : status === "offline" ? "reconectando…" : "conectando…";
-  el.status.className = status === "online" ? "online" : status === "offline" ? "offline" : "";
-}
-
-function renderMe(user: User | null): void {
-  el.meName.textContent = user?.username ?? "";
-  const avatar = user?.avatar_url ?? null;
-  if (avatar !== null) {
-    el.meAvatar.src = avatar;
-    el.meAvatar.hidden = false;
-  } else {
-    el.meAvatar.removeAttribute("src");
-    el.meAvatar.hidden = true;
-  }
-}
 
 function renderChannels(): void {
-  el.channels.replaceChildren(
-    ...state.channels.map((c) => (c.type === "voice" ? voiceChannelEl(c) : textChannelEl(c))),
-  );
+  renderChannelList(ui);
 }
 
-function textChannelEl(c: Channel): HTMLElement {
-  const btn = document.createElement("button");
-  btn.textContent = "# " + c.name;
-  btn.className = c.id === state.currentChannel ? "active" : "";
-  btn.onclick = () => void selectChannel(c.id);
-  return btn;
+function renderVoiceFooter(): void {
+  renderVoiceFooterUi(ui);
 }
 
-/** Canal de voz (M3): botão de join + lista de participantes logo abaixo. */
-function voiceChannelEl(c: Channel): HTMLElement {
-  const wrap = document.createElement("div");
-  const btn = document.createElement("button");
-  btn.textContent = "🔊 " + c.name;
-  // .active aqui marca o canal de voz CONECTADO — independente do canal de
-  // texto ativo (os dois realces coexistem; contrato do M3)
-  btn.className = voice.channelId === c.id ? "active" : "";
-  // entrar em voz NÃO troca o canal de texto atual
-  btn.onclick = () => void joinVoice(c.id);
-  wrap.append(btn);
-
-  const inChannel = [...state.voiceStates.values()].filter((v) => v.channel_id === c.id);
-  if (inChannel.length > 0) {
-    const speaking = state.speaking.get(c.id);
-    const ul = document.createElement("ul");
-    ul.className = "voice-users";
-    for (const v of inChannel) ul.append(voiceUserEl(v, speaking?.has(v.user_id) === true));
-    wrap.append(ul);
-  }
-  return wrap;
-}
-
-function voiceUserEl(v: VoiceState, speaking: boolean): HTMLElement {
-  const li = document.createElement("li");
-  li.className = speaking ? "voice-user speaking" : "voice-user";
-  const member = state.members.get(v.user_id);
-  // mesmo fallback do MESSAGE_CREATE: membro ainda não conhecido vira placeholder
-  const name = member?.username ?? `user-${v.user_id.slice(-4)}`;
-  const avatarUrl = member?.avatar_url ?? null;
-  if (avatarUrl !== null) {
-    const img = document.createElement("img");
-    img.className = "voice-avatar";
-    img.alt = "";
-    img.src = avatarUrl;
-    li.append(img);
-  } else {
-    // sem avatar: círculo com a inicial (o anel de "falando" fica na borda)
-    const initial = document.createElement("span");
-    initial.className = "voice-avatar";
-    initial.textContent = name.slice(0, 1).toUpperCase();
-    li.append(initial);
-  }
-  const label = document.createElement("span");
-  label.className = "voice-name";
-  label.textContent = name;
-  li.append(label);
-  // badge AO VIVO (M5): self_stream é DERIVADO no servidor (producer source
-  // screen vivo) — e o item vira "Assistir" para os OUTROS no mesmo canal
-  // (viewers sob demanda, doc §3.6: ninguém consome sem clicar)
-  if (v.self_stream) {
-    const badge = document.createElement("span");
-    badge.className = "live-badge";
-    badge.textContent = "AO VIVO";
-    li.append(badge);
-    const isMe = v.user_id === state.me?.id;
-    // NUNCA autoconsumo: o streamer não assiste a própria transmissão; e só
-    // quem está CONECTADO neste canal tem transports para consumir
-    if (!isMe && voice.connected && voice.channelId === v.channel_id) {
-      li.classList.add("watchable");
-      const watchingThis = voice.watchingUserId === v.user_id;
-      li.title = watchingThis ? "Assistindo — use “Parar de assistir”" : "Assistir transmissão";
-      if (!watchingThis) {
-        li.onclick = () => {
-          const producerId = voice.streamProducerIdOf(v.user_id);
-          if (producerId === null) return; // anúncio ainda em trânsito — clique de novo
-          void voice.watchStream(producerId, v.user_id).catch((err: unknown) => {
-            console.warn("voz: falha ao assistir a transmissão", err);
-            flashVoiceError("não foi possível assistir a esta transmissão"); // rev. M5 #2
-          });
-        };
-      }
-    }
-  }
-  // surdo implica mudo — um só ícone de áudio; a câmera (M4) soma o dela
-  const icons: { icon: string; label: string }[] = [];
-  if (v.self_video) icons.push({ icon: "📷", label: "câmera ligada" });
-  if (v.self_deaf) icons.push({ icon: "🔕", label: "ensurdecido" });
-  else if (v.self_mute) icons.push({ icon: "🔇", label: "mutado" });
-  if (icons.length > 0) {
-    const flags = document.createElement("span");
-    flags.className = "voice-flags";
-    flags.textContent = icons.map((i) => i.icon).join(" ");
-    flags.title = icons.map((i) => i.label).join(", ");
-    li.append(flags);
-  }
-  return li;
-}
-
-function renderMembers(): void {
-  el.members.replaceChildren(
-    ...[...state.members.values()].map((m) => {
-      const li = document.createElement("li");
-      li.textContent = m.username;
-      if (state.online.has(m.id)) li.classList.add("online");
-      return li;
-    }),
-  );
-}
-
-function authorName(id: string): string {
-  return state.members.get(id)?.username ?? "?";
-}
-
-function renderTyping(): void {
-  const cid = state.currentChannel;
-  const names = cid === null ? [] : typingTracker.typers(cid).map(authorName);
-  el.typing.textContent = typingLabel(names);
-}
-
-function messageEl(msg: Message, pending = false): HTMLElement {
-  const div = document.createElement("div");
-  div.className = pending ? "msg pending" : "msg";
-  // âncora para MESSAGE_UPDATE/DELETE acharem o elemento; no pending é o
-  // nonce (uuid), que nunca colide com um snowflake numérico
-  div.dataset.id = msg.id;
-  const time = new Date(msg.created_at).toLocaleTimeString();
-  const edited = msg.edited_at != null ? `<span class="muted"> (editado)</span>` : "";
-  div.innerHTML = `<span class="author"></span><span class="content"></span>${edited}<span class="time">${time}</span>`;
-  div.querySelector(".author")!.textContent = authorName(msg.author_id);
-  div.querySelector(".content")!.textContent = msg.content;
-  // pending ainda não existe no servidor — sem id real, não há o que editar
-  if (!pending) appendActions(div, msg);
-  return div;
-}
-
-function findMessageEl(id: string): HTMLElement | null {
-  return el.messages.querySelector<HTMLElement>(`.msg[data-id="${id}"]`);
-}
-
-// ---------------------------------------------------------------------------
-// Edição e exclusão (M2): PATCH/DELETE são a fonte da verdade; o broadcast
-// MESSAGE_UPDATE/DELETE reconcilia todos os clientes (inclusive este — as
-// substituições diretas abaixo são só resposta imediata, e são idempotentes)
-// ---------------------------------------------------------------------------
-
-function appendActions(div: HTMLElement, msg: Message): void {
-  const own = msg.author_id === state.me?.id;
-  // apagar: autor OU admin; editar: só o autor (espelha as regras do servidor)
-  const canDelete = own || state.me?.is_admin === true;
-  if (!own && !canDelete) return;
-  const actions = document.createElement("span");
-  actions.className = "actions";
-  if (own) {
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.textContent = "✎";
-    edit.title = "Editar";
-    edit.onclick = () => startEdit(div, msg);
-    actions.append(edit);
-  }
-  const del = document.createElement("button");
-  del.type = "button";
-  del.textContent = "✕";
-  del.title = "Apagar";
-  del.onclick = () => confirmDelete(msg);
-  actions.append(del);
-  div.append(actions);
-}
-
-function startEdit(container: HTMLElement, msg: Message): void {
-  if (container.querySelector(".edit-input")) return; // já em edição
-  const content = container.querySelector(".content");
-  if (!content) return;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.className = "edit-input";
-  input.maxLength = 4000;
-  input.value = msg.content;
-  content.replaceWith(input);
-  input.focus();
-  input.setSelectionRange(input.value.length, input.value.length);
-
-  // cancelar = reconstruir o elemento do zero (mais simples que restaurar spans)
-  const cancel = () => container.replaceWith(messageEl(msg));
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
-      cancel();
-      return;
-    }
-    if (ev.key !== "Enter") return;
-    ev.preventDefault();
-    const next = input.value.trim();
-    if (next === "" || next === msg.content) {
-      cancel();
-      return;
-    }
-    input.disabled = true; // evita Enter duplo virar dois PATCHes
-    void api(`/api/channels/${msg.channel_id}/messages/${msg.id}`, {
+/**
+ * Mutações de mensagem que ui/messages dispara. Ficam aqui porque o api() com
+ * renovação de token vive neste módulo — o componente não conhece rede.
+ */
+const msgActions: MessageActions = {
+  editMessage: (m, content) =>
+    api(`/api/channels/${m.channel_id}/messages/${m.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ content: next }),
-    }).then(
-      (updated) => {
-        // lookup por id (não pelo container): o broadcast pode ter chegado antes
-        findMessageEl(msg.id)?.replaceWith(messageEl(updated as Message));
-      },
-      () => {
-        // 403/404/rede: restaura o original, se o broadcast já não o refez
-        if (container.isConnected) container.replaceWith(messageEl(msg));
-      },
-    );
-  });
+      body: JSON.stringify({ content }),
+    }) as Promise<Message>,
+  deleteMessage: (m) =>
+    api(`/api/channels/${m.channel_id}/messages/${m.id}`, { method: "DELETE" }).then(() => undefined),
+};
+
+/** todo call site de mensagem precisa do mesmo contexto + actions */
+function renderMsg(m: Message, pending = false): HTMLElement {
+  return messageEl(m, ui, msgActions, pending);
 }
 
-function confirmDelete(msg: Message): void {
-  if (!confirm("Apagar esta mensagem?")) return;
-  void api(`/api/channels/${msg.channel_id}/messages/${msg.id}`, { method: "DELETE" })
-    .then(() => findMessageEl(msg.id)?.remove())
-    .catch(() => {
-      // 403/404/rede: a mensagem fica; o estado real volta pelo broadcast
-    });
+function renderTypingBar(): void {
+  const cid = state.currentChannel;
+  renderTyping(el.typing, ui, cid === null ? [] : typingTracker.typers(cid));
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +309,10 @@ function confirmDelete(msg: Message): void {
 async function selectChannel(channelId: string): Promise<void> {
   state.currentChannel = channelId;
   renderChannels();
-  renderTyping(); // troca a barra para os digitadores DESTE canal (ou nada)
+  renderChannelHead(ui); // header + document.title
+  setComposerChannel(state.channels.find((c) => c.id === channelId)?.name ?? null);
+  focusComposer(); // trocou de canal: o cursor já fica pronto para digitar
+  renderTypingBar(); // troca a barra para os digitadores DESTE canal (ou nada)
   view = { channelId, reachedStart: true, loadingOlder: false, detachedBottom: false, resyncing: false };
   // DOM e pendências do canal anterior somem JÁ: se o fetch abaixo falhar, uma
   // lista vazia é honesta — a antiga viraria timeline mista com o canal novo
@@ -500,12 +345,16 @@ async function loadLatest(channelId: string): Promise<void> {
     v.reachedStart = history.length < PAGE_SIZE;
     v.detachedBottom = false;
     history.reverse();
-    el.messages.replaceChildren(...history.map((m) => messageEl(m)));
+    el.messages.replaceChildren(...history.map((m) => renderMsg(m)));
     // drena o que chegou pelo gateway durante o fetch e não veio no snapshot
     for (const m of resyncBuffer) {
-      if (m.channel_id === channelId && findMessageEl(m.id) === null) el.messages.append(messageEl(m));
+      if (m.channel_id === channelId && findMessageEl(el.messages, m.id) === null) el.messages.append(renderMsg(m));
     }
     resyncBuffer = [];
+    // agrupamento e separadores de data só existem em RELAÇÃO ao vizinho: o
+    // lote inteiro entrou solto, então a passada vem agora — e ANTES do
+    // scroll, que depende das alturas finais
+    regroupAll(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
   } catch {
     if (v === view && state.currentChannel === channelId && el.messages.childElementCount === 0) {
@@ -542,15 +391,18 @@ async function maybeLoadOlder(): Promise<void> {
     // um resync (loadLatest) trocou o DOM durante o fetch: o cursor sumiu e
     // prependar aqui costuraria um trecho antigo num DOM novo — buraco na
     // timeline E reachedStart falso (achado nº 1 da revisão do M2)
-    if (findMessageEl(before) === null) return;
+    if (findMessageEl(el.messages, before) === null) return;
     if (older.length < PAGE_SIZE) v.reachedStart = true; // acabou o histórico: para de pedir
     if (older.length > 0) {
       const prevHeight = el.messages.scrollHeight;
       const frag = document.createDocumentFragment();
       older.reverse();
-      for (const m of older) frag.append(messageEl(m));
+      for (const m of older) frag.append(renderMsg(m));
       el.messages.prepend(frag);
-      // tudo que cresceu acima do viewport vira delta — o texto sob os olhos não se move
+      // OBRIGATORIAMENTE entre o prepend e o delta de scroll: as mensagens que
+      // chegaram ganham avatar/separador e a antiga primeira PERDE os dela —
+      // medir a altura antes disso faria o texto sob os olhos pular
+      regroupAll(el.messages);
       el.messages.scrollTop += el.messages.scrollHeight - prevHeight;
       trimBottom(v);
     }
@@ -576,6 +428,10 @@ function trimTop(v: PaginationView): void {
   const prevHeight = el.messages.scrollHeight;
   const prevTop = el.messages.scrollTop;
   while (el.messages.childElementCount > MAX_RENDERED) el.messages.firstElementChild?.remove();
+  // quem virou a primeira do DOM era continuação de um bloco que não existe
+  // mais: precisa recuperar avatar, nome e separador de data (antes de medir
+  // a altura, que é o que compensa o scroll)
+  regroupAt(el.messages.firstElementChild);
   // compensa o que sumiu acima, senão o conteúdo visível pula para cima
   el.messages.scrollTop = prevTop - (prevHeight - el.messages.scrollHeight);
   // o que saiu do DOM volta a ser "histórico acima da janela": pode pedir de novo
@@ -683,9 +539,10 @@ function onDispatch(t: DispatchName, d: unknown): void {
       if (v.channel_id !== null) state.voiceStates.set(v.user_id, v);
     }
     state.speaking = new Map(); // "quem fala" não vem no snapshot; o próximo VOICE_SPEAKING repõe
-    renderMe(ready.user);
+    renderUserPanel(ui);
     renderChannels();
-    renderMembers();
+    renderChannelHead(ui); // a lista de canais só existe a partir daqui
+    renderMembers(ui);
     renderVoiceFooter();
     // READY = sessão NOVA (re-Identify): o estado de voz da sessão antiga
     // morreu no servidor — se estávamos em voz, re-join limpo, mídia zerada
@@ -758,7 +615,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
   if (t === "VOICE_SPEAKING") {
     const s = d as { channel_id: string; speaking: string[] };
     state.speaking.set(s.channel_id, new Set(s.speaking));
-    renderChannels(); // só os anéis mudam, mas re-render completo é barato nesta escala
+    updateSpeaking(ui); // chega a cada ~200 ms: só alterna a classe, sem recriar a lista
     return;
   }
   if (t === "MESSAGE_CREATE") {
@@ -769,7 +626,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
       // fallback para MEMBER_ADD perdido fora da janela de Resume; o evento
       // real substitui este placeholder quando (re)chegar
       state.members.set(msg.author_id, { id: msg.author_id, username: `user-${msg.author_id.slice(-4)}`, avatar_url: null });
-      renderMembers();
+      renderMembers(ui);
     }
     if (msg.channel_id !== state.currentChannel) return;
     // resync em voo: o snapshot pode não conter esta mensagem e o
@@ -781,7 +638,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
     // fundo fora da janela de DOM: append viraria buraco na timeline — o
     // loadLatest do retorno ao fundo traz esta mensagem junto
     if (view.detachedBottom) return;
-    if (findMessageEl(msg.id) !== null) return; // dedup: loadLatest × Dispatch podem se cruzar
+    if (findMessageEl(el.messages, msg.id) !== null) return; // dedup: loadLatest × Dispatch podem se cruzar
     const pendingEl = msg.nonce ? state.pending.get(msg.nonce) : undefined;
     // decidido ANTES do append (que muda o scrollHeight): cola no fundo quem
     // já estava perto dele, ou quem acabou de enviar NESTA aba (reconciliação
@@ -789,12 +646,16 @@ function onDispatch(t: DispatchName, d: unknown): void {
     const stick = nearBottom() || (pendingEl !== undefined && pendingEl.isConnected);
     if (pendingEl !== undefined && pendingEl.isConnected) {
       state.pending.delete(msg.nonce!);
-      pendingEl.replaceWith(messageEl(msg));
+      const fresh = renderMsg(msg);
+      pendingEl.replaceWith(fresh);
+      regroupAt(fresh);
     } else {
       // pending que saiu do DOM (troca de canal ida-e-volta, trim) não pode
       // engolir a mensagem real: cai no append normal
       if (pendingEl !== undefined) state.pending.delete(msg.nonce!);
-      el.messages.append(messageEl(msg));
+      const fresh = renderMsg(msg);
+      el.messages.append(fresh);
+      regroupAt(fresh); // continua (ou não) o bloco de quem já estava no fim
       trimTop(view);
     }
     if (stick) el.messages.scrollTop = el.messages.scrollHeight;
@@ -804,24 +665,25 @@ function onDispatch(t: DispatchName, d: unknown): void {
     const msg = d as Message;
     if (msg.channel_id !== state.currentChannel) return;
     // fora da janela de DOM (histórico não carregado ou fundo trimado) não há o que trocar
-    const current = findMessageEl(msg.id);
+    const current = findMessageEl(el.messages, msg.id);
     if (current === null) return;
     // editor inline aberto NESTA mensagem: substituir o nó jogaria fora o
     // rascunho digitado — troca o nó mas reabre a edição com o texto preservado
-    const draft = current.querySelector<HTMLInputElement>(".edit-input")?.value ?? null;
-    const fresh = messageEl(msg);
+    const draft = editDraftOf(current);
+    const fresh = renderMsg(msg);
     current.replaceWith(fresh);
-    if (draft !== null) {
-      startEdit(fresh, msg);
-      const input = fresh.querySelector<HTMLInputElement>(".edit-input");
-      if (input) input.value = draft;
-    }
+    regroupAt(fresh);
+    regroupAt(fresh.nextElementSibling); // o vizinho de baixo pode ter mudado de bloco
+    if (draft !== null) startEdit(fresh, msg, ui, msgActions, draft);
     return;
   }
   if (t === "MESSAGE_DELETE") {
     const del = d as { id: string; channel_id: string };
     if (del.channel_id !== state.currentChannel) return;
-    findMessageEl(del.id)?.remove();
+    const gone = findMessageEl(el.messages, del.id);
+    const next = gone?.nextElementSibling ?? null;
+    gone?.remove();
+    regroupAt(next); // quem estava abaixo pode virar o início do bloco
     return;
   }
   if (t === "TYPING_START") {
@@ -833,15 +695,16 @@ function onDispatch(t: DispatchName, d: unknown): void {
   if (t === "MEMBER_ADD") {
     const user = d as User;
     state.members.set(user.id, user); // substitui o placeholder "user-XXXX", se havia
-    renderMembers();
-    renderTyping(); // um "?" na barra pode virar o nome real
+    renderMembers(ui);
+    renderTypingBar(); // "Usuário desconhecido" na barra pode virar o nome real
     return;
   }
   if (t === "PRESENCE_UPDATE") {
     const p = d as { user_id: string; online: boolean };
     if (p.online) state.online.add(p.user_id);
     else state.online.delete(p.user_id);
-    renderMembers();
+    renderMembers(ui);
+    renderUserPanel(ui); // a bolinha de status do painel do usuário é minha presença
   }
 }
 
@@ -856,7 +719,7 @@ function startGateway(): void {
   // um close tardio ("offline") que não deve sobrescrever o status da nova
   const gw: AuthGateway = new AuthGateway(GATEWAY, token, {
     status: (s) => {
-      if (gw === currentGateway) setStatus(s);
+      if (gw === currentGateway) setConnectionStatus(s);
     },
     dispatch: (t, d) => {
       if (gw === currentGateway) onDispatch(t, d);
@@ -881,7 +744,7 @@ async function onGatewayAuthFailed(gw: AuthGateway): Promise<void> {
   }
   // transitório: reconectar já repetiria o 4004 num loop quente — espera e
   // tenta o ciclo inteiro de novo (o guard mata a retentativa se houve logout)
-  setStatus("offline");
+  setConnectionStatus("offline");
   setTimeout(() => {
     if (gw === currentGateway) void onGatewayRetry();
   }, 5000);
@@ -924,6 +787,83 @@ const voice = new VoiceClient((m, p) => {
 });
 
 /**
+ * O contexto que os módulos de ui/ enxergam (M7). Nasce aqui, depois do
+ * VoiceClient, porque metade dos getters vem dele.
+ *
+ * Os campos são GETTERS de propósito: o objeto é criado UMA vez e entregue no
+ * mount, mas cada render precisa ler o estado do instante — um snapshot por
+ * chamada devolveria a lista de canais do boot para sempre.
+ */
+const ui: SidebarContext = {
+  state: {
+    get me() {
+      return state.me;
+    },
+    get channels() {
+      return state.channels;
+    },
+    get members() {
+      return state.members;
+    },
+    get online() {
+      return state.online;
+    },
+    get currentChannel() {
+      return state.currentChannel;
+    },
+    get voiceStates() {
+      return state.voiceStates;
+    },
+    get speaking() {
+      return state.speaking;
+    },
+    get voiceChannelId() {
+      return voice.channelId;
+    },
+    get selfMute() {
+      return voice.muted;
+    },
+    get selfDeaf() {
+      return voice.deafened;
+    },
+    get watchingUserId() {
+      return voice.watchingUserId;
+    },
+  },
+  voice: {
+    get connected() {
+      return voice.connected;
+    },
+    get cameraOn() {
+      return voice.cameraOn;
+    },
+    get streamOn() {
+      return voice.streamOn;
+    },
+  },
+  actions: {
+    selectChannel: (id) => void selectChannel(id),
+    joinVoice: (id) => void joinVoice(id),
+    leaveVoice: () => void voice.leave(),
+    // seguros fora da call: applyMute() protege com track != null e pushState()
+    // sai cedo sem canal — mutar antes de entrar VALE para o próximo join
+    toggleMute: () => void voice.toggleMute(),
+    toggleDeafen: () => void voice.toggleDeafen(),
+    watchStream: (userId) => {
+      const producerId = voice.streamProducerIdOf(userId);
+      if (producerId === null) return; // anúncio ainda em trânsito — clique de novo
+      void voice.watchStream(producerId, userId).catch((err: unknown) => {
+        console.warn("voz: falha ao assistir a transmissão", err);
+        flashVoiceError("não foi possível assistir a esta transmissão"); // rev. M5 #2
+      });
+    },
+    stopWatching: () => voice.stopWatching(),
+    logout: () => void doLogout(),
+  },
+};
+mountSidebar(ui);
+
+/**
  * Sons de join/leave (M6, doc §8): tocam quando ALGUÉM (inclusive eu) entra
  * ou sai do MEU canal de voz — web e desktop. Deafen silencia tudo, sons de
  * UI inclusive. Os movimentos dos OUTROS saem do VOICE_STATE_UPDATE; os MEUS
@@ -950,6 +890,7 @@ voice.onChange = () => {
 function renderVoiceUi(): void {
   renderChannels(); // as listas de participantes moram sob os canais de voz
   renderVoiceFooter();
+  renderUserPanel(ui); // mic/fone do painel do usuário espelham o estado de voz
   renderVideoGrid(); // câmera ligada/desligada e teardown mexem nos tiles (M4)
   renderStreamPanel(); // nome do streamer/visibilidade do painel assistido (M5)
 }
@@ -982,34 +923,6 @@ function flashVoiceError(msg: string): void {
   }, 4000);
 }
 
-function renderVoiceFooter(): void {
-  const cid = voice.channelId;
-  if (cid === null) {
-    el.voiceFooter.hidden = true;
-    return;
-  }
-  el.voiceFooter.hidden = false;
-  el.voiceFooter.classList.toggle("connecting", !voice.connected);
-  el.voiceFooterStatus.textContent = voice.connected ? "Voz conectada" : "Conectando voz…";
-  el.voiceFooterChannel.textContent = "#" + (state.channels.find((c) => c.id === cid)?.name ?? "?");
-  el.voiceMute.textContent = voice.muted ? "🔇" : "🎙️";
-  el.voiceMute.title = voice.muted ? "Desmutar" : "Mutar";
-  el.voiceMute.classList.toggle("on", voice.muted);
-  el.voiceDeafen.textContent = voice.deafened ? "🔕" : "🎧";
-  el.voiceDeafen.title = voice.deafened ? "Voltar a ouvir" : "Ensurdecer";
-  el.voiceDeafen.classList.toggle("on", voice.deafened);
-  // câmera (M4): mesmo padrão .on dos vizinhos — ligada grita de propósito
-  el.voiceCamera.title = voice.cameraOn ? "Desligar câmera" : "Ligar câmera";
-  el.voiceCamera.classList.toggle("on", voice.cameraOn);
-  // transmitir (M5): idem — o badge AO VIVO ao lado do próprio nome vem do
-  // self_stream (VOICE_STATE_UPDATE), não deste botão
-  el.voiceStream.title = voice.streamOn ? "Parar transmissão" : "Transmitir tela";
-  el.voiceStream.classList.toggle("on", voice.streamOn);
-}
-
-el.voiceMute.addEventListener("click", () => void voice.toggleMute());
-el.voiceDeafen.addEventListener("click", () => void voice.toggleDeafen());
-el.voiceLeave.addEventListener("click", () => void voice.leave());
 el.voiceCamera.addEventListener("click", () => {
   // getUserMedia negado, servidor recusou, voz caindo: só registra — o estado
   // visível (botão/preview) já foi zerado pelo próprio toggleCamera
@@ -1382,53 +1295,63 @@ el.streamUnmute.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Composer (render otimista do M0 + typing do M2)
+// Composer (render otimista do M0 + typing do M2). O campo em si — textarea
+// que cresce, Enter/Shift+Enter, contador do limite — é de ui/composer; aqui
+// fica só o que o componente não pode saber: paginação, nonce e rede.
 // ---------------------------------------------------------------------------
 
-el.input.addEventListener("input", () => {
-  // só texto de verdade conta como "digitando" (colar espaço/apagar tudo, não)
-  if (state.currentChannel === null || el.input.value.trim() === "") return;
-  typingSender.typed(state.currentChannel);
-});
+mountComposer({
+  onTyping: () => {
+    if (state.currentChannel === null) return;
+    typingSender.typed(state.currentChannel);
+  },
+  onSubmit: (content) => {
+    // sem canal (janela entre o startApp e o READY, ou boot com gateway fora)
+    // o composer JÁ limpou o campo — devolver o texto é o contrato dele, e o
+    // mesmo que os dois catch de rede abaixo fazem. Sem isto a frase digitada
+    // desaparece sem enviar e sem aviso (revisão M7 #1).
+    if (state.currentChannel === null || state.me === null) {
+      setComposerValue(content);
+      return;
+    }
+    const channelId = state.currentChannel;
+    const me = state.me;
+    typingSender.sent(channelId); // enviar encerra a "sessão de digitação" do throttle
 
-el.composer.addEventListener("submit", (ev) => {
-  ev.preventDefault();
-  const content = el.input.value.trim();
-  if (!content || !state.currentChannel || !state.me) return;
-  const channelId = state.currentChannel;
-  el.input.value = "";
-  typingSender.sent(channelId); // enviar encerra a "sessão de digitação" do throttle
+    if (view.detachedBottom && view.channelId === channelId) {
+      // fundo fora da janela de DOM: não há onde ancorar o render otimista —
+      // envia sem nonce e recarrega o final (o dedup por data-id segura o
+      // cruzamento entre o reload e o Dispatch)
+      void api(`/api/channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ content }) })
+        .then(() => loadLatest(channelId))
+        .catch(() => {
+          setComposerValue(content); // devolve o texto para retry manual
+        });
+      return;
+    }
 
-  if (view.detachedBottom && view.channelId === channelId) {
-    // fundo fora da janela de DOM: não há onde ancorar o render otimista —
-    // envia sem nonce e recarrega o final (o dedup por data-id segura o
-    // cruzamento entre o reload e o Dispatch)
-    void api(`/api/channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ content }) })
-      .then(() => loadLatest(channelId))
-      .catch(() => {
-        el.input.value = content; // devolve o texto para retry manual
-      });
-    return;
-  }
+    // render otimista (doc §8): aparece já, reconcilia quando o Dispatch voltar
+    const nonce = crypto.randomUUID();
+    const pending = renderMsg(
+      { id: nonce, channel_id: channelId, author_id: me.id, content, created_at: Date.now() },
+      true,
+    );
+    state.pending.set(nonce, pending);
+    el.messages.append(pending);
+    regroupAt(pending); // continua o bloco de quem enviou a anterior
+    el.messages.scrollTop = el.messages.scrollHeight;
 
-  // render otimista (doc §8): aparece já, reconcilia quando o Dispatch voltar
-  const nonce = crypto.randomUUID();
-  const pending = messageEl(
-    { id: nonce, channel_id: channelId, author_id: state.me.id, content, created_at: Date.now() },
-    true,
-  );
-  state.pending.set(nonce, pending);
-  el.messages.append(pending);
-  el.messages.scrollTop = el.messages.scrollHeight;
-
-  void api(`/api/channels/${channelId}/messages`, {
-    method: "POST",
-    body: JSON.stringify({ content, nonce }),
-  }).catch(() => {
-    pending.remove();
-    state.pending.delete(nonce);
-    el.input.value = content; // devolve o texto para retry manual
-  });
+    void api(`/api/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ content, nonce }),
+    }).catch(() => {
+      const next = pending.nextElementSibling;
+      pending.remove();
+      regroupAt(next);
+      state.pending.delete(nonce);
+      setComposerValue(content); // devolve o texto para retry manual
+    });
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -1469,7 +1392,9 @@ el.devForm.addEventListener("submit", (ev) => {
   );
 });
 
-el.logout.addEventListener("click", () => void doLogout());
+
+// header do canal, faixa de conexão e o botão de esconder a lista de membros
+mountChrome();
 
 async function boot(): Promise<void> {
   // desktop (M6): hidrata o cache de segredos ANTES de qualquer getAccessToken

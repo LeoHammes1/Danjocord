@@ -1,0 +1,271 @@
+/* "Cromo" do app: a moldura que não é lista nem mensagem — coluna de guilds,
+   header do canal, indicador de digitação e composer.
+   Fora deste arquivo: #channels, #members, #user-panel e #voice-footer
+   (sidebar.css / members.css) e as mensagens (chat.css). */
+
+/* --- coluna de guilds --------------------------------------------------- */
+#guilds {
+  background: var(--bg-guilds);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+  overflow-y: auto;
+}
+
+/* o pill do Discord: círculo em repouso, quadrado arredondado quando ativo
+   ou sob o cursor. A transição do raio é o efeito inteiro — é ela que dá a
+   sensação de "o ícone se acomodando" ao ser escolhido. */
+#guild-home {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-full);
+  background: var(--bg-sidebar);
+  color: var(--text-strong);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  transition:
+    border-radius var(--t-med),
+    background-color var(--t-med);
+}
+#guild-home:hover,
+#guild-home[aria-current="true"] {
+  border-radius: var(--r-md);
+  background: var(--brand);
+}
+
+/* barrinha branca de seleção, à esquerda do pill: cresce no hover, cresce
+   mais quando a guild está aberta. Vive num ::before para não entrar no
+   fluxo (o pill continua centralizado na coluna de 72px). */
+#guild-home::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 0;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--text-strong);
+  transition: height var(--t-med);
+}
+#guild-home:hover::before {
+  height: 20px;
+}
+#guild-home[aria-current="true"]::before {
+  height: 40px;
+}
+
+/* --- header do canal ---------------------------------------------------- */
+#channel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4);
+  background: var(--bg-chat);
+  border-bottom: 1px solid var(--line);
+  /* a sombra precisa cair SOBRE a área de mensagens — daí o z-index (irmãos
+     de grid empilham na ordem do documento, e #messages vem depois) */
+  box-shadow: var(--shadow-low);
+  position: relative;
+  z-index: 1;
+}
+
+#channel-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+#channel-name {
+  flex: none;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+
+#channel-topic {
+  min-width: 0;
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* sem tópico não há divisor solto no meio do header */
+#channel-topic:empty {
+  display: none;
+}
+
+#head-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+/* Estado do gateway: um PONTO, não uma pill de texto. O sinal forte de uma
+   queda é a .conn-bar abaixo; aqui fica só o estado permanente, para quem
+   quiser conferir de relance (o texto vive no `title`, e o ui/chrome.ts marca
+   o elemento como aria-hidden — quem anuncia é a faixa). */
+#status {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-left: var(--sp-2);
+  border-radius: var(--r-full);
+  background: var(--text-faint);
+  transition: background-color var(--t-fast);
+}
+/* o ui/chrome.ts troca o className inteiro deste elemento — nada de classe
+   permanente no HTML aqui */
+#status.online {
+  background: var(--ok);
+}
+#status.offline {
+  background: var(--danger);
+}
+
+/* --- faixa de conexão ---------------------------------------------------
+   Criada em JS pelo ui/chrome.ts (o index.html tem dono único), filha do #app.
+
+   `position: fixed` é o que a mantém FORA do grid de quatro colunas: item fora
+   de fluxo não vira grid item, então a faixa não precisa de uma grid-area nem
+   empurra linha nenhuma. A posição sai das variáveis --col-* do #app, que as
+   media queries já zeram — a faixa acompanha sem media query própria. O 48px é
+   a altura da linha do header (grid-template-rows do layout.css).
+
+   Ela desliza para dentro: transform + visibility (que "transiciona" em degrau)
+   é o par que esconde o elemento DEPOIS da animação de saída, sem [hidden] —
+   com display:none não haveria transição nenhuma. */
+.conn-bar {
+  position: fixed;
+  top: 48px;
+  left: calc(var(--col-guilds) + var(--col-side));
+  right: 0;
+  z-index: 2;
+  padding: var(--sp-1) var(--sp-4);
+  text-align: center;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  /* texto escuro sobre a cor de estado: em amarelo e verde o branco não passa
+     de contraste, o quase-preto passa nos três */
+  color: var(--bg-guilds);
+  background: var(--bg-elevated);
+  /* a faixa é aviso, não controle: nunca rouba um clique das mensagens */
+  pointer-events: none;
+  visibility: hidden;
+  transform: translateY(-100%);
+  transition:
+    transform var(--t-med),
+    visibility var(--t-med);
+}
+.conn-bar.on {
+  visibility: visible;
+  transform: none;
+}
+.conn-bar.warn {
+  background: var(--warn);
+}
+.conn-bar.danger {
+  background: var(--danger);
+}
+.conn-bar.ok {
+  background: var(--ok);
+}
+
+/* --- digitando ---------------------------------------------------------
+   min-height reserva a linha: o indicador aparece/some sem empurrar as
+   mensagens (um pulo de layout bem na hora de ler seria pior que o vão). */
+#typing {
+  min-height: 20px;
+  padding: 0 var(--sp-4);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* --- composer ----------------------------------------------------------
+   O bloco arredondado inteiro É o campo; a textarea por dentro não tem
+   borda nem fundo próprios. */
+#composer {
+  margin: 0 var(--sp-4) var(--sp-4);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  background: var(--bg-input);
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-3);
+}
+/* o foco é do bloco, não da textarea — senão o anel apareceria por dentro
+   da caixa, contornando um campo invisível */
+#composer:focus-within {
+  outline: 2px solid var(--text-link);
+  outline-offset: 2px;
+}
+
+#input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  resize: none;
+  color: var(--text-normal);
+  padding: 11px 0;
+  /* altura e overflow são inline, escritos pelo ui/composer.ts: o teto do
+     auto-resize é metade da ÁREA DE MENSAGENS (que muda com os painéis de
+     vídeo/stream), e isso o CSS sozinho não sabe medir */
+  overflow-y: hidden;
+}
+#input::placeholder {
+  color: var(--text-faint);
+}
+#input:focus-visible {
+  outline: none;
+}
+
+/* contador do limite: só aparece nos últimos 10% (o ui/composer.ts tira o
+   [hidden]), e vira --danger quando o texto passa do que o servidor aceita */
+.composer-count {
+  flex: none;
+  align-self: flex-end;
+  margin-bottom: 12px;
+  font-size: var(--fs-xs);
+  /* dígitos de mesma largura: sem isto o número balança a cada tecla */
+  font-variant-numeric: tabular-nums;
+  color: var(--warn);
+}
+.composer-count.over {
+  color: var(--danger);
+}
+
+#composer button[type="submit"] {
+  flex: none;
+  height: 32px;
+  margin-bottom: 5px;
+  padding: 0 var(--sp-4);
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+#composer button[type="submit"]:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+/* estourou o limite: o botão continua na tela (o texto está lá, é só cortar),
+   mas não aceita clique */
+#composer button[type="submit"]:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-faint);
+  cursor: default;
+}

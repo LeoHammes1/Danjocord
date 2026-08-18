@@ -1,0 +1,181 @@
+/* Dono: agente da LISTA DE MEMBROS (#members e suas seções).
+
+   O arquivo tem DUAS partes:
+     1. o avatar (ui/avatar.ts) — COMPARTILHADO com a sidebar e com o chat;
+     2. a coluna de membros propriamente dita.
+   O avatar mora aqui porque o módulo que o desenha nasceu neste pacote; quem
+   consumir avatarEl()/avatarColor() em outro componente não precisa importar
+   nada de CSS — o index.css já carrega este arquivo para todo mundo. */
+
+/* =========================================================================
+   1. AVATAR (compartilhado)
+   ========================================================================= */
+
+/* Paleta do avatar sem foto, indexada pelo hash do id (ui/avatar.ts).
+   Não está no tokens.css porque não é um token semântico — é uma tabela de
+   6 cores sem significado individual, e porque aquele arquivo tem outro dono.
+   Se um dia virar token, o nome pode ficar igual e nada aqui muda.
+   Todas foram escolhidas para funcionar como TEXTO sobre --bg-sidebar e
+   --bg-chat: o nome do autor da mensagem usa a mesma cor do avatar. */
+:root {
+  --av-c0: #7f9bec;
+  --av-c1: #4fc38a;
+  --av-c2: #e8a33d;
+  --av-c3: #ef7ab8;
+  --av-c4: #a992f0;
+  --av-c5: #46c5e8;
+}
+
+/* Invólucro: existe para a bolinha de presença ter um pai posicionado. O
+   tamanho vem de --avatar-size, que o próprio avatarEl() escreve inline. */
+.av {
+  --dot: calc(var(--avatar-size, 32px) * 0.34);
+  position: relative;
+  flex: none;
+  display: block;
+  width: var(--avatar-size, 32px);
+  height: var(--avatar-size, 32px);
+}
+
+/* O jeito do Discord: a bolinha NÃO fica por cima do avatar — ela come um
+   pedaço dele. Um buraco de verdade (máscara) em vez de um anel da cor do
+   fundo, porque o fundo muda embaixo do mesmo avatar (a linha tem hover, e a
+   mesma peça é usada sobre --bg-sidebar e --bg-chat): um anel opaco
+   apareceria como um aro cinza fora de lugar em metade dos casos.
+   O 98%/100% é só antialiasing da borda do buraco. */
+.av-cut .avatar {
+  --hole: calc(var(--dot) * 0.5 + 2px);
+  --hole-at: calc(100% - var(--dot) * 0.5);
+  -webkit-mask-image: radial-gradient(circle var(--hole) at var(--hole-at) var(--hole-at), #0000 98%, #000 100%);
+  mask-image: radial-gradient(circle var(--hole) at var(--hole-at) var(--hole-at), #0000 98%, #000 100%);
+}
+
+.av-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: var(--dot);
+  height: var(--dot);
+  border-radius: var(--r-full);
+}
+.av-dot.av-online {
+  background: var(--ok);
+}
+.av-dot.av-offline {
+  background: var(--text-faint);
+}
+
+/* Sem foto: círculo tingido com a inicial. O tingimento (color-mix) resolve
+   um problema chato do "inicial branca sobre cor sólida" — com uma paleta que
+   também serve de cor de texto, o branco sobre o tom âmbar ficava ilegível.
+   Aqui o fundo é a MESMA cor rebaixada e a letra é a cor cheia, então o
+   contraste é o mesmo para as 6 entradas da paleta. */
+.av-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--av, var(--brand)) 24%, var(--bg-elevated));
+  color: var(--av, var(--brand));
+  font-size: calc(var(--avatar-size, 32px) * 0.42);
+  font-weight: var(--fw-semibold);
+  line-height: 1;
+  user-select: none;
+}
+
+/* =========================================================================
+   2. COLUNA DE MEMBROS
+   ========================================================================= */
+
+/* Sem padding horizontal no container: quem tem recuo é cada linha/cabeçalho.
+   Assim o cabeçalho grudado no topo cobre a largura inteira da coluna e nada
+   escorre por baixo dele pelas beiradas ao rolar. */
+#members {
+  padding-bottom: var(--sp-4);
+}
+
+/* position: sticky funciona porque quem rola é o #members-panel (layout.css)
+   e não há overflow no caminho. */
+.members-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--sp-3) var(--sp-4) var(--sp-2);
+  background: var(--bg-sidebar);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+.members-empty {
+  padding: 0 var(--sp-4);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.member-group-head {
+  padding: var(--sp-4) var(--sp-4) var(--sp-1);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.member-list {
+  margin: 0;
+  padding: 0 var(--sp-2);
+  list-style: none;
+}
+
+/* A linha inteira é o botão (o alvo de clique é a linha, não o nome). */
+.member {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--int-normal);
+  text-align: left;
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+
+/* Hover só quando o botão FAZ alguma coisa: enquanto o card de perfil não
+   existe (M10) a linha é `disabled`, e acender uma linha que não abre nada é
+   prometer um clique que não acontece. */
+.member:not(:disabled):hover {
+  background: var(--bg-elevated);
+  color: var(--int-hover);
+}
+.member:disabled {
+  cursor: default;
+}
+
+.member-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-medium);
+}
+
+/* Offline apagado no grupo inteiro (avatar junto), como no Discord: o
+   contraste é o que separa as duas seções à primeira vista, mais que o
+   cabeçalho. */
+.member-group-offline .member {
+  opacity: 0.4;
+}
+
+.member-badge {
+  flex: none;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.4;
+}

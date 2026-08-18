@@ -1,0 +1,16 @@
+/* Ponto de entrada do CSS (importado pelo main.ts). A ORDEM importa: tokens
+   antes de tudo, base antes dos componentes, componentes na ordem em que
+   aparecem na tela. Nenhum arquivo abaixo redefine token nem reseta nada. */
+@import "./tokens.css";
+@import "./base.css";
+@import "./layout.css";
+
+@import "./login.css";
+@import "./chrome.css";
+@import "./media.css";
+
+/* os três abaixo são de outros donos (ver o comentário no topo de cada um) —
+   entram aqui já na fase 1 para o build nunca depender da ordem das fases */
+@import "./sidebar.css";
+@import "./members.css";
+@import "./chat.css";

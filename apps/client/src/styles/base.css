@@ -1,0 +1,172 @@
+/* Reset + primitivas globais. Nada aqui conhece um componente específico. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* o app é uma janela: quem rola são as colunas, nunca o documento */
+  overflow: hidden;
+  background: var(--bg-chat);
+  color: var(--text-normal);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+/* #login e #app têm display próprio (flex/grid), que venceria o [hidden] do UA */
+[hidden] {
+  display: none !important;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/* controles não herdam fonte por padrão — sem isto cada <button> volta a ser
+   Arial 13px do sistema, e a tipografia da tela vira um mosaico */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+a {
+  color: var(--text-link);
+}
+
+img {
+  max-width: 100%;
+}
+
+/* Scrollbars finas em tudo. Chrome/Electron leem ::-webkit-*; o resto lê o
+   par padrão scrollbar-width/color. Track transparente: a barra "flutua"
+   sobre a superfície da coluna, seja ela qual for. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-guilds) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-guilds);
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Foco: visível para quem navega por teclado, invisível para quem clica.
+   :focus-visible resolve isso sozinho — o segundo bloco existe só para os
+   navegadores que ainda desenham o anel de :focus por baixo. */
+:focus-visible {
+  outline: 2px solid var(--text-link);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Texto só para leitor de tela (rótulo de um controle que já tem ícone). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Botão quadrado de ícone — a forma mais repetida da UI (header, rodapé de
+   voz, painel do usuário, ações de mensagem). Fica aqui, e não em cada
+   componente, porque três módulos diferentes a consomem. */
+.icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--int-normal);
+  transition:
+    color var(--t-fast),
+    background-color var(--t-fast);
+}
+.icon-btn:hover {
+  color: var(--int-hover);
+  background: var(--bg-elevated);
+}
+.icon-btn[aria-pressed="true"],
+.icon-btn[aria-expanded="true"] {
+  color: var(--int-active);
+}
+/* estado "ligado e perigoso" (mute, ensurdecer, parar transmissão) */
+.icon-btn.danger,
+.icon-btn.danger:hover {
+  color: var(--danger);
+}
+.icon-btn svg {
+  display: block;
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Avatar redondo. Mesma razão do .icon-btn para morar aqui: painel do
+   usuário, lista de voz, lista de membros e as mensagens desenham o MESMO
+   círculo em tamanhos diferentes. O tamanho vem de --avatar-size, que cada
+   consumidor define no próprio contexto. Sem esta regra um avatar do CDN do
+   Discord entra na página no tamanho original (1024px). */
+.avatar {
+  flex: none;
+  width: var(--avatar-size, 32px);
+  height: var(--avatar-size, 32px);
+  border-radius: var(--r-full);
+  object-fit: cover;
+  background: var(--bg-elevated);
+}
+
+/* Quem pede menos movimento recebe menos movimento — zerar aqui, uma vez, é
+   o que permite os outros arquivos usarem transition sem pensar no assunto. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    /* sem isto, animação `infinite` (os pontinhos de "digitando") só fica
+       0.01ms POR CICLO e continua girando para sempre (revisão M7 #4) */
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}

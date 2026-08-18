@@ -1,0 +1,282 @@
+/* Dono: agente do CHAT (mensagens dentro de #messages, agrupamento, edição).
+
+   O grid/scroll do #messages é do layout.css (inclusive o overflow-anchor, que
+   a paginação do M2 depende — não sobrescrever). Aqui fica só o que está
+   DENTRO: o bloco de mensagem, o separador de data, a barra de ações, a caixa
+   de edição e o indicador de digitação (o texto é escrito pelo ui/messages.ts;
+   #typing em si é do chrome.css).
+
+   Estrutura que o ui/messages.ts monta:
+
+     .msg[.pending][.msg--day][.msg--cont]
+       .msg-sep > .msg-sep-label          (só visível com .msg--day)
+       .msg-row                            (a linha que acende no hover)
+         .msg-gutter  > .msg-avatar + .msg-minitime
+         .msg-body    > .msg-head (.msg-author + .msg-time) + .msg-content
+         .msg-actions > botões
+
+   As duas classes de estado NÃO trocam nós, só escondem: `--day` mostra o
+   separador, `--cont` colapsa avatar e cabeçalho. É o que deixa o regroupAt
+   (chamado a cada prepend/append/trim da janela de DOM) ser barato. */
+
+#messages {
+  padding: var(--sp-4) 0 var(--sp-5);
+  background: var(--bg-chat);
+}
+
+/* --- a linha ------------------------------------------------------------ */
+
+.msg-row {
+  /* âncora da barra de ações, que flutua sobre a borda de cima */
+  position: relative;
+  display: grid;
+  /* a gutter é FIXA: o horário da continuação entra e sai no hover e o texto
+     não pode andar por causa disso. 56px = avatar de 40 + 16 de respiro. */
+  grid-template-columns: 56px minmax(0, 1fr);
+  padding: 2px var(--sp-4);
+  transition: background-color var(--t-fast);
+}
+/* a linha inteira acende (e não só um cantinho com os botões) */
+.msg-row:hover,
+.msg-row:focus-within {
+  background: var(--bg-elevated);
+}
+
+/* respiro entre blocos: como padding (e não margin) para o realce do hover
+   cobrir o vão — no Discord o bloco inteiro acende junto */
+.msg:not(.msg--cont) .msg-row {
+  padding-top: var(--sp-3);
+}
+
+.msg.pending {
+  opacity: 0.5;
+}
+
+/* --- gutter: avatar OU horário no hover --------------------------------- */
+
+/* o avatar em si (tamanho, fallback, cor) é do ui/avatar.ts + members.css:
+   aqui só o que é do bloco de mensagem — o recuo e o sumiço na continuação */
+.msg-avatar {
+  margin-top: 2px;
+}
+.msg--cont .msg-avatar {
+  display: none;
+}
+
+.msg-minitime {
+  display: none;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+/* só na continuação, e só no hover/foco: visibility (não display) para o
+   horário não empurrar nada ao aparecer */
+.msg--cont .msg-minitime {
+  display: block;
+  visibility: hidden;
+  padding-right: var(--sp-3);
+  text-align: right;
+  /* alinha a base do horário com a primeira linha do texto ao lado */
+  line-height: 22px;
+}
+.msg--cont .msg-row:hover .msg-minitime,
+.msg--cont .msg-row:focus-within .msg-minitime {
+  visibility: visible;
+}
+
+/* --- corpo -------------------------------------------------------------- */
+
+.msg-body {
+  min-width: 0; /* sem isto uma URL comprida estoura a coluna do grid */
+}
+
+.msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+/* Continuação: o cabeçalho sai da tela mas NÃO do documento — quem usa leitor
+   de tela continua ouvindo de quem é cada mensagem (é o mesmo recorte do
+   .sr-only do base.css, aplicado por estado em vez de por classe fixa). */
+.msg--cont .msg-head {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.msg-author {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  /* a cor vem inline (avatarColor por id); o fallback é para o autor
+     desconhecido, que não tem cor própria */
+  color: var(--text-strong);
+}
+.msg-author-unknown {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.msg-time {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+.msg-content {
+  font-size: var(--fs-md);
+  line-height: 22px;
+  color: var(--text-normal);
+  /* o composer virou <textarea> no M7: mensagem com quebra de linha precisa
+     chegar quebrada na tela */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-edited {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* --- barra de ações ------------------------------------------------------
+   Flutua sobre a borda superior direita, como no Discord: em cima da linha
+   anterior, não dentro desta (a linha não reserva espaço para ela).
+
+   Aparece com opacity — e não com display:none, como no M2. Botão invisível
+   por display continua invisível para o Tab, e o :focus-within nunca
+   dispararia: quem navega por teclado não teria como editar nem apagar. O
+   preço é que os botões ficam na ordem de tabulação o tempo todo. */
+.msg-actions {
+  position: absolute;
+  top: -14px;
+  right: var(--sp-4);
+  display: flex;
+  padding: 2px;
+  background: var(--bg-chat);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-low);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.msg-row:hover .msg-actions,
+.msg-row:focus-within .msg-actions {
+  opacity: 1;
+}
+.msg-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+.msg-actions .msg-action-danger:hover {
+  color: var(--danger);
+  background: var(--bg-elevated);
+}
+
+/* --- separador de data ---------------------------------------------------
+   Mora DENTRO da primeira mensagem do dia (ver o cabeçalho do ui/messages.ts:
+   como irmão ele contaria na janela de DOM e viraria cursor de paginação).
+   As duas linhas são pseudo-elementos, então o rótulo fica centralizado sem
+   truque de fundo por cima de borda. */
+.msg-sep {
+  display: none;
+}
+.msg--day .msg-sep {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-5) var(--sp-4) var(--sp-2);
+}
+.msg-sep::before,
+.msg-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.msg-sep-label {
+  flex: none;
+  padding: 0 var(--sp-1);
+  background: var(--bg-chat);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+/* --- edição inline ------------------------------------------------------ */
+
+.edit-box {
+  display: block;
+  margin: var(--sp-1) 0;
+}
+
+.edit-input {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  border: none;
+  border-radius: var(--r-md);
+  color: var(--text-normal);
+  font-size: var(--fs-md);
+}
+
+.edit-hint {
+  display: block;
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+
+/* --- retry de carregamento (o botão nasce no main.ts, dentro do #messages) */
+
+.load-retry {
+  display: block;
+  margin: var(--sp-5) auto;
+  padding: var(--sp-2) var(--sp-4);
+  background: var(--bg-elevated);
+  border-radius: var(--r-md);
+  /* --text-normal e nao --text-muted: sobre --bg-elevated o muted da 4.05:1,
+     abaixo do AA de 4.5:1 (revisao M7 #2). O realce fica no :hover. */
+  color: var(--text-normal);
+  transition: color var(--t-fast);
+}
+.load-retry:hover {
+  color: var(--text-strong);
+}
+
+/* --- pontinhos do "está digitando…" -------------------------------------
+   O #typing (posição, cor, altura) é do chrome.css; aqui só a animação, que
+   pertence ao mesmo render das mensagens. Os pontos são aria-hidden — o
+   leitor de tela recebe a frase, não o movimento (e o base.css zera a
+   animação para quem pede prefers-reduced-motion). */
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: var(--sp-2);
+}
+.typing-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--text-muted);
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}

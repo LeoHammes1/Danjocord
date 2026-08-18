@@ -1,0 +1,132 @@
+/* Esqueleto do app: quatro colunas fixas + a coluna de conteúdo elástica.
+   Este arquivo só POSICIONA as regiões e diz quem rola; o visual de cada
+   região mora no arquivo do seu dono (chrome.css, sidebar.css, members.css,
+   chat.css, media.css). */
+
+#app {
+  /* as larguras são variáveis para a responsividade poder zerar uma coluna
+     sem reescrever o grid-template-columns inteiro em cada media query */
+  --col-guilds: 72px;
+  --col-side: 240px;
+  --col-members: 240px;
+
+  height: 100vh;
+  display: grid;
+  grid-template-columns: var(--col-guilds) var(--col-side) 1fr var(--col-members);
+  /* as linhas "stream" (M5) e "video" (M4) colapsam a zero quando os painéis
+     estão [hidden] — é o que mantém a área de mensagens ocupando o resto.
+     O header atravessa até a borda direita (como no Discord): a lista de
+     membros começa ABAIXO dele. */
+  grid-template-rows: 48px auto auto 1fr auto auto;
+  grid-template-areas:
+    "guilds side head   head"
+    "guilds side stream members"
+    "guilds side video  members"
+    "guilds side msgs   members"
+    "guilds side typing members"
+    "guilds side form   members";
+}
+
+#guilds {
+  grid-area: guilds;
+}
+
+#sidebar {
+  grid-area: side;
+  background: var(--bg-sidebar);
+  /* coluna: cabeçalho fixo, lista de canais rolando, rodapé de voz e painel
+     do usuário grudados embaixo. min-height 0 é o que autoriza o filho a
+     encolher e ganhar barra própria (sem ele o flex estoura a altura). */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Estrutura interna da sidebar — SÓ quem cresce e quem rola. Cor, espaço e
+   tipografia destes três são do sidebar.css; estão aqui porque sem eles a
+   coluna não fecha: uma lista longa de canais empurraria o painel do usuário
+   para fora da tela. O sidebar.css pode sobrescrever à vontade. */
+#channels {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+#voice-footer,
+#user-panel {
+  flex: none;
+}
+
+#channel-head {
+  grid-area: head;
+}
+
+#stream-panel {
+  grid-area: stream;
+}
+
+#video-panel {
+  grid-area: video;
+}
+
+/* overflow-anchor: a paginação (M2) preserva o ponto de leitura somando o
+   delta de altura no scrollTop; o anchoring nativo faria o ajuste em dobro
+   em alguns navegadores. O visual das mensagens é do chat.css. */
+#messages {
+  grid-area: msgs;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-anchor: none;
+}
+
+#typing {
+  grid-area: typing;
+}
+
+#composer {
+  grid-area: form;
+}
+
+#members-panel {
+  grid-area: members;
+  background: var(--bg-sidebar);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* --- esconder a lista de membros ---------------------------------------
+   Duas vias que não podem brigar: o botão do header põe .hide-members no
+   #app; a media query decide sozinha quando a tela é estreita demais. Por
+   isso o toggle é uma CLASSE e não um [hidden] no elemento — assim a media
+   query continua valendo mesmo com o botão "ligado". */
+#app.hide-members {
+  --col-members: 0px;
+}
+#app.hide-members #members-panel {
+  display: none;
+}
+
+/* ARMADILHA DE CASCATA (achado da verificação do M7): media query NÃO soma
+   especificidade. As colunas são desenhadas em chrome.css e members.css, que
+   entram DEPOIS deste arquivo no index.css — um `#guilds { display: none }`
+   solto aqui perdia para o `#guilds { display: flex }` de lá, e a coluna
+   colapsava para 0px SEM sumir: o pill de 48px vazava por cima da sidebar.
+   Os seletores abaixo são escopados em #app justamente para vencer. */
+@media (max-width: 1100px) {
+  #app {
+    --col-members: 0px;
+  }
+  #app #members-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  #app {
+    --col-guilds: 0px;
+    --col-side: 200px;
+  }
+  #app #guilds {
+    display: none;
+  }
+}

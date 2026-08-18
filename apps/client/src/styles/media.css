@@ -1,0 +1,159 @@
+/* Painéis de mídia: transmissão assistida (M5) e grade de vídeo (M4).
+   O markup destes dois painéis não mudou no M7 — só as cores viraram tokens.
+   Ficam num arquivo próprio (e não no chrome.css) porque são a única parte da
+   UI que responde a estado de MÍDIA, não de navegação. */
+
+/* --- stream (M5): a transmissão ASSISTIDA, acima da grade ---------------
+   maior que a grade (60vh vs 40vh) de propósito: tela é para ser LIDA. */
+#stream-panel {
+  background: var(--bg-chat);
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.stream-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.stream-panel-head h2 {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-panel-actions {
+  flex: none;
+  display: flex;
+  gap: var(--sp-1);
+}
+.stream-panel-actions button {
+  background: var(--bg-elevated);
+  border-radius: var(--r-sm);
+  /* --text-normal e nao --text-muted: sobre --bg-elevated o muted da 4.05:1,
+     abaixo do AA de 4.5:1 (revisao M7 #2). O realce fica no :hover. */
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-3);
+  transition: color var(--t-fast);
+}
+.stream-panel-actions button:hover {
+  color: var(--text-strong);
+}
+/* "Ativar som" só existe quando o autoplay sem mute foi barrado — chama a
+   atenção porque sem o clique o stream fica mudo */
+#stream-unmute,
+#stream-unmute:hover {
+  color: var(--danger);
+}
+
+#stream-box {
+  background: #000; /* letterbox de vídeo: preto de verdade, não superfície */
+  border-radius: var(--r-md);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+/* contain (e não cover, como nos tiles): texto de tela cortado é inútil */
+#stream-box video {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+}
+
+/* --- vídeo (M4): grade de tiles acima da área de mensagens --------------- */
+#video-panel {
+  background: var(--bg-chat);
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.video-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.video-panel-head h2 {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+#video-collapse {
+  background: var(--bg-elevated);
+  border-radius: var(--r-sm);
+  /* --text-normal e nao --text-muted: sobre --bg-elevated o muted da 4.05:1,
+     abaixo do AA de 4.5:1 (revisao M7 #2). O realce fica no :hover. */
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-3);
+  transition: color var(--t-fast);
+}
+#video-collapse:hover {
+  color: var(--text-strong);
+}
+
+#video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-2);
+  /* teto de altura (doc §8): muita gente de câmera aberta rola aqui dentro em
+     vez de esmagar a área de mensagens */
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.video-tile {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.video-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* tile sem <video>: consume recusado por codec incompatível (M4) */
+.video-tile-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--sp-2);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+.video-tile-name {
+  position: absolute;
+  left: var(--sp-2);
+  bottom: var(--sp-2);
+  max-width: calc(100% - var(--sp-4));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-strong);
+  background: var(--bg-overlay);
+  border-radius: var(--r-sm);
+  padding: 1px var(--sp-2);
+}

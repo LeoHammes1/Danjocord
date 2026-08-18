@@ -90,6 +90,34 @@ Release do desktop: tag `v*` → `.github/workflows/desktop-release.yml`
 publicar manualmente); os apps instalados se atualizam via `electron-updater`
 (`checkForUpdatesAndNotify` no ready, só empacotado).
 
+## UI do cliente (M7)
+
+`apps/client` é **TypeScript puro, sem framework** — DOM imperativo. A decisão
+é deliberada (o projeto é para aprender WebRTC, não front) e não se reabre sem
+o Leonardo pedir. A partir do M7 a organização é:
+
+- `src/styles/` — CSS por área, agregado por `index.css` (que define a **ordem**
+  do cascade). `tokens.css` é o único lugar com cor literal; todo o resto usa
+  `var(--…)`. Paleta e escalas espelham o Discord.
+  **Armadilha já paga uma vez**: `@media` não soma especificidade — regra
+  responsiva em `layout.css` perde para regra solta de um arquivo importado
+  depois. Os seletores responsivos são escopados em `#app` por isso.
+- `src/ui/` — um módulo por área (`sidebar`, `members`, `messages`, `chrome`,
+  `composer`, `avatar`, `icons`). Nenhum deles conhece o `state` global nem o
+  `VoiceClient`: tudo entra pelo `UiContext` de `ui/context.ts`, cujos campos
+  são **getters vivos** montados no `main.ts` (um snapshot congelaria o boot).
+- `main.ts` é cola: estado, gateway, paginação e os call sites. Render não
+  mora mais lá.
+- Ícone é SVG inline de `ui/icons.ts` (`fill="currentColor"`), nunca emoji, e
+  nunca via `innerHTML` — o cliente não usa `innerHTML` em lugar nenhum.
+- Botão que reflete estado: o `aria-label` é **invariante** (o objeto:
+  "Microfone") e o estado vai no `aria-pressed`; o verbo fica no `title`.
+
+O agrupamento de mensagens convive com a janela de DOM da paginação: como o
+trim corta nas **duas pontas**, toda inserção e todo trim precisa chamar
+`regroupAt`/`regroupAll` — e, onde há compensação de scroll, **antes** de medir
+a altura. Os comentários nos call sites do `main.ts` dizem em quais.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

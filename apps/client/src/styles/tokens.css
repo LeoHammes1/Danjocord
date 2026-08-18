@@ -1,0 +1,73 @@
+/* Tokens do M7 — a ÚNICA fonte de cor, espaço, tipografia e tempo do cliente.
+   Nenhum arquivo de componente escreve cor literal: se um valor não está aqui,
+   ele não existe. O tema é fixo (escuro) de propósito — tema claro é outra
+   discussão, e um seletor de tema agora só espalharia tokens pela metade.
+
+   O antigo --accent (coral) significava três coisas ao mesmo tempo (ação
+   primária, erro e mute ligado); ele morreu. Ação primária é --brand,
+   erro/destrutivo/mute-ligado é --danger. */
+:root {
+  /* superfícies, do mais escuro ao mais claro — a profundidade é o contrário
+     do que a intuição diz: quanto mais "ao fundo" a coluna, mais escura */
+  --bg-guilds: #1e1f22;
+  --bg-sidebar: #2b2d31;
+  --bg-chat: #313338;
+  --bg-elevated: #383a40;
+  --bg-input: #383a40;
+  --bg-overlay: rgba(0, 0, 0, 0.6);
+
+  /* texto */
+  --text-normal: #dbdee1;
+  --text-muted: #949ba4;
+  --text-faint: #80848e;
+  --text-strong: #f2f3f5;
+  --text-link: #00a8fc;
+
+  /* interativo: os três estados de um item de canal/membro. Um item de lista
+     nunca usa --text-*, usa estes — é o que faz a lista inteira acender junto */
+  --int-normal: #949ba4;
+  --int-hover: #dbdee1;
+  --int-active: #f2f3f5;
+
+  /* marcas */
+  --brand: #5865f2;
+  --brand-hover: #4752c4;
+  --ok: #23a559;
+  --warn: #f0b232;
+  --danger: #f23f42;
+  --line: #1f2023;
+
+  /* espaço: escala de 4 — só estes valores aparecem em padding/gap/margin */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* raio */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 16px;
+  --r-full: 999px;
+
+  /* tipografia (px, não rem: o app é uma janela de tamanho fixo, não um site
+     que precisa acompanhar o zoom de fonte do navegador) */
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-md: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 24px;
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* elevação */
+  --shadow-low: 0 1px 0 rgba(0, 0, 0, 0.2), 0 1.5px 0 rgba(0, 0, 0, 0.05);
+  --shadow-high: 0 8px 16px rgba(0, 0, 0, 0.24);
+
+  /* transição — o base.css zera todas quando prefers-reduced-motion pede */
+  --t-fast: 100ms;
+  --t-med: 170ms;
+}

@@ -1,0 +1,413 @@
+/* Dono: agente da SIDEBAR (#sidebar-head, #channels, #voice-footer, #user-panel).
+
+   A estrutura da coluna (quem cresce, quem rola) é do layout.css; aqui fica o
+   visual. Os avatares são compartilhados e moram no members.css (.av/.avatar/
+   .av-initial) — este arquivo só escolhe o tamanho deles. */
+
+/* --- cabeçalho: nome da guild ------------------------------------------- */
+
+#sidebar-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 48px;
+  padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  /* a mesma sombra do header do canal: as duas barras de 48px formam uma
+     faixa só no topo da janela */
+  box-shadow: var(--shadow-low);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  transition: background-color var(--t-fast);
+}
+#sidebar-head:hover {
+  background: var(--bg-elevated);
+}
+#sidebar-head svg {
+  margin-left: auto;
+  color: var(--int-normal);
+  transition: transform var(--t-fast);
+}
+/* recolhido = seta apontando para a direita (o desenho aponta para baixo) */
+#sidebar-head[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+/* --- lista de canais ----------------------------------------------------- */
+
+#channels {
+  padding: var(--sp-2) var(--sp-2) var(--sp-4);
+}
+
+.cat + .cat {
+  margin-top: var(--sp-4);
+}
+
+/* CAIXA-ALTA pequena com letter-spacing: é o rótulo mais discreto que ainda
+   se lê como cabeçalho — em caixa normal ele competiria com os canais. */
+.cat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-1) var(--sp-1);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-align: left;
+  transition: color var(--t-fast);
+}
+.cat-head:hover {
+  color: var(--int-active);
+}
+.cat-head svg {
+  flex: none;
+  transition: transform var(--t-fast);
+}
+.cat-head[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
+}
+
+.cat-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* --- item de canal -------------------------------------------------------
+   O pill à esquerda é um ::before: fora do fluxo, o ícone e o nome não andam
+   quando ele cresce. Ele nasce com altura zero e cresce — no hover um pouco,
+   no canal aberto até o talo. É o movimento que o Discord usa para dizer
+   "este é o item sob o cursor" sem piscar cor nenhuma. */
+.channel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 32px;
+  margin-top: 2px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--int-normal);
+  text-align: left;
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.channel::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 0;
+  border-radius: var(--r-full);
+  background: var(--text-strong);
+  transition: height var(--t-fast);
+}
+.channel:hover {
+  background: var(--bg-elevated);
+  color: var(--int-hover);
+}
+.channel:hover::before {
+  height: 8px;
+}
+
+.channel svg {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.channel-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-medium);
+}
+
+/* Os DOIS realces que o M0–M6 empilhava na mesma classe `.active`, agora
+   distintos: `.is-open` é o canal de TEXTO que está na tela (fundo elevado +
+   pill cheio); `.is-connected` é o canal de VOZ em que estou (nome em verde).
+   Podem valer ao mesmo tempo em canais diferentes — e é justamente o caso
+   normal: ler #geral enquanto se conversa em #voz. */
+.channel.is-open {
+  background: var(--bg-elevated);
+  color: var(--int-active);
+}
+.channel.is-open::before {
+  height: 20px;
+}
+.channel.is-open svg {
+  color: var(--int-active);
+}
+
+.channel.is-connected .channel-name,
+.channel.is-connected svg {
+  color: var(--ok);
+}
+
+/* --- participantes de voz ------------------------------------------------ */
+
+.voice-users {
+  margin: 0 0 var(--sp-1);
+  /* recuo: alinha os avatares com o NOME do canal acima, não com o ícone */
+  padding: 0 0 0 var(--sp-4);
+  list-style: none;
+}
+
+.voice-user {
+  --avatar-size: 24px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--int-normal);
+  text-align: left;
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+
+/* Anel de quem está falando. box-shadow (e não border) porque a borda mudaria
+   o tamanho do avatar e a linha inteira tremeria a cada sílaba. */
+.voice-user .av {
+  border-radius: var(--r-full);
+  box-shadow: 0 0 0 0 var(--ok);
+  transition: box-shadow var(--t-fast);
+}
+.voice-user.speaking .av {
+  box-shadow: 0 0 0 2px var(--ok);
+}
+.voice-user.speaking {
+  color: var(--int-active);
+}
+
+.voice-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+}
+
+/* Só quem PODE assistir vira botão (regra do M5) — e só ele acende no hover:
+   acender uma linha que não faz nada é prometer um clique que não acontece. */
+.voice-user.watchable:hover {
+  background: var(--bg-elevated);
+  color: var(--int-hover);
+}
+
+.voice-flag {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.live-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--danger);
+  color: var(--text-strong);
+  font-size: 10px;
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.02em;
+}
+
+/* --- rodapé de voz -------------------------------------------------------
+   Fundo próprio e borda em cima: ele e o painel do usuário formam o bloco
+   fixo do pé da coluna, separado da lista que rola. */
+#voice-footer {
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  border-top: 1px solid var(--line);
+}
+
+.voice-footer-info {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--sp-2);
+}
+
+#voice-footer-status {
+  color: var(--ok);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+/* enquanto o transporte não fecha, o verde seria promessa falsa */
+#voice-footer.connecting #voice-footer-status {
+  color: var(--warn);
+}
+/* erro relâmpago do flashVoiceError (main.ts): some sozinho em ~4s */
+#voice-footer-status.error {
+  color: var(--danger);
+}
+
+#voice-footer-channel {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+/* desconectar fica na ponta, longe dos toggles: é o único irreversível */
+#voice-leave {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+/* --- push-to-talk (M6, só desktop) --------------------------------------
+   A lógica é toda do main.ts (hook global via uiohook); aqui só a aparência.
+   `.transmitting` é a classe que o main.ts acende enquanto a tecla está
+   segurada — é o retorno visual de que o mic abriu. */
+#ptt-section {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+#ptt-section.transmitting {
+  color: var(--ok);
+}
+
+.ptt-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+.ptt-toggle input {
+  flex: none;
+  accent-color: var(--brand);
+}
+#ptt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#ptt-key {
+  flex: none;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  /* --text-normal e nao --text-muted: sobre --bg-elevated o muted da 4.05:1,
+     abaixo do AA de 4.5:1 (revisao M7 #2). O realce fica no :hover. */
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition: color var(--t-fast);
+}
+#ptt-key:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+#ptt-key:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- painel do usuário ---------------------------------------------------
+   Mais escuro que a sidebar de propósito: é o rodapé fixo, e a diferença de
+   superfície é o que o separa da lista sem precisar de mais uma linha. */
+#user-panel {
+  position: relative; /* âncora do menu da engrenagem */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  background: var(--bg-guilds);
+}
+
+.user-panel-id {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding-left: var(--sp-1);
+}
+
+#me-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+#me-sub {
+  /* mesmo trio do #me-name: sem ele a linha secundária não trunca e sangra
+     por cima dos botões quando a sidebar encolhe para 200px (revisão M7 #3) */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+}
+
+/* os três controles do painel são menores que o padrão: cabem os quatro
+   (mic, fone, engrenagem, e o menu) numa coluna de 240px sem espremer o nome */
+#user-panel .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+/* --- menu da engrenagem --------------------------------------------------
+   Sobe a partir do painel (não desce: ele já está no pé da janela). */
+.user-menu {
+  position: absolute;
+  right: var(--sp-2);
+  bottom: calc(100% + var(--sp-1));
+  min-width: 160px;
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-high);
+  z-index: 2;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+  text-align: left;
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+/* sair é destrutivo o bastante para avisar no hover (é o único item hoje) */
+.menu-item:hover {
+  background: var(--danger);
+  color: var(--text-strong);
+}

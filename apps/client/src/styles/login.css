@@ -1,0 +1,108 @@
+/* Tela de login: um cartão elevado sobre a superfície mais escura do app. */
+
+#login {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-guilds);
+}
+
+.login-card {
+  width: min(400px, 92vw);
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  text-align: center;
+}
+
+.login-card h1 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--text-strong);
+}
+
+.login-sub {
+  margin-top: calc(var(--sp-2) * -1);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+#login-error {
+  color: var(--danger);
+  font-size: var(--fs-sm);
+}
+
+/* o botão é literalmente o Discord — blurple é a ação primária aqui */
+#login-discord {
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+#login-discord:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+#login-discord:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* bloco de login dev: só existe em build de desenvolvimento — o main.ts tira
+   o [hidden] quando import.meta.env.DEV. Em produção ele nem aparece. */
+.login-dev {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.login-dev h2 {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  text-align: left;
+}
+
+.login-dev form {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+#dev-username {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-input);
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  padding: var(--sp-2) var(--sp-3);
+}
+#dev-username::placeholder {
+  color: var(--text-faint);
+}
+
+.login-dev button[type="submit"] {
+  flex: none;
+  background: var(--bg-elevated);
+  /* --text-normal e nao --text-muted: sobre --bg-elevated o muted da 4.05:1,
+     abaixo do AA de 4.5:1 (revisao M7 #2). O realce fica no :hover. */
+  color: var(--text-normal);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-4);
+  font-weight: var(--fw-medium);
+  transition: color var(--t-fast);
+}
+.login-dev button[type="submit"]:hover {
+  color: var(--text-strong);
+}

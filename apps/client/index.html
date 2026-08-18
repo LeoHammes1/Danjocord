@@ -12,492 +12,14 @@
       content="default-src 'self' app:; script-src 'self' app:; style-src 'self' app: 'unsafe-inline'; img-src 'self' app: data: https:; media-src 'self' app: blob: mediastream:; connect-src 'self' app: http: https: ws: wss:; base-uri 'none'; object-src 'none'; frame-src 'none'"
     />
     <title>Danjocord</title>
-    <style>
-      :root {
-        --bg: #14181e;
-        --surface: #1b212a;
-        --surface-2: #222a35;
-        --ink: #e5e9ef;
-        --muted: #98a3b1;
-        --line: #2b3441;
-        --accent: #ff7a63;
-        --ok: #63b98a;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--ink);
-        font-family: "Segoe UI", system-ui, sans-serif;
-        height: 100vh;
-      }
-      /* #login e #app têm display próprio, que venceria o [hidden] do UA */
-      [hidden] { display: none !important; }
-
-      /* --- tela de login --- */
-      #login {
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .login-card {
-        width: min(340px, 92vw);
-        background: var(--surface);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 2rem 1.6rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-        text-align: center;
-      }
-      .login-card h1 { margin: 0; font-size: 1.35rem; }
-      .login-sub { margin: -0.6rem 0 0; color: var(--muted); font-size: 0.85rem; }
-      #login-error { margin: 0; color: var(--accent); font-size: 0.85rem; }
-      #login-discord {
-        background: #5865f2; /* blurple — o botão é literalmente o Discord */
-        color: #fff;
-        border: none;
-        border-radius: 8px;
-        padding: 0.65rem 1rem;
-        font-size: 0.95rem;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      #login-discord:hover { filter: brightness(1.08); }
-      .login-dev {
-        border-top: 1px solid var(--line);
-        padding-top: 0.9rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-      .login-dev h2 {
-        margin: 0;
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: var(--muted);
-        text-align: left;
-      }
-      .login-dev form { display: flex; gap: 0.5rem; }
-      .login-dev button[type="submit"] { background: var(--surface-2); color: var(--muted); font-weight: 500; }
-      .login-dev button[type="submit"]:hover { color: var(--ink); }
-
-      /* --- app --- */
-      #app {
-        height: 100vh;
-        display: grid;
-        grid-template-columns: 220px 1fr;
-        /* as linhas "stream" (M5) e "video" (M4) colapsam a zero quando os
-           painéis estão [hidden]; o stream fica ACIMA da grade de vídeo */
-        grid-template-rows: 48px auto auto 1fr auto auto;
-        grid-template-areas: "side head" "side stream" "side video" "side msgs" "side typing" "side form";
-      }
-      header {
-        grid-area: head;
-        display: flex;
-        align-items: center;
-        gap: 0.8rem;
-        padding: 0 1rem;
-        border-bottom: 1px solid var(--line);
-      }
-      header h1 { font-size: 1rem; margin: 0; }
-      #status {
-        font-size: 0.75rem;
-        padding: 0.15rem 0.6rem;
-        border-radius: 999px;
-        background: var(--surface-2);
-        color: var(--muted);
-      }
-      #status.online { color: var(--ok); }
-      #status.offline { color: var(--accent); }
-      #me { margin-left: auto; display: flex; align-items: center; gap: 0.55rem; }
-      #me-avatar { width: 24px; height: 24px; border-radius: 50%; }
-      #me-name { font-size: 0.88rem; }
-      #logout {
-        background: none;
-        border: 1px solid var(--line);
-        color: var(--muted);
-        border-radius: 6px;
-        padding: 0.25rem 0.7rem;
-        font-size: 0.78rem;
-        cursor: pointer;
-      }
-      #logout:hover { color: var(--ink); border-color: var(--muted); }
-      aside {
-        grid-area: side;
-        background: var(--surface);
-        border-right: 1px solid var(--line);
-        padding: 0.8rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-        overflow-y: auto;
-      }
-      aside h2 {
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: var(--muted);
-        margin: 0 0 0.4rem;
-      }
-      #channels button {
-        display: block;
-        width: 100%;
-        text-align: left;
-        background: none;
-        border: none;
-        color: var(--muted);
-        padding: 0.35rem 0.5rem;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 0.92rem;
-      }
-      #channels button.active { background: var(--surface-2); color: var(--ink); }
-
-      /* --- voz (M3): participantes sob o canal + rodapé de conexão --- */
-      .voice-users {
-        list-style: none;
-        margin: 0.1rem 0 0.35rem;
-        padding: 0 0 0 1.3rem; /* recuo sob o nome do canal, estilo Discord */
-      }
-      .voice-user {
-        display: flex;
-        align-items: center;
-        gap: 0.45rem;
-        padding: 0.12rem 0.2rem;
-        font-size: 0.85rem;
-        color: var(--muted);
-      }
-      .voice-avatar {
-        width: 20px;
-        height: 20px;
-        border-radius: 50%;
-        flex: none;
-        background: var(--surface-2);
-        color: var(--ink);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.6rem;
-        object-fit: cover;
-        /* a borda transparente RESERVA o anel: falar não mexe no layout */
-        border: 2px solid transparent;
-      }
-      /* anel de "falando agora" (VOICE_SPEAKING) na borda do avatar */
-      .voice-user.speaking .voice-avatar { border-color: var(--ok); }
-      .voice-user.speaking .voice-name { color: var(--ink); }
-      .voice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .voice-flags { margin-left: auto; flex: none; font-size: 0.7rem; }
-      /* pill "AO VIVO" (M5): vermelho de transmissão de propósito — não é o
-         accent da UI, é o código universal de "ao vivo" */
-      .live-badge {
-        flex: none;
-        background: #d13438;
-        color: #fff;
-        font-size: 0.55rem;
-        font-weight: 700;
-        letter-spacing: 0.06em;
-        border-radius: 999px;
-        padding: 0.06rem 0.35rem;
-      }
-      /* item clicável = dá para assistir a transmissão deste usuário (M5) */
-      .voice-user.watchable { cursor: pointer; border-radius: 6px; }
-      .voice-user.watchable:hover { background: var(--surface-2); }
-      .voice-user.watchable:hover .voice-name { color: var(--ink); }
-      #voice-footer {
-        margin-top: auto; /* empurra para o fundo quando a sidebar sobra... */
-        position: sticky; /* ...e cola no fundo quando a sidebar rola */
-        bottom: 0;
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 0.5rem 0.6rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.45rem;
-      }
-      .voice-footer-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
-      #voice-footer-status { font-size: 0.78rem; font-weight: 600; color: var(--ok); }
-      #voice-footer-status.error { color: var(--accent); }
-      #voice-footer.connecting #voice-footer-status { color: var(--muted); }
-      #voice-footer-channel {
-        font-size: 0.75rem;
-        color: var(--muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .voice-footer-actions { display: flex; gap: 0.4rem; }
-      .voice-footer-actions button {
-        flex: 1;
-        background: none;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: var(--muted);
-        padding: 0.28rem 0;
-        font-size: 0.85rem;
-        cursor: pointer;
-      }
-      .voice-footer-actions button:hover { color: var(--ink); border-color: var(--muted); }
-      /* mute/deafen LIGADOS gritam de propósito — dá para ver de relance */
-      .voice-footer-actions button.on { background: var(--accent); border-color: var(--accent); color: #14181e; }
-      #voice-leave { font-size: 0.78rem; }
-      #voice-leave:hover { color: var(--accent); border-color: var(--accent); }
-
-      /* --- push-to-talk (M6): SÓ no desktop — main.ts tira o [hidden] quando
-         a ponte window.danjocord existe; no web a seção nunca aparece --- */
-      #ptt-section {
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-        border-top: 1px solid var(--line);
-        padding-top: 0.45rem;
-      }
-      .ptt-toggle {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        align-items: center;
-        gap: 0.35rem;
-        font-size: 0.72rem;
-        color: var(--muted);
-        cursor: pointer;
-      }
-      /* escapa do estilo global de input (feito para os campos de texto) */
-      .ptt-toggle input[type="checkbox"] {
-        flex: none;
-        width: 13px;
-        height: 13px;
-        padding: 0;
-        margin: 0;
-        accent-color: var(--accent);
-      }
-      #ptt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      /* mic aberto AGORA (tecla segurada): o rótulo acende — o botão de mute
-         NÃO muda com o PTT, é o rótulo que carrega o estado (contrato M6) */
-      #ptt-section.transmitting #ptt-label { color: var(--ok); }
-      #ptt-key {
-        flex: none;
-        max-width: 45%;
-        background: none;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: var(--muted);
-        font-size: 0.7rem;
-        padding: 0.18rem 0.45rem;
-        cursor: pointer;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      #ptt-key:hover { color: var(--ink); border-color: var(--muted); }
-      #ptt-key:disabled { cursor: default; color: var(--accent); border-color: var(--line); }
-
-      /* --- stream (M5): painel da transmissão ASSISTIDA, acima da grade ---
-         maior que a grade (60vh vs 40vh) de propósito: tela é para ser LIDA */
-      #stream-panel {
-        grid-area: stream;
-        background: var(--surface);
-        border-bottom: 1px solid var(--line);
-        padding: 0.5rem 1rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-      .stream-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-      .stream-panel-head h2 {
-        margin: 0;
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: var(--muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .stream-panel-actions { display: flex; gap: 0.4rem; flex: none; }
-      .stream-panel-actions button {
-        background: none;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: var(--muted);
-        font-size: 0.75rem;
-        padding: 0.1rem 0.5rem;
-        cursor: pointer;
-      }
-      .stream-panel-actions button:hover { color: var(--ink); border-color: var(--muted); }
-      /* "Ativar som" só existe quando o autoplay sem mute foi barrado — chama
-         a atenção porque sem o clique o stream fica mudo */
-      #stream-unmute { color: var(--accent); border-color: var(--accent); }
-      #stream-box {
-        background: #000;
-        border-radius: 8px;
-        overflow: hidden;
-        display: flex;
-        justify-content: center;
-      }
-      /* contain (e não cover, como nos tiles): texto de tela cortado é inútil */
-      #stream-box video { display: block; width: 100%; max-height: 60vh; object-fit: contain; }
-
-      /* --- vídeo (M4): grade de tiles acima da área de mensagens --- */
-      #video-panel {
-        grid-area: video;
-        background: var(--surface);
-        border-bottom: 1px solid var(--line);
-        padding: 0.5rem 1rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-      }
-      .video-panel-head { display: flex; align-items: center; justify-content: space-between; }
-      .video-panel-head h2 {
-        margin: 0;
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        color: var(--muted);
-      }
-      #video-collapse {
-        background: none;
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: var(--muted);
-        font-size: 0.75rem;
-        padding: 0.1rem 0.5rem;
-        cursor: pointer;
-      }
-      #video-collapse:hover { color: var(--ink); border-color: var(--muted); }
-      #video-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: 0.5rem;
-        /* teto de altura (doc §8): muita gente de câmera aberta rola aqui
-           dentro em vez de esmagar a área de mensagens */
-        max-height: 40vh;
-        overflow-y: auto;
-      }
-      .video-tile {
-        position: relative;
-        aspect-ratio: 16 / 9;
-        background: #000;
-        border-radius: 8px;
-        overflow: hidden;
-      }
-      .video-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
-      /* tile sem <video>: consume recusado por codec incompatível (M4) */
-      .video-tile-placeholder {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0 0.6rem;
-        text-align: center;
-        color: var(--muted);
-        font-size: 0.78rem;
-      }
-      .video-tile-name {
-        position: absolute;
-        left: 0.4rem;
-        bottom: 0.35rem;
-        max-width: calc(100% - 0.8rem);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: 0.72rem;
-        color: #fff;
-        background: rgba(0, 0, 0, 0.55);
-        border-radius: 4px;
-        padding: 0.08rem 0.4rem;
-      }
-
-      #members li { list-style: none; font-size: 0.9rem; color: var(--muted); padding: 0.15rem 0; }
-      #members li.online { color: var(--ink); }
-      #members li.online::before { content: "● "; color: var(--ok); font-size: 0.7em; vertical-align: 0.15em; }
-      #members { padding: 0; margin: 0; }
-      /* overflow-anchor: a paginação preserva o ponto de leitura somando o
-         delta de altura no scrollTop; o anchoring nativo faria o ajuste em
-         dobro em alguns navegadores */
-      main { grid-area: msgs; overflow-y: auto; padding: 1rem; overflow-anchor: none; }
-      /* padding-right reserva o canto das ações — hover não sobrepõe texto */
-      .msg { margin-bottom: 0.6rem; position: relative; padding-right: 3.4rem; }
-      .msg .author { font-weight: 600; margin-right: 0.5rem; }
-      .msg .time { color: var(--muted); font-size: 0.75rem; margin-left: 0.5rem; }
-      .msg .muted { color: var(--muted); font-size: 0.75rem; }
-      .msg.pending { opacity: 0.45; }
-      .load-retry {
-        display: block;
-        margin: 1.2rem auto;
-        background: var(--surface-2);
-        color: var(--muted);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        padding: 0.5rem 1rem;
-        cursor: pointer;
-      }
-      .load-retry:hover { color: var(--ink); }
-      /* ações (editar/apagar) só no hover — discretas, sem poluir a leitura */
-      .msg .actions { position: absolute; right: 0; top: 0; display: none; gap: 0.2rem; }
-      .msg:hover .actions { display: inline-flex; }
-      .msg .actions button {
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        color: var(--muted);
-        border-radius: 4px;
-        font-size: 0.7rem;
-        line-height: 1;
-        padding: 0.15rem 0.35rem;
-        cursor: pointer;
-      }
-      .msg .actions button:hover { color: var(--ink); border-color: var(--muted); }
-      .msg .edit-input {
-        width: min(480px, 70%);
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        border-radius: 6px;
-        color: var(--ink);
-        padding: 0.15rem 0.5rem;
-        font-size: 0.9rem;
-      }
-      /* min-height reserva a linha: o indicador aparece/some sem empurrar as
-         mensagens (um pulo de layout bem na hora de ler seria pior que o vão) */
-      #typing {
-        grid-area: typing;
-        min-height: 1.3rem;
-        padding: 0.15rem 1rem 0;
-        font-size: 0.75rem;
-        color: var(--muted);
-      }
-      #composer {
-        grid-area: form;
-        display: flex;
-        gap: 0.6rem;
-        padding: 0.8rem 1rem;
-        border-top: 1px solid var(--line);
-      }
-      input {
-        flex: 1;
-        background: var(--surface-2);
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        color: var(--ink);
-        padding: 0.55rem 0.8rem;
-        font-size: 0.95rem;
-      }
-      input:focus-visible { outline: 2px solid var(--accent); }
-      button[type="submit"] {
-        background: var(--accent);
-        color: #14181e;
-        font-weight: 600;
-        border: none;
-        border-radius: 8px;
-        padding: 0 1.1rem;
-        cursor: pointer;
-      }
-    </style>
+    <!-- favicon inline: um arquivo a menos para o app:// do desktop servir
+         (img-src já permite data:, a CSP não muda por causa disto) -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%235865f2'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='Segoe UI,sans-serif' font-size='20' font-weight='700' fill='%23ffffff'%3ED%3C/text%3E%3C/svg%3E"
+    />
+    <!-- o CSS vem do main.ts (src/styles/index.css): um bundle só, com os
+         tokens resolvidos pelo vite -->
   </head>
   <body>
     <!-- as duas views começam ocultas; main.ts decide qual mostrar no boot -->
@@ -506,9 +28,11 @@
         <h1>Danjocord</h1>
         <p class="login-sub">uma guild, os amigos, self-hosted</p>
         <p id="login-error" hidden></p>
-        <button id="login-discord">Entrar com Discord</button>
-        <!-- visível sempre: em produção o /auth/dev responde 404 e o erro aparece aqui mesmo -->
-        <div class="login-dev">
+        <button id="login-discord" type="button">Entrar com Discord</button>
+        <!-- login dev: o main.ts revela só quando import.meta.env.DEV. Em
+             produção o bloco nem aparece (antes aparecia e o /auth/dev
+             respondia 404 — feio e confuso para quem só quer entrar) -->
+        <div class="login-dev" id="login-dev" hidden>
           <h2>dev</h2>
           <form id="dev-form">
             <input id="dev-username" autocomplete="off" placeholder="username" />
@@ -518,17 +42,20 @@
       </div>
     </div>
 
+    <!-- O app é um grid de 4 colunas (guilds | canais | conteúdo | membros);
+         quem monta o grid é styles/layout.css. Os ids abaixo são o contrato
+         com o main.ts e com os módulos de ui/ — não renomear. -->
     <div id="app" hidden>
-      <aside>
-        <div>
-          <h2>Canais</h2>
-          <div id="channels"></div>
-        </div>
-        <div>
-          <h2>Membros</h2>
-          <ul id="members"></ul>
-        </div>
-        <!-- rodapé de voz: só aparece conectado; sticky no fundo da sidebar -->
+      <nav id="guilds" aria-label="Servidores">
+        <!-- uma guild só, por desenho do projeto: o pill é decorativo hoje e
+             existe para a coluna não nascer vazia -->
+        <button id="guild-home" type="button" aria-current="true" aria-label="Danjocord">D</button>
+      </nav>
+
+      <aside id="sidebar">
+        <button id="sidebar-head" type="button" aria-expanded="false">Danjocord</button>
+        <div id="channels"></div>
+        <!-- rodapé de voz: só aparece conectado (main.ts tira o [hidden]) -->
         <div id="voice-footer" hidden>
           <div class="voice-footer-info">
             <span id="voice-footer-status">Voz conectada</span>
@@ -550,16 +77,32 @@
             <button id="ptt-key" type="button" title="Definir a tecla de push-to-talk">definir tecla</button>
           </div>
         </div>
-      </aside>
-      <header>
-        <h1>Danjocord</h1>
-        <span id="status">conectando…</span>
-        <div id="me">
-          <img id="me-avatar" alt="" hidden />
-          <span id="me-name"></span>
-          <button id="logout">Sair</button>
+        <!-- painel do usuário: quem eu sou + os controles que valem em
+             qualquer canal. Os botões de ícone nascem vazios de propósito —
+             o SVG é criado em JS (ui/icons.ts), nunca por innerHTML -->
+        <div id="user-panel">
+          <img id="me-avatar" class="avatar" alt="" hidden />
+          <div class="user-panel-id">
+            <span id="me-name"></span>
+            <span id="me-sub"></span>
+          </div>
+          <button id="user-mute" class="icon-btn" type="button" aria-label="Mutar microfone"></button>
+          <button id="user-deafen" class="icon-btn" type="button" aria-label="Ensurdecer"></button>
+          <button id="user-settings" class="icon-btn" type="button" aria-label="Configurações"></button>
+          <button id="logout" class="icon-btn" type="button" aria-label="Sair da conta"></button>
         </div>
+      </aside>
+
+      <header id="channel-head">
+        <span id="channel-icon"></span>
+        <h1 id="channel-name">Danjocord</h1>
+        <span id="channel-topic"></span>
+        <div id="head-actions">
+          <button id="toggle-members" class="icon-btn" type="button" aria-label="Mostrar ou ocultar membros" aria-expanded="true"></button>
+        </div>
+        <span id="status">conectando…</span>
       </header>
+
       <!-- painel de stream (M5): a transmissão ASSISTIDA (uma por vez), acima da grade -->
       <div id="stream-panel" hidden>
         <div class="stream-panel-head">
@@ -572,6 +115,7 @@
         </div>
         <div id="stream-box"></div>
       </div>
+
       <!-- grade de vídeo (M4): só aparece em voz com ≥1 tile (preview local conta) -->
       <div id="video-panel" hidden>
         <div class="video-panel-head">
@@ -580,13 +124,18 @@
         </div>
         <div id="video-grid"></div>
       </div>
+
       <main id="messages"></main>
       <!-- aria-live: leitor de tela anuncia "fulano está digitando…" sem roubar o foco -->
       <div id="typing" aria-live="polite"></div>
       <form id="composer">
-        <input id="input" autocomplete="off" placeholder="Mensagem em #geral" />
+        <textarea id="input" rows="1" autocomplete="off" placeholder="Mensagem em #geral"></textarea>
         <button type="submit">Enviar</button>
       </form>
+
+      <aside id="members-panel" aria-label="Membros">
+        <div id="members"></div>
+      </aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
