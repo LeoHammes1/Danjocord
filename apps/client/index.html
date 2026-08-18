@@ -3,6 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- CSP (revisão M6 #5): no desktop este renderer detém a ponte com os
+         tokens decifrados — um XSS aqui valeria a sessão inteira. connect-src
+         abre http/https/ws/wss porque o servidor é self-hosted (a origem varia
+         por instância); script-src fica preso ao próprio bundle. -->
+    <meta
+      http-equiv="content-security-policy"
+      content="default-src 'self' app:; script-src 'self' app:; style-src 'self' app: 'unsafe-inline'; img-src 'self' app: data: https:; media-src 'self' app: blob: mediastream:; connect-src 'self' app: http: https: ws: wss:; base-uri 'none'; object-src 'none'; frame-src 'none'"
+    />
     <title>Danjocord</title>
     <style>
       :root {
@@ -238,6 +246,55 @@
       .voice-footer-actions button.on { background: var(--accent); border-color: var(--accent); color: #14181e; }
       #voice-leave { font-size: 0.78rem; }
       #voice-leave:hover { color: var(--accent); border-color: var(--accent); }
+
+      /* --- push-to-talk (M6): SÓ no desktop — main.ts tira o [hidden] quando
+         a ponte window.danjocord existe; no web a seção nunca aparece --- */
+      #ptt-section {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        border-top: 1px solid var(--line);
+        padding-top: 0.45rem;
+      }
+      .ptt-toggle {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.72rem;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      /* escapa do estilo global de input (feito para os campos de texto) */
+      .ptt-toggle input[type="checkbox"] {
+        flex: none;
+        width: 13px;
+        height: 13px;
+        padding: 0;
+        margin: 0;
+        accent-color: var(--accent);
+      }
+      #ptt-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* mic aberto AGORA (tecla segurada): o rótulo acende — o botão de mute
+         NÃO muda com o PTT, é o rótulo que carrega o estado (contrato M6) */
+      #ptt-section.transmitting #ptt-label { color: var(--ok); }
+      #ptt-key {
+        flex: none;
+        max-width: 45%;
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 0.7rem;
+        padding: 0.18rem 0.45rem;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #ptt-key:hover { color: var(--ink); border-color: var(--muted); }
+      #ptt-key:disabled { cursor: default; color: var(--accent); border-color: var(--line); }
 
       /* --- stream (M5): painel da transmissão ASSISTIDA, acima da grade ---
          maior que a grade (60vh vs 40vh) de propósito: tela é para ser LIDA */
@@ -483,6 +540,14 @@
             <button id="voice-mute" type="button" title="Mutar">🎙️</button>
             <button id="voice-deafen" type="button" title="Ensurdecer">🎧</button>
             <button id="voice-leave" type="button" title="Desconectar">Sair</button>
+          </div>
+          <!-- push-to-talk (M6): só no desktop — main.ts revela quando a ponte existe -->
+          <div id="ptt-section" hidden>
+            <label class="ptt-toggle">
+              <input id="ptt-toggle" type="checkbox" />
+              <span id="ptt-label">Push-to-talk</span>
+            </label>
+            <button id="ptt-key" type="button" title="Definir a tecla de push-to-talk">definir tecla</button>
           </div>
         </div>
       </aside>

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "sourceMap": true,
+    "types": ["node"],
+    // exceção ao ESM do repo: o main do Electron é CommonJS, e o
+    // verbatimModuleSyntax da base proibiria sintaxe import/export aqui
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,40 @@
+/**
+ * A ponte desktop (M6, doc §7): o preload do Electron (pacote A) expõe esta
+ * superfície em window.danjocord via contextBridge.exposeInMainWorld. No
+ * NAVEGADOR o campo simplesmente não existe — todo o resto do cliente lê a
+ * ponte pelo módulo desktop.ts (uma vez), nunca pelo window direto.
+ *
+ * RESTRIÇÃO: este tipo é CONTRATO entre os pacotes A (main do Electron) e B
+ * (este cliente) — não mudar sem combinar com o preload.
+ */
+export {};
+
+declare global {
+  interface DanjocordDesktop {
+    isDesktop: true;
+    /** base da API que o main injetou (produção: baked no build; dev: http://localhost:8080) */
+    serverUrl: string;
+    /** safeStorage: cifrado no main, arquivo em userData */
+    secretGet(key: string): Promise<string | null>;
+    /** null apaga */
+    secretSet(key: string, value: string | null): Promise<void>;
+  /** grava vários segredos numa transação só (o trio da sessão não vai pela metade) */
+  secretSetMany(entries: [string, string | null][]): Promise<void>;
+    /**
+     * Fluxo loopback completo: abre o navegador externo em
+     * <serverUrl>/auth/discord/start?redirect_port=<porta do listener>;
+     * resolve com o OTC; rejeita em timeout (120s) ou erro (auth_error).
+     */
+    oauthLogin(): Promise<string>;
+    /** instala/troca o hook global; null desliga (uiohook para) */
+    pttSetKey(keycode: number | null): Promise<void>;
+    /** modo captura p/ remap: próxima tecla pressionada */
+    pttCaptureNextKey(): Promise<{ keycode: number; label: string }>;
+    /** keydown/keyup da tecla configurada */
+    onPtt(cb: (down: boolean) => void): void;
+  }
+
+  interface Window {
+    danjocord?: DanjocordDesktop;
+  }
+}

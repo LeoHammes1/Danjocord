@@ -1,0 +1,51 @@
+{
+  "name": "@danjocord/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Danjocord — cliente desktop (Electron)",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "npm run build && cross-env DANJOCORD_DEV=1 electron .",
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bundle-renderer": "node scripts/bundle-renderer.mjs",
+    "dist": "npm run bundle-renderer && npm run build && electron-builder --win",
+    "dist:dir": "npm run bundle-renderer && npm run build && electron-builder --win --dir"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.0",
+    "uiohook-napi": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "cross-env": "^10.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.0",
+    "typescript": "^5.9.0"
+  },
+  "build": {
+    "appId": "dev.leohammes.danjocord",
+    "productName": "Danjocord",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "renderer-dist/**",
+      "assets/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "LeoHammes1",
+      "repo": "Danjocord"
+    }
+  }
+}

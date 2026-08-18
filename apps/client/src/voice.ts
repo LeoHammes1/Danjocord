@@ -139,6 +139,12 @@ export class VoiceClient {
   /** mute imposto pelo deafen (para desfazer no un-deafen); null = mute manual */
   private mutedBeforeDeafen: boolean | null = null;
 
+  // --- push-to-talk (M6, só desktop) ---
+  /** modo PTT ligado: o mic só abre com a tecla segurada (setPttPressed) */
+  private pttOn = false;
+  /** a tecla de PTT está segurada AGORA — alimentado pelo onPtt da ponte, via main.ts */
+  private pttDown = false;
+
   private device: Device | null = null;
   private sendTransport: Transport | null = null;
   private recvTransport: Transport | null = null;
@@ -1113,6 +1119,31 @@ export class VoiceClient {
     await this.pushState();
   }
 
+  /**
+   * Liga/desliga o modo push-to-talk (M6, só desktop). Ligado, o track do mic
+   * fica enabled SÓ com a tecla segurada — e o mute manual vence tudo (mutado
+   * é mutado; tecla nenhuma abre o mic). O estado VISUAL de mute NÃO muda:
+   * PTT é outra dimensão — mic fechado entre presses não é "mutado", e a UI
+   * indica isso pelo rótulo do toggle. SEM sinalização update_state por press
+   * DE PROPÓSITO: o "falando" dos outros vem do audioLevelObserver do
+   * servidor, que enxerga o áudio real (track desabilitado = silêncio). E SEM
+   * onChange aqui: o chamador (main.ts) atualiza só o rótulo do PTT — um
+   * re-render completo recriaria os tiles de vídeo a cada aperto de tecla.
+   */
+  setPttMode(on: boolean): void {
+    if (this.pttOn === on) return;
+    this.pttOn = on;
+    if (!on) this.pttDown = false; // desligar o modo não pode deixar o mic preso fechado
+    this.applyMute();
+  }
+
+  /** Tecla de PTT desceu/subiu (onPtt da ponte). Só mexe no track — nada de UI/sinalização. */
+  setPttPressed(down: boolean): void {
+    if (this.pttDown === down) return;
+    this.pttDown = down;
+    if (this.pttOn) this.applyMute();
+  }
+
   // -------------------------------------------------------------------------
 
   private async createTransport(direction: "send" | "recv", device: Device): Promise<Transport> {
@@ -1347,9 +1378,12 @@ export class VoiceClient {
   private applyMute(): void {
     // o mute REAL é client-side: track.enabled=false gera silêncio e o DTX
     // para de mandar pacotes — o servidor só replica flags via update_state
-    // (não há pauseProducer no servidor neste milestone, contrato do M3)
+    // (não há pauseProducer no servidor neste milestone, contrato do M3).
+    // PTT (M6): no modo PTT o mic só abre com a tecla segurada — a ordem dos
+    // && é a hierarquia (mute manual vence a tecla). Chamado também no join e
+    // no recoverMic: um track novo já nasce respeitando o PTT.
     const track = this.producer?.track;
-    if (track != null) track.enabled = !this.selfMute;
+    if (track != null) track.enabled = !this.selfMute && (!this.pttOn || this.pttDown);
   }
 
   private async pushState(): Promise<void> {

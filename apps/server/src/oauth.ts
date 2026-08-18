@@ -15,12 +15,23 @@ import type { Sessions } from "./sessions.js";
  *
  * O scope é só "identify" — não queremos nada do Discord além de id, nome e
  * avatar; a autorização de verdade é a allowlist local.
+ *
+ * M6: o app desktop usa o MESMO fluxo com um twist loopback — /start aceita
+ * ?redirect_port=<porta do http.Server efêmero do Electron> e o callback
+ * devolve o resultado para http://127.0.0.1:<porta>/danjocord-callback em vez
+ * do appUrl. O fluxo web (sem a porta) fica intocado.
  */
 
 /** state → code_verifier pendente. Em memória de propósito: um fluxo OAuth não sobrevive a restart. */
 interface PendingAuth {
   codeVerifier: string;
   expiresAt: number;
+  /**
+   * Presente = fluxo desktop (M6): o callback redireciona para o listener
+   * loopback do app nesta porta, em vez do appUrl. (`| undefined` e não `?`:
+   * exactOptionalPropertyTypes — o campo é sempre gravado, às vezes vazio.)
+   */
+  redirectPort: number | undefined;
 }
 
 /** Resposta do /users/@me. O id é snowflake do DISCORD (string) — nunca confundir com os nossos. */
@@ -43,15 +54,30 @@ const CallbackQuery = z.object({
   error: z.string().optional(),
 });
 
+/**
+ * Query do /auth/discord/start. redirect_port é o delta do M6: a porta do
+ * listener loopback do app desktop. Faixa 1024..65535 (nunca porta
+ * privilegiada); host e caminho do redirect são FIXOS (127.0.0.1 +
+ * /danjocord-callback), então a query não abre redirect arbitrário.
+ */
+const StartQuery = z.object({
+  redirect_port: z.coerce.number().int().min(1024).max(65535).optional(),
+});
+
 export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, sessions: Sessions): void {
   const pending = new Map<string, PendingAuth>();
   const redirectUri = config.publicBaseUrl + "/auth/discord/callback";
 
-  app.get("/auth/discord/start", async (_req, reply) => {
+  app.get("/auth/discord/start", async (req, reply) => {
     if (!config.discordClientId) {
       return reply.code(503).send({
         error: "OAuth do Discord não configurado — defina DISCORD_CLIENT_ID e DISCORD_CLIENT_SECRET (doc §5)",
       });
+    }
+
+    const parsedQuery = StartQuery.safeParse(req.query);
+    if (!parsedQuery.success) {
+      return reply.code(400).send({ error: "redirect_port inválido — esperado inteiro entre 1024 e 65535" });
     }
 
     // Faxina preguiçosa: com ~10 usuários não vale um timer só para isto.
@@ -63,7 +89,11 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
     const state = randomBytes(32).toString("base64url");
     // 32 bytes → 43 chars de [A-Za-z0-9_-], dentro do alfabeto e tamanho do RFC 7636
     const codeVerifier = randomBytes(32).toString("base64url");
-    pending.set(state, { codeVerifier, expiresAt: now + config.oauthStateTtlMs });
+    pending.set(state, {
+      codeVerifier,
+      expiresAt: now + config.oauthStateTtlMs,
+      redirectPort: parsedQuery.data.redirect_port,
+    });
 
     const url = new URL("https://discord.com/oauth2/authorize");
     url.searchParams.set("response_type", "code");
@@ -84,25 +114,41 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
     // para que um retry do mesmo callback nunca ande duas vezes no fluxo.
     const entry = q.state !== undefined ? pending.get(q.state) : undefined;
     if (q.state !== undefined) pending.delete(q.state);
+
+    // Para onde devolver o resultado (otc OU auth_error):
+    // - fluxo desktop (entry com redirectPort): listener loopback do app, com
+    //   QUERY (?otc=/?auth_error=) DE PROPÓSITO — o http.Server local precisa
+    //   LER o valor, e fragment nunca é enviado ao servidor HTTP; em 127.0.0.1
+    //   não há access log de terceiros para vazar.
+    // - fluxo web (sem porta, inclusive state desconhecido): comportamento de
+    //   sempre — fragment (#) para o OTC, que assim não aparece no access log
+    //   do Fastify nem em Referer, e query só para o erro.
+    const dest = (kind: "otc" | "auth_error", value: string): string =>
+      entry?.redirectPort !== undefined
+        ? `http://127.0.0.1:${entry.redirectPort}/danjocord-callback?${kind}=${value}`
+        : kind === "otc"
+          ? config.appUrl + "/#otc=" + value
+          : config.appUrl + "/?auth_error=" + value;
+
     if (!entry || entry.expiresAt <= Date.now()) {
-      return reply.redirect(config.appUrl + "/?auth_error=state", 302);
+      return reply.redirect(dest("auth_error", "state"), 302);
     }
 
     if (q.code === undefined) {
       // a pessoa cancelou na tela do Discord (error=access_denied) ou o redirect veio malformado
       app.log.error({ discordError: q.error ?? null }, "callback OAuth sem authorization code");
-      return reply.redirect(config.appUrl + "/?auth_error=discord", 302);
+      return reply.redirect(dest("auth_error", "discord"), 302);
     }
 
     const accessToken = await exchangeCode(app, q.code, entry.codeVerifier, redirectUri);
     if (accessToken === null) {
-      return reply.redirect(config.appUrl + "/?auth_error=discord", 302);
+      return reply.redirect(dest("auth_error", "discord"), 302);
     }
 
     const discordUser = await fetchDiscordUser(app, accessToken);
     if (discordUser === null) {
       await revokeDiscordToken(app, accessToken);
-      return reply.redirect(config.appUrl + "/?auth_error=discord", 302);
+      return reply.redirect(dest("auth_error", "discord"), 302);
     }
 
     // Allowlist ANTES de qualquer escrita: quem não foi convidado não deixa
@@ -111,7 +157,7 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
     if (!allowed) {
       await revokeDiscordToken(app, accessToken);
       app.log.warn({ discordId: discordUser.id }, "login OAuth recusado: fora da allowlist");
-      return reply.redirect(config.appUrl + "/?auth_error=not_allowed", 302);
+      return reply.redirect(dest("auth_error", "not_allowed"), 302);
     }
 
     // Upsert por discord_id (vive no Store desde o M2): re-login atualiza
@@ -129,9 +175,10 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
     await revokeDiscordToken(app, accessToken);
 
     const otc = sessions.issueOtc(user.id);
-    // fragment (#) e não query (?): o fragment nunca é enviado ao servidor,
-    // então o OTC não aparece no access log do Fastify nem em Referer
-    return reply.redirect(config.appUrl + "/#otc=" + otc, 302);
+    // fragment vs query: a escolha vive no dest() lá em cima — web usa
+    // fragment (fora de access log/Referer), loopback usa query (o listener
+    // local precisa ler)
+    return reply.redirect(dest("otc", otc), 302);
   });
 }
 

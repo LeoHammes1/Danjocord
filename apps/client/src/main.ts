@@ -8,7 +8,9 @@ import {
   type VoiceState,
 } from "@danjocord/protocol";
 import { GatewayClient, type GatewayStatus } from "./gateway.js";
-import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, logout, refresh } from "./auth.js";
+import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, hydrateAuth, logout, refresh } from "./auth.js";
+import { desktop } from "./bridge.js";
+import { playJoin, playLeave } from "./sounds.js";
 import { TypingSender, TypingTracker, typingLabel } from "./typing.js";
 import { VoiceClient } from "./voice.js";
 
@@ -56,6 +58,11 @@ const el = {
   streamBox: document.getElementById("stream-box")!,
   streamStop: document.getElementById("stream-stop") as HTMLButtonElement,
   streamUnmute: document.getElementById("stream-unmute") as HTMLButtonElement,
+  // push-to-talk (M6, só desktop)
+  pttSection: document.getElementById("ptt-section")!,
+  pttToggle: document.getElementById("ptt-toggle") as HTMLInputElement,
+  pttLabel: document.getElementById("ptt-label")!,
+  pttKey: document.getElementById("ptt-key") as HTMLButtonElement,
 };
 
 interface State {
@@ -188,6 +195,18 @@ function devErrorMessage(err: unknown): string {
     return "Login dev desligado neste servidor — use o Discord.";
   }
   return err instanceof AuthError ? `Login dev falhou: ${err.message}` : "Login dev falhou — servidor fora do ar?";
+}
+
+/**
+ * Erro do oauthLogin() da ponte (M6): a rejeição carrega o auth_error que o
+ * servidor mandou ao listener local (not_allowed etc.) OU um erro do próprio
+ * fluxo (timeout de 120s, listener caiu) — o mapa de códigos cobre o primeiro
+ * caso e o fallback genérico, os demais.
+ */
+function desktopLoginErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timeout|tempo/i.test(msg)) return "Tempo esgotado — tente entrar de novo.";
+  return authErrorMessage(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -682,6 +701,9 @@ function onDispatch(t: DispatchName, d: unknown): void {
   }
   if (t === "VOICE_STATE_UPDATE") {
     const v = d as VoiceState;
+    // canal ANTERIOR deste usuário, capturado ANTES da mutação — é o que
+    // permite distinguir "entrou/saiu do MEU canal" de um mero toggle de flag
+    const prevChannel = state.voiceStates.get(v.user_id)?.channel_id ?? null;
     if (v.channel_id === null) {
       state.voiceStates.delete(v.user_id);
       // some do anel já — o servidor só esvaziaria no próximo tick do observer
@@ -696,6 +718,14 @@ function onDispatch(t: DispatchName, d: unknown): void {
       // caindo antes da resposta): estamos idle mas o servidor nos vê em voz
       // — um leave de melhor esforço reconcilia (revisão M3 #3)
       if (v.user_id === state.me?.id) voice.reconcile(v.channel_id);
+    }
+    // sons de join/leave (M6, doc §8): só os movimentos dos OUTROS no MEU
+    // canal — os próprios tocam no onChange local (mais imediato, e na saída
+    // o voice.channelId daqui já estaria null quando o eco chegasse)
+    const mine = voice.channelId;
+    if (mine !== null && v.user_id !== state.me?.id) {
+      if (v.channel_id === mine && prevChannel !== mine) playVoiceSound("join");
+      else if (prevChannel === mine && v.channel_id !== mine) playVoiceSound("leave");
     }
     renderVoiceUi();
     return;
@@ -892,7 +922,30 @@ const voice = new VoiceClient((m, p) => {
   if (gw === null) return Promise.reject(new Error("gateway desconectado"));
   return gw.request(m, p);
 });
-voice.onChange = () => renderVoiceUi();
+
+/**
+ * Sons de join/leave (M6, doc §8): tocam quando ALGUÉM (inclusive eu) entra
+ * ou sai do MEU canal de voz — web e desktop. Deafen silencia tudo, sons de
+ * UI inclusive. Os movimentos dos OUTROS saem do VOICE_STATE_UPDATE; os MEUS
+ * saem daqui: o onChange dispara na hora do join/leave local (mais imediato
+ * que o eco do gateway, e cobre kick/logout, onde eco nem viria a tempo).
+ */
+function playVoiceSound(kind: "join" | "leave"): void {
+  if (voice.deafened) return;
+  if (kind === "join") playJoin();
+  else playLeave();
+}
+
+let lastOwnVoiceChannel: string | null = null;
+voice.onChange = () => {
+  const cur = voice.channelId;
+  if (cur !== lastOwnVoiceChannel) {
+    // troca direta de canal (X→Y) toca só o join — a saída é implícita
+    playVoiceSound(cur !== null ? "join" : "leave");
+    lastOwnVoiceChannel = cur;
+  }
+  renderVoiceUi();
+};
 
 function renderVoiceUi(): void {
   renderChannels(); // as listas de participantes moram sob os canais de voz
@@ -972,6 +1025,136 @@ el.voiceStream.addEventListener("click", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Push-to-talk (M6, SÓ desktop): o hook global de teclado vive no MAIN do
+// Electron (uiohook — o globalShortcut não separa keydown/keyup e consome a
+// tecla); aqui só a configuração e o reflexo no VoiceClient. A seção fica no
+// rodapé de voz e só sai do [hidden] quando a ponte existe.
+//
+// Persistência em localStorage — e NÃO em secretSet — DE PROPÓSITO: keycode e
+// label não são segredo, e a leitura síncrona no load do módulo dispensa mais
+// uma hidratação assíncrona (no scheme app:// do desktop, que é "standard", o
+// localStorage persiste normalmente no perfil do Electron).
+// ---------------------------------------------------------------------------
+
+interface PttConfig {
+  on: boolean;
+  keycode: number | null;
+  /** rótulo legível da tecla ("F13", "tecla 91"…) — vem do pttCaptureNextKey */
+  label: string | null;
+}
+
+const PTT_STORAGE_KEY = "danjocord_ptt";
+
+function loadPtt(): PttConfig {
+  try {
+    const raw = localStorage.getItem(PTT_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed = JSON.parse(raw) as Partial<PttConfig>;
+      return {
+        on: parsed.on === true,
+        keycode: typeof parsed.keycode === "number" ? parsed.keycode : null,
+        label: typeof parsed.label === "string" ? parsed.label : null,
+      };
+    }
+  } catch {
+    // JSON corrompido: volta ao default (PTT desligado)
+  }
+  return { on: false, keycode: null, label: null };
+}
+
+const ptt: PttConfig = loadPtt();
+/** a tecla está segurada AGORA — só alimenta o rótulo; o mic é o VoiceClient */
+let pttHeld = false;
+let pttCapturing = false;
+/** captura disparada pelo TOGGLE (ligar sem tecla): o checkbox fica aceso enquanto espera */
+let pttEnablePending = false;
+
+function savePtt(): void {
+  localStorage.setItem(PTT_STORAGE_KEY, JSON.stringify(ptt));
+}
+
+function renderPtt(): void {
+  if (desktop === undefined) return; // no web a seção nem existe visualmente
+  el.pttSection.hidden = false;
+  el.pttToggle.checked = ptt.on || pttEnablePending;
+  el.pttToggle.disabled = pttCapturing; // sem des/marcar no meio da captura
+  el.pttKey.textContent = pttCapturing ? "pressione uma tecla…" : (ptt.label ?? "definir tecla");
+  el.pttKey.disabled = pttCapturing;
+  // o botão de MUTE não muda com o PTT ligado (contrato M6): mic fechado
+  // entre presses NÃO é "mutado" — é o RÓTULO do toggle que conta o estado
+  el.pttLabel.textContent = !ptt.on
+    ? "Push-to-talk"
+    : pttHeld
+      ? "Push-to-talk — transmitindo"
+      : `Push-to-talk — segure ${ptt.label ?? "a tecla"}`;
+  el.pttSection.classList.toggle("transmitting", ptt.on && pttHeld);
+}
+
+/** Instala/desliga o hook global conforme o estado atual (melhor esforço). */
+function syncPttHook(): void {
+  if (desktop === undefined) return;
+  void desktop
+    .pttSetKey(ptt.on ? ptt.keycode : null)
+    .catch((err: unknown) => console.warn("ptt: pttSetKey falhou", err));
+}
+
+async function capturePttKey(enableAfter: boolean): Promise<void> {
+  if (desktop === undefined || pttCapturing) return;
+  pttCapturing = true;
+  pttEnablePending = enableAfter;
+  renderPtt(); // o botão vira o feedback "pressione uma tecla…"
+  try {
+    const captured = await desktop.pttCaptureNextKey();
+    ptt.keycode = captured.keycode;
+    ptt.label = captured.label;
+    if (enableAfter) ptt.on = true;
+    savePtt();
+    voice.setPttMode(ptt.on);
+    syncPttHook(); // troca a tecla do hook vivo (ou o instala, se acabou de ligar)
+  } catch (err) {
+    console.warn("ptt: captura de tecla falhou", err);
+  } finally {
+    pttCapturing = false;
+    pttEnablePending = false;
+    renderPtt();
+  }
+}
+
+if (desktop !== undefined) {
+  // registrado UMA vez, para a vida toda do app. NADA de renderVoiceUi aqui:
+  // um re-render completo recriaria os tiles de vídeo a cada aperto — só o
+  // track do mic (VoiceClient) e o rótulo do toggle mudam por tecla
+  desktop.onPtt((down) => {
+    pttHeld = down;
+    voice.setPttPressed(down);
+    renderPtt();
+  });
+
+  el.pttToggle.addEventListener("change", () => {
+    if (el.pttToggle.checked && ptt.keycode === null) {
+      // ligou sem tecla definida: captura primeiro — o modo ativa junto (um
+      // PTT "ligado" sem tecla seria um mic fechado sem jeito de abrir)
+      void capturePttKey(true);
+      return;
+    }
+    ptt.on = el.pttToggle.checked;
+    savePtt();
+    voice.setPttMode(ptt.on);
+    syncPttHook();
+    renderPtt();
+  });
+
+  el.pttKey.addEventListener("click", () => void capturePttKey(false));
+
+  // config persistida religa modo + hook ao abrir o app
+  if (ptt.on && ptt.keycode !== null) {
+    voice.setPttMode(true);
+    syncPttHook();
+  }
+  renderPtt();
+}
 
 // ---------------------------------------------------------------------------
 // Grade de vídeo (M4): tiles remotos entregues pelo VoiceClient (onVideoTile)
@@ -1253,7 +1436,26 @@ el.composer.addEventListener("submit", (ev) => {
 // ---------------------------------------------------------------------------
 
 el.loginDiscord.addEventListener("click", () => {
-  // o backend inicia o fluxo (state + PKCE ficam server-side) e redireciona
+  if (desktop !== undefined) {
+    // desktop (M6, doc §5): fluxo loopback — o main abre o navegador EXTERNO
+    // (start?redirect_port=<listener local>) e resolve com o OTC quando o
+    // callback bater no 127.0.0.1; daí o caminho é o mesmo do web
+    const idle = el.loginDiscord.textContent ?? "Entrar com Discord";
+    el.loginDiscord.disabled = true;
+    el.loginDiscord.textContent = "aguardando o navegador…";
+    showLogin(); // limpa um erro anterior enquanto o fluxo roda lá fora
+    desktop
+      .oauthLogin()
+      .then((otc) => exchangeOtc(otc))
+      .then(() => startApp())
+      .catch((err: unknown) => showLogin(desktopLoginErrorMessage(err)))
+      .finally(() => {
+        el.loginDiscord.disabled = false;
+        el.loginDiscord.textContent = idle;
+      });
+    return;
+  }
+  // web: o backend inicia o fluxo (state + PKCE ficam server-side) e redireciona
   location.href = API + "/auth/discord/start";
 });
 
@@ -1270,6 +1472,9 @@ el.devForm.addEventListener("submit", (ev) => {
 el.logout.addEventListener("click", () => void doLogout());
 
 async function boot(): Promise<void> {
+  // desktop (M6): hidrata o cache de segredos ANTES de qualquer getAccessToken
+  // síncrono — sem isto, uma sessão salva no safeStorage pareceria logout
+  await hydrateAuth();
   const params = new URLSearchParams(location.search);
   // o OTC chega no FRAGMENT (#otc=) de propósito: fragment não é enviado ao
   // servidor, então a credencial nunca aparece em access log nem em Referer

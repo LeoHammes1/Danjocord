@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<!--
+  Picker de Go Live (doc §7): janelinha modal aberta pelo main quando o
+  renderer chama getDisplayMedia. HTML/CSS inline de propósito — zero assets,
+  zero rede; os thumbnails chegam como data URLs pelo preload do picker.
+  Restrição: este arquivo é copiado cru para dist/ pelo scripts/copy-static.mjs
+  (tsc não copia .html) — não referenciar nada externo aqui.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'">
+<title>Transmitir — escolha uma fonte</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: #14181e; color: #e3e7ee;
+    font-family: system-ui, sans-serif; font-size: 14px;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  }
+  header { padding: 14px 18px 10px; }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header p { color: #9aa4b2; font-size: 12px; margin-top: 2px; }
+  #sources {
+    flex: 1; overflow-y: auto; padding: 8px 18px 14px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
+    align-content: start;
+  }
+  .source {
+    background: #1b212b; border: 1px solid #2a3342; border-radius: 8px;
+    padding: 8px; cursor: pointer; text-align: left; color: inherit; font: inherit;
+  }
+  .source:hover, .source:focus-visible { border-color: #6c8cff; outline: none; }
+  .source img.thumb {
+    width: 100%; aspect-ratio: 16 / 9; object-fit: contain;
+    background: #0d1117; border-radius: 4px; display: block;
+  }
+  .source .label {
+    display: flex; align-items: center; gap: 6px; margin-top: 6px;
+    white-space: nowrap; overflow: hidden;
+  }
+  .source .label img.icon { width: 16px; height: 16px; flex: none; }
+  .source .label span { overflow: hidden; text-overflow: ellipsis; }
+  .section-title {
+    grid-column: 1 / -1; color: #9aa4b2; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .08em; margin-top: 6px;
+  }
+  footer {
+    padding: 10px 18px; border-top: 1px solid #2a3342;
+    display: flex; justify-content: flex-end;
+  }
+  footer button {
+    background: #2a3342; color: #e3e7ee; border: 0; border-radius: 6px;
+    padding: 8px 16px; font: inherit; cursor: pointer;
+  }
+  footer button:hover { background: #37435a; }
+  .empty { grid-column: 1 / -1; color: #9aa4b2; padding: 24px 0; text-align: center; }
+  .warn { color: #ffb782; font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Transmitir tela</h1>
+    <p>Escolha uma tela inteira ou uma janela. Esc cancela.</p>
+    <!-- disclosure de privacidade (revisão M6 #3): no Windows a captura vai
+         com audio "loopback", que é o áudio do SISTEMA inteiro — não só o da
+         janela escolhida. O usuário precisa saber ANTES de clicar. -->
+    <p class="warn" id="audio-warn" hidden>🔊 O áudio do sistema (tudo que tocar no computador) será transmitido junto.</p>
+  </header>
+  <div id="sources"></div>
+  <footer><button id="cancel" type="button">Cancelar</button></footer>
+<script>
+  // A ponte do picker (window.danjocordPicker) vem do picker-preload:
+  // onSources entrega a lista serializada; choose(id) / cancel() respondem.
+  const bridge = window.danjocordPicker;
+  const grid = document.getElementById("sources");
+  // aviso de áudio do sistema só onde ele de fato vai junto (Windows)
+  if (bridge.systemAudio) document.getElementById("audio-warn").hidden = false;
+
+  function sourceButton(s) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "source";
+    btn.title = s.name;
+    const thumb = document.createElement("img");
+    thumb.className = "thumb";
+    thumb.alt = "";
+    thumb.src = s.thumbnail_data_url;
+    btn.append(thumb);
+    const label = document.createElement("div");
+    label.className = "label";
+    if (s.app_icon_data_url) {
+      const icon = document.createElement("img");
+      icon.className = "icon";
+      icon.alt = "";
+      icon.src = s.app_icon_data_url;
+      label.append(icon);
+    }
+    const name = document.createElement("span");
+    name.textContent = s.name;
+    label.append(name);
+    btn.append(label);
+    btn.addEventListener("click", () => bridge.choose(s.id));
+    return btn;
+  }
+
+  bridge.onSources((sources) => {
+    grid.replaceChildren();
+    if (sources.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Nenhuma fonte de captura encontrada.";
+      grid.append(empty);
+      return;
+    }
+    for (const kind of ["screen", "window"]) {
+      const group = sources.filter((s) => s.kind === kind);
+      if (group.length === 0) continue;
+      const title = document.createElement("div");
+      title.className = "section-title";
+      title.textContent = kind === "screen" ? "Telas" : "Janelas";
+      grid.append(title);
+      for (const s of group) grid.append(sourceButton(s));
+    }
+  });
+
+  document.getElementById("cancel").addEventListener("click", () => bridge.cancel());
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") bridge.cancel();
+  });
+</script>
+</body>
+</html>

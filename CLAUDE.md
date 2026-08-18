@@ -47,6 +47,10 @@ pnpm typecheck
 pnpm smoke                   # e2e do gateway (precisa do server rodando)
 pnpm --filter @danjocord/server test   # testes unitários (node --test)
 
+# app desktop (M6) — precisa do `pnpm dev` (server + vite) em outro terminal:
+pnpm --filter @danjocord/desktop dev   # DANJOCORD_DEV=1 → Electron carrega o vite (:5173)
+pnpm --filter @danjocord/desktop dist  # instalador NSIS local (bundla o cliente com a API de produção)
+
 # allowlist (doc §5) — rodar de apps/server; usa o build (dist) e o mesmo
 # DB_PATH do servidor (em produção: kubectl exec no pod):
 node scripts/allowlist.ts <add|remove|list> [discord_id] [--by <discord_id>]
@@ -55,6 +59,36 @@ node scripts/allowlist.ts <add|remove|list> [discord_id] [--by <discord_id>]
 A imagem do ghcr é publicada pelo `.github/workflows/release.yml` a cada push
 na main (amd64 — o pod pina no nó x86). Após publicar: `rollout restart` do
 deployment no cluster.
+
+## App desktop (M6)
+
+`apps/desktop` é casca fina (doc §7/§8): TODA a UI/mídia vem do bundle de
+`apps/client` (dev: vite; produção: scheme `app://` servindo `renderer-dist`,
+gerado por `scripts/bundle-renderer.mjs`). O main só dá superpoderes de SO,
+expostos ao renderer pela ponte `window.danjocord` (preload + contextBridge;
+tipo em `apps/client/src/desktop.d.ts`):
+
+- **Tray**: fechar esconde a janela (voz continua); sair só pelo menu.
+- **PTT global**: `uiohook-napi` no main (decisão acima); o cliente mostra a
+  seção de PTT no rodapé de voz apenas quando `window.danjocord` existe.
+- **Picker de Go Live**: `setDisplayMediaRequestHandler` + janelinha própria
+  com `desktopCapturer`; áudio de sistema (`loopback`) no Windows. O
+  `voice.ts` do cliente não muda — é o mesmo `getDisplayMedia`.
+- **OAuth loopback**: `oauthLogin()` sobe um `http.Server` em 127.0.0.1:porta
+  aleatória e abre o navegador em `/auth/discord/start?redirect_port=<porta>`;
+  o callback do servidor redireciona para
+  `http://127.0.0.1:<porta>/danjocord-callback` com **query** (`?otc=`/
+  `?auth_error=`) — query e não fragment porque o listener local precisa ler o
+  valor; o fluxo web continua com fragment (`#otc=`) e nada mudou nele
+  (`apps/server/src/oauth.ts`; testes em
+  `apps/server/test/oauth-loopback.test.ts`).
+- **Segredos**: tokens via `safeStorage` num JSON em userData (o cliente troca
+  localStorage pela ponte quando é desktop; web segue localStorage).
+
+Release do desktop: tag `v*` → `.github/workflows/desktop-release.yml`
+(windows-latest) gera o NSIS e publica no GitHub Release da tag (draft —
+publicar manualmente); os apps instalados se atualizam via `electron-updater`
+(`checkForUpdatesAndNotify` no ready, só empacotado).
 
 ## Convenções
 

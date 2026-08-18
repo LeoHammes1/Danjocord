@@ -5,6 +5,11 @@
  * suíte nova precisa ser importada aqui, com a extensão .ts explícita (o
  * type stripping não remapeia ".js" → ".ts").
  */
+// oauth primeiro DE PROPÓSITO: o config congela process.env no primeiro
+// import de src, e esta suíte precisa de DISCORD_CLIENT_ID definido antes
+// disso (ela não mexe em relógio e usa banco :memory: próprio — inofensiva
+// para as demais)
+import "./oauth-loopback.test.ts";
 import "./sessions.test.ts";
 // depois de sessions de propósito: os testes de lá com relógio mockado deixam
 // o gerador de snowflakes "no futuro", e esta suíte usa banco novo — sem risco

@@ -5,5 +5,8 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   mediasoup: true # baixa/compila o worker C++ no postinstall
+  electron: true # baixa o binário do Electron no postinstall
+  uiohook-napi: true # prebuild N-API do hook global de teclado (PTT)
+  electron-winstaller: true # dependência do electron-builder (instalador NSIS)
 minimumReleaseAgeExclude:
   - mediasoup@3.25.0

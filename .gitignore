@@ -16,3 +16,5 @@ data/
 # artefatos de editor/SO
 .DS_Store
 Thumbs.db
+apps/desktop/renderer-dist/
+apps/desktop/release/

@@ -1,0 +1,48 @@
+# Release do app desktop (M6): tag v* → instalador Windows no GitHub Release
+# da tag → os apps instalados dos amigos se atualizam sozinhos.
+#
+# O fluxo, ponta a ponta:
+#   1. git tag v0.1.0 && git push origin v0.1.0
+#   2. este workflow (windows-latest — NSIS e os módulos nativos precisam do
+#      SO alvo) roda `pnpm --filter @danjocord/desktop dist`: bundla o
+#      renderer (build do apps/client com VITE_API_BASE de produção via
+#      scripts/bundle-renderer.mjs), compila o main e chama o electron-builder,
+#      que gera o instalador e PUBLICA os artefatos (Setup.exe + latest.yml)
+#      no Release da tag — o "publish" do apps/desktop/package.json já aponta
+#      para LeoHammes1/Danjocord.
+#   3. o electron-updater dos apps instalados (checkForUpdatesAndNotify no
+#      ready, só quando empacotado) lê o latest.yml do último Release
+#      publicado e baixa/instala a versão nova em segundo plano.
+#
+# Atenção: o electron-builder cria o Release como DRAFT por padrão — depois do
+# workflow, publicar o release no GitHub para os updaters enxergarem.
+# GH_TOKEN: o GITHUB_TOKEN do próprio job basta (permissions.contents: write).
+name: desktop-release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # a versão do pnpm vem do campo packageManager do package.json raiz
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # o build do cliente (dentro do dist, via bundle-renderer) importa o
+      # dist do protocol — compilar antes
+      - run: pnpm --filter @danjocord/protocol build
+      # --publish always: determinístico, sem depender da detecção de tag do
+      # electron-builder (o pnpm anexa os args extras ao fim do script "dist",
+      # ou seja, na chamada do electron-builder)
+      - run: pnpm --filter @danjocord/desktop dist --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

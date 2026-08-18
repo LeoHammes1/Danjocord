@@ -15,7 +15,7 @@ decisões, diagramas, roadmap M0–M7 e repositórios de referência.
 | Mídia | mediasoup (SFU embutido no processo) — a partir do M3 |
 | Banco | SQLite (WAL, better-sqlite3) |
 | Protocolo | Gateway WebSocket estilo Discord: `{op, d, s, t}`, heartbeat, resume |
-| Cliente | Electron (M6); durante o dev, o mesmo bundle roda no navegador |
+| Cliente | Electron (casca fina, M6); durante o dev, o mesmo bundle roda no navegador |
 | Deploy | Cluster k3s, pod pinado no nó do Brasil (`deploy/danjocord.yaml`) |
 
 ## Estrutura
@@ -24,7 +24,7 @@ decisões, diagramas, roadmap M0–M7 e repositórios de referência.
 packages/protocol   schemas Zod compartilhados (envelope do gateway, entidades, REST)
 apps/server         backend: gateway + REST + SQLite
 apps/client         cliente web de referência (Vite, vanilla por enquanto)
-apps/desktop        casca Electron (chega no M6)
+apps/desktop        casca fina Electron: tray, PTT global, picker de Go Live, auto-update (M6)
 deploy/             manifest k8s de referência
 ```
 
@@ -86,6 +86,42 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
    A CLI respeita o mesmo `DB_PATH` do servidor. Em produção:
    `kubectl -n production exec deploy/danjocord -- node scripts/allowlist.ts list`.
 
+## App desktop (Electron, M6)
+
+`apps/desktop` é uma **casca fina** (doc §7): toda a UI e a mídia são o MESMO
+bundle web de `apps/client` — o main do Electron só adiciona os superpoderes
+de SO que o navegador não dá:
+
+- **Bandeja**: fechar a janela esconde (a voz continua); sair de verdade só
+  pelo menu do tray.
+- **Push-to-talk global** via `uiohook-napi` no main (o `globalShortcut` não
+  serve — não separa keydown/keyup e consome a tecla). A tecla é configurável
+  no rodapé de voz, só no desktop.
+- **Picker de Go Live**: o main intercepta o `getDisplayMedia` com uma
+  janelinha própria de telas/janelas (`desktopCapturer`); no Windows o áudio
+  de sistema vai junto (loopback nativo).
+- **Login OAuth por loopback**: o navegador externo faz o fluxo do Discord e
+  volta para `http://127.0.0.1:<porta>/danjocord-callback` (um `http.Server`
+  efêmero do app — ver `?redirect_port` em `apps/server/src/oauth.ts`).
+- **Tokens no `safeStorage`** (cifrados pelo SO) em vez de localStorage.
+
+Dev (com `pnpm dev` — server + vite — rodando em outro terminal):
+
+```bash
+pnpm --filter @danjocord/desktop dev   # DANJOCORD_DEV=1 → carrega http://localhost:5173
+```
+
+Release: criar e subir uma tag `v*`:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+O workflow `.github/workflows/desktop-release.yml` gera o instalador NSIS em
+`windows-latest` e sobe os artefatos no GitHub Release da tag (nasce como
+draft — publicar o release para os apps instalados se atualizarem via
+`electron-updater`).
+
 ## Estado do roadmap
 
 - [x] **M0 — Fundação**: monorepo, gateway (Hello/Identify/Ready, heartbeat,
@@ -106,5 +142,9 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
 - [x] **M5 — Go Live**: screen share até 4K (`contentHint='detail'`, H.264 ≥1080p),
   1 transmissão por canal, viewers sob demanda (`close_consumer` devolve a banda),
   soundshare, badge AO VIVO, semântica de restart no produce
-- [ ] **M6 — App Electron**
+- [x] **M6 — App Electron**: casca fina servindo o mesmo bundle web (scheme
+  `app://`), tray, push-to-talk global (uiohook-napi), picker próprio de Go
+  Live com áudio de sistema no Windows, OAuth por loopback (`?redirect_port`),
+  tokens no safeStorage, sons de join/leave (web também), auto-update por
+  GitHub Releases (tag `v*` → `desktop-release.yml`)
 - [ ] **M7 — Estudo avançado**
