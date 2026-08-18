@@ -82,8 +82,9 @@
         height: 100vh;
         display: grid;
         grid-template-columns: 220px 1fr;
-        grid-template-rows: 48px 1fr auto auto;
-        grid-template-areas: "side head" "side msgs" "side typing" "side form";
+        /* a linha "video" (M4) colapsa a zero quando o painel está [hidden] */
+        grid-template-rows: 48px auto 1fr auto auto;
+        grid-template-areas: "side head" "side video" "side msgs" "side typing" "side form";
       }
       header {
         grid-area: head;
@@ -220,6 +221,66 @@
       #voice-leave { font-size: 0.78rem; }
       #voice-leave:hover { color: var(--accent); border-color: var(--accent); }
 
+      /* --- vídeo (M4): grade de tiles acima da área de mensagens --- */
+      #video-panel {
+        grid-area: video;
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+        padding: 0.5rem 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .video-panel-head { display: flex; align-items: center; justify-content: space-between; }
+      .video-panel-head h2 {
+        margin: 0;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+      #video-collapse {
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 0.75rem;
+        padding: 0.1rem 0.5rem;
+        cursor: pointer;
+      }
+      #video-collapse:hover { color: var(--ink); border-color: var(--muted); }
+      #video-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 0.5rem;
+        /* teto de altura (doc §8): muita gente de câmera aberta rola aqui
+           dentro em vez de esmagar a área de mensagens */
+        max-height: 40vh;
+        overflow-y: auto;
+      }
+      .video-tile {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        background: #000;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .video-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+      .video-tile-name {
+        position: absolute;
+        left: 0.4rem;
+        bottom: 0.35rem;
+        max-width: calc(100% - 0.8rem);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.72rem;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.55);
+        border-radius: 4px;
+        padding: 0.08rem 0.4rem;
+      }
+
       #members li { list-style: none; font-size: 0.9rem; color: var(--muted); padding: 0.15rem 0; }
       #members li.online { color: var(--ink); }
       #members li.online::before { content: "● "; color: var(--ok); font-size: 0.7em; vertical-align: 0.15em; }
@@ -341,6 +402,7 @@
             <span id="voice-footer-channel"></span>
           </div>
           <div class="voice-footer-actions">
+            <button id="voice-camera" type="button" title="Ligar câmera">📷</button>
             <button id="voice-mute" type="button" title="Mutar">🎙️</button>
             <button id="voice-deafen" type="button" title="Ensurdecer">🎧</button>
             <button id="voice-leave" type="button" title="Desconectar">Sair</button>
@@ -356,6 +418,14 @@
           <button id="logout">Sair</button>
         </div>
       </header>
+      <!-- grade de vídeo (M4): só aparece em voz com ≥1 tile (preview local conta) -->
+      <div id="video-panel" hidden>
+        <div class="video-panel-head">
+          <h2>Vídeo</h2>
+          <button id="video-collapse" type="button" title="Recolher vídeos">▾</button>
+        </div>
+        <div id="video-grid"></div>
+      </div>
       <main id="messages"></main>
       <!-- aria-live: leitor de tela anuncia "fulano está digitando…" sem roubar o foco -->
       <div id="typing" aria-live="polite"></div>

@@ -44,6 +44,11 @@ const el = {
   voiceMute: document.getElementById("voice-mute") as HTMLButtonElement,
   voiceDeafen: document.getElementById("voice-deafen") as HTMLButtonElement,
   voiceLeave: document.getElementById("voice-leave") as HTMLButtonElement,
+  // vídeo (M4)
+  voiceCamera: document.getElementById("voice-camera") as HTMLButtonElement,
+  videoPanel: document.getElementById("video-panel")!,
+  videoGrid: document.getElementById("video-grid")!,
+  videoCollapse: document.getElementById("video-collapse") as HTMLButtonElement,
 };
 
 interface State {
@@ -261,12 +266,16 @@ function voiceUserEl(v: VoiceState, speaking: boolean): HTMLElement {
   label.className = "voice-name";
   label.textContent = name;
   li.append(label);
-  // surdo implica mudo — mostrar um só ícone evita ruído visual
-  if (v.self_deaf || v.self_mute) {
+  // surdo implica mudo — um só ícone de áudio; a câmera (M4) soma o dela
+  const icons: { icon: string; label: string }[] = [];
+  if (v.self_video) icons.push({ icon: "📷", label: "câmera ligada" });
+  if (v.self_deaf) icons.push({ icon: "🔕", label: "ensurdecido" });
+  else if (v.self_mute) icons.push({ icon: "🔇", label: "mutado" });
+  if (icons.length > 0) {
     const flags = document.createElement("span");
     flags.className = "voice-flags";
-    flags.textContent = v.self_deaf ? "🔕" : "🔇";
-    flags.title = v.self_deaf ? "ensurdecido" : "mutado";
+    flags.textContent = icons.map((i) => i.icon).join(" ");
+    flags.title = icons.map((i) => i.label).join(", ");
     li.append(flags);
   }
   return li;
@@ -658,11 +667,14 @@ function onDispatch(t: DispatchName, d: unknown): void {
     return;
   }
   if (t === "VOICE_NEW_PRODUCER") {
-    const p = d as { channel_id: string; user_id: string; producer_id: string };
-    // o PRÓPRIO user_id não se consome (inclui outra aba do mesmo usuário — eco)
+    const p = d as { channel_id: string; user_id: string; producer_id: string; kind?: string };
+    // o PRÓPRIO user_id não se consome (inclui outra aba do mesmo usuário — eco;
+    // e a nossa câmera: o preview local é o track cru, nunca via servidor)
     if (p.user_id === state.me?.id) return;
     if (p.channel_id !== voice.channelId) return; // producer de outro canal não nos diz respeito
-    void voice.consume(p.producer_id).catch((err: unknown) => console.warn("voz: consume falhou", err));
+    // M4: vídeo vira tile na grade; áudio segue o fluxo do M3
+    const task = p.kind === "video" ? voice.consumeVideo(p.user_id, p.producer_id) : voice.consume(p.producer_id);
+    void task.catch((err: unknown) => console.warn("voz: consume falhou", err));
     return;
   }
   if (t === "VOICE_PRODUCER_CLOSED") {
@@ -842,6 +854,7 @@ voice.onChange = () => renderVoiceUi();
 function renderVoiceUi(): void {
   renderChannels(); // as listas de participantes moram sob os canais de voz
   renderVoiceFooter();
+  renderVideoGrid(); // câmera ligada/desligada e teardown mexem nos tiles (M4)
 }
 
 async function joinVoice(channelId: string): Promise<void> {
@@ -871,11 +884,134 @@ function renderVoiceFooter(): void {
   el.voiceDeafen.textContent = voice.deafened ? "🔕" : "🎧";
   el.voiceDeafen.title = voice.deafened ? "Voltar a ouvir" : "Ensurdecer";
   el.voiceDeafen.classList.toggle("on", voice.deafened);
+  // câmera (M4): mesmo padrão .on dos vizinhos — ligada grita de propósito
+  el.voiceCamera.title = voice.cameraOn ? "Desligar câmera" : "Ligar câmera";
+  el.voiceCamera.classList.toggle("on", voice.cameraOn);
 }
 
 el.voiceMute.addEventListener("click", () => void voice.toggleMute());
 el.voiceDeafen.addEventListener("click", () => void voice.toggleDeafen());
 el.voiceLeave.addEventListener("click", () => void voice.leave());
+el.voiceCamera.addEventListener("click", () => {
+  // getUserMedia negado, servidor recusou, voz caindo: só registra — o estado
+  // visível (botão/preview) já foi zerado pelo próprio toggleCamera
+  void voice.toggleCamera().catch((err: unknown) => console.warn("voz: falha ao alternar a câmera", err));
+});
+
+// ---------------------------------------------------------------------------
+// Grade de vídeo (M4): tiles remotos entregues pelo VoiceClient (onVideoTile)
+// + preview local com o próprio cameraTrack (nunca passa pelo servidor).
+// Colapsar a grade pausa os consumers NO SERVIDOR — economia real (doc §8).
+// ---------------------------------------------------------------------------
+
+/** producer_id → tile remoto; o preview local fica fora (não tem producer nosso consumido) */
+const videoTiles = new Map<string, { userId: string; el: HTMLVideoElement }>();
+let videoCollapsed = false;
+/** <video> do preview local + o track exibido (recriado quando a câmera religa) */
+let localPreview: HTMLVideoElement | null = null;
+let localPreviewTrack: MediaStreamTrack | null = null;
+
+voice.onVideoTile = (userId, producerId, videoEl) => {
+  if (videoEl === null) {
+    videoTiles.delete(producerId);
+  } else {
+    videoTiles.set(producerId, { userId, el: videoEl });
+    // o consumer nasce pausado no servidor: com a grade expandida, acorda já;
+    // colapsada, fica pausado até o usuário expandir (setTileVisibility true)
+    if (!videoCollapsed) void voice.setTileVisibility(producerId, true);
+  }
+  updateTileLayers();
+  renderVideoGrid();
+};
+
+/**
+ * Camada pelo TAMANHO RENDERIZADO do tile, não pela contagem (revisão M4 #1):
+ * com captura 4K a camada 2 vale ~10 Mbps — um tile de 300 px puxando 2160p
+ * seria a economia do doc §8 invertida. O assinante não sabe a resolução do
+ * produtor (só a escada relativa), então o mapeamento é pelo que ele mesmo
+ * exibe: tiles grandes merecem camada alta; thumbnails, a baixa.
+ */
+function updateTileLayers(): void {
+  if (videoTiles.size === 0) return;
+  // pós-layout: offsetHeight só é real depois do renderVideoGrid assentar
+  requestAnimationFrame(() => {
+    for (const [pid, tile] of videoTiles) {
+      const h = tile.el.offsetHeight;
+      if (h === 0) continue; // grade colapsada — consumer já está pausado
+      const spatial = h >= 540 ? 2 : h >= 270 ? 1 : 0;
+      // o VoiceClient dedupa por consumer — repetir a mesma camada não gera tráfego
+      void voice.setTileLayer(pid, spatial);
+    }
+  });
+}
+
+function videoTileEl(video: HTMLVideoElement, name: string): HTMLElement {
+  const tile = document.createElement("div");
+  tile.className = "video-tile";
+  const label = document.createElement("span");
+  label.className = "video-tile-name";
+  label.textContent = name;
+  tile.append(video, label);
+  return tile;
+}
+
+function renderVideoGrid(): void {
+  const inVoice = voice.channelId !== null;
+  if (!inVoice) videoCollapsed = false; // a próxima chamada nasce expandida
+  const camTrack = voice.cameraTrack;
+  if (camTrack === null) {
+    localPreview = null; // câmera desligou: solta o <video> do preview
+    localPreviewTrack = null;
+  }
+  const total = videoTiles.size + (camTrack !== null ? 1 : 0);
+  if (!inVoice || total === 0) {
+    el.videoPanel.hidden = true;
+    el.videoGrid.replaceChildren();
+    return;
+  }
+  el.videoPanel.hidden = false;
+  el.videoCollapse.textContent = videoCollapsed ? "▸" : "▾";
+  el.videoCollapse.title = videoCollapsed ? "Expandir vídeos" : "Recolher vídeos";
+  el.videoGrid.hidden = videoCollapsed;
+  if (videoCollapsed) {
+    // os <video> saem do DOM; os consumers já estão pausados no servidor
+    el.videoGrid.replaceChildren();
+    return;
+  }
+
+  const tiles: HTMLElement[] = [];
+  if (camTrack !== null) {
+    // preview local: o PRÓPRIO track num <video> mudo — sem servidor no meio
+    if (localPreview === null || localPreviewTrack !== camTrack) {
+      localPreview = document.createElement("video");
+      localPreview.muted = true;
+      localPreview.autoplay = true;
+      localPreview.playsInline = true;
+      localPreview.srcObject = new MediaStream([camTrack]);
+      localPreviewTrack = camTrack;
+    }
+    tiles.push(videoTileEl(localPreview, (state.me?.username ?? "você") + " (você)"));
+  }
+  for (const t of videoTiles.values()) {
+    // mesmo fallback da lista de voz: membro desconhecido vira placeholder
+    tiles.push(videoTileEl(t.el, state.members.get(t.userId)?.username ?? `user-${t.userId.slice(-4)}`));
+  }
+  el.videoGrid.replaceChildren(...tiles);
+  // re-inserir um <video> no DOM pode pausá-lo em alguns navegadores; como
+  // todos são muted, o play() volta sem exigir gesto do usuário
+  for (const tile of tiles) {
+    const v = tile.querySelector("video");
+    if (v !== null) void v.play().catch(() => undefined);
+  }
+}
+
+el.videoCollapse.addEventListener("click", () => {
+  videoCollapsed = !videoCollapsed;
+  // pausa/retoma NO SERVIDOR (pause_consumer/resume_consumer): a banda de
+  // vídeo zera de verdade quando a grade colapsa, não só some da tela
+  for (const pid of videoTiles.keys()) void voice.setTileVisibility(pid, !videoCollapsed);
+  renderVideoGrid();
+});
 
 // ---------------------------------------------------------------------------
 // Composer (render otimista do M0 + typing do M2)

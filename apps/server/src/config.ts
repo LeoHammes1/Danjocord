@@ -47,8 +47,13 @@ export const config = {
    * interface): produção = IP público do nó (72.61.44.156); dev = 127.0.0.1
    */
   rtcAnnouncedIp: env.ANNOUNCED_IP ?? "127.0.0.1",
-  /** bitrate máximo de entrada por producer de áudio (folga sobre Opus 64k) */
-  rtcMaxIncomingBitrate: Number(env.RTC_MAX_INCOMING_BITRATE ?? 128_000),
+  /**
+   * bitrate máximo de entrada por transport send: áudio Opus (~64k) + webcam
+   * em simulcast adaptativo de 3 camadas — com captura 4K o topo chega a
+   * ~10 Mbps (2160p@10M + 1080p@2,5M + 540p@800k) + folga de headroom.
+   * A política de camadas por tile (cliente) evita que o EGRESS multiplique.
+   */
+  rtcMaxIncomingBitrate: Number(env.RTC_MAX_INCOMING_BITRATE ?? 15_000_000),
   /** intervalo do audioLevelObserver — orçamento de "quem fala" < 200 ms (doc §8) */
   rtcSpeakingIntervalMs: Number(env.RTC_SPEAKING_INTERVAL_MS ?? 150),
 

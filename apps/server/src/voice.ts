@@ -1,12 +1,15 @@
 import { createWorker, type types } from "mediasoup";
 import {
+  VoiceCloseProducerParams,
   VoiceConnectTransportParams,
   VoiceConsumeParams,
   VoiceCreateTransportParams,
   VoiceJoinParams,
+  VoicePauseConsumerParams,
   VoiceProduceParams,
   VoiceRestartIceParams,
   VoiceResumeConsumerParams,
+  VoiceSetPreferredLayersParams,
   VoiceUpdateStateParams,
   type DispatchEvent,
   type DispatchName,
@@ -23,10 +26,12 @@ const MAX_PRODUCERS_PER_SESSION = 4;
 const MAX_CONSUMERS_PER_SESSION = 64;
 
 /**
- * Servidor de voz (M3, doc §3.6): mediasoup embutido no processo.
- * Worker único → Router por canal de voz (lazy) → WebRtcTransport send/recv
- * por sessão → Producer/Consumer. A sinalização entra pelo gateway (op 20,
- * delegada via handleRequest) e os eventos saem por broadcast (op 0).
+ * Servidor de voz (M3, doc §3.6; M4 soma vídeo/simulcast, doc §3.4):
+ * mediasoup embutido no processo. Worker único → Router por canal de voz
+ * (lazy) → WebRtcTransport send/recv por sessão → Producer/Consumer (áudio e,
+ * no M4, a webcam pelo MESMO send transport). A sinalização entra pelo
+ * gateway (op 20, delegada via handleRequest) e os eventos saem por broadcast
+ * (op 0).
  *
  * Invariantes de cleanup (a alma do módulo): TODO caminho de saída — leave
  * explícito, join implícito por cima, sessão de gateway morta, transporte
@@ -36,12 +41,24 @@ const MAX_CONSUMERS_PER_SESSION = 64;
  */
 
 /**
- * Só opus 48 kHz estéreo — áudio é o escopo do M3; vídeo (VP8/H264) entra no
- * M5. RouterRtpCodecCapability (e não RtpCodecCapability): é a variante sem
- * preferredPayloadType obrigatório — o router escolhe o payload type sozinho.
+ * Opus 48 kHz estéreo (M3) + VP8 e H.264 (M4, doc §3.4/§3.5). VP8 é o default
+ * universal (simulcast batido, encode por software em qualquer lugar); H.264
+ * entra para capturas ≥1080p/4K — o encode por HARDWARE é o que torna 4K
+ * viável (VP8 4K em software derrete CPU). O cliente escolhe o codec no
+ * produce pela resolução real; level-asymmetry permite o encoder subir de
+ * nível (4K = 5.1) sem renegociar o profile-level-id anunciado.
+ * RouterRtpCodecCapability (e não RtpCodecCapability): variante sem
+ * preferredPayloadType obrigatório — o router escolhe sozinho.
  */
 const MEDIA_CODECS: types.RouterRtpCodecCapability[] = [
   { kind: "audio", mimeType: "audio/opus", clockRate: 48_000, channels: 2 },
+  { kind: "video", mimeType: "video/VP8", clockRate: 90_000 },
+  {
+    kind: "video",
+    mimeType: "video/H264",
+    clockRate: 90_000,
+    parameters: { "packetization-mode": 1, "profile-level-id": "42e01f", "level-asymmetry-allowed": 1 },
+  },
 ];
 
 /** ICE 'disconnected' pode ser blip de rede: janela para reconectar antes do leave forçado */
@@ -183,10 +200,16 @@ export class Voice {
         return this.connectTransport(ctx, parseParams(VoiceConnectTransportParams, method, p));
       case "produce":
         return this.produce(ctx, parseParams(VoiceProduceParams, method, p));
+      case "close_producer":
+        return this.closeProducer(ctx, parseParams(VoiceCloseProducerParams, method, p));
       case "consume":
         return this.consume(ctx, parseParams(VoiceConsumeParams, method, p));
       case "resume_consumer":
         return this.resumeConsumer(ctx, parseParams(VoiceResumeConsumerParams, method, p));
+      case "pause_consumer":
+        return this.pauseConsumer(ctx, parseParams(VoicePauseConsumerParams, method, p));
+      case "set_preferred_layers":
+        return this.setPreferredLayers(ctx, parseParams(VoiceSetPreferredLayersParams, method, p));
       case "restart_ice":
         return this.restartIce(ctx, parseParams(VoiceRestartIceParams, method, p));
       case "update_state":
@@ -273,6 +296,7 @@ export class Voice {
       channel_id: room.channelId,
       user_id: (producer.appData as { userId?: string }).userId ?? "",
       producer_id: producer.id,
+      kind: producer.kind,
     }));
     return { rtp_capabilities: room.router.rtpCapabilities, producers };
   }
@@ -300,7 +324,8 @@ export class Voice {
         throw new Error("sessão saiu da voz durante a operação");
       }
       if (p.direction === "send") {
-        // teto de entrada por transport — folga sobre opus ~64k (config §9)
+        // teto de entrada por transport — dimensionado para opus + simulcast
+        // de vídeo do M4 (o integrador ajusta o valor em config §9)
         await transport.setMaxIncomingBitrate(config.rtcMaxIncomingBitrate);
       }
       if (this.sessions.get(ctx.sessionId) !== session) {
@@ -335,6 +360,12 @@ export class Voice {
     if (session.producers.size >= MAX_PRODUCERS_PER_SESSION) {
       throw new Error("limite de producers da sessão atingido");
     }
+    // REGRA M4: no máximo UM producer de vídeo por sessão (a webcam) — um
+    // segundo seria screen share, que tem regras próprias e não é deste
+    // milestone; o teto genérico acima não captura isso sozinho
+    if (p.kind === "video" && [...session.producers.values()].some((pr) => pr.kind === "video")) {
+      throw new Error("sessão já tem um producer de vídeo");
+    }
     const transport = session.transports.get(p.transport_id);
     if (!transport) throw new Error("transport desconhecido");
     if ((transport.appData as { direction?: string }).direction !== "send") {
@@ -355,9 +386,13 @@ export class Voice {
       if (this.sessions.get(ctx.sessionId) !== session) {
         throw new Error("sessão saiu da voz durante a operação");
       }
-      await session.room.observer.addProducer({ producerId: producer.id });
-      if (this.sessions.get(ctx.sessionId) !== session) {
-        throw new Error("sessão saiu da voz durante a operação");
+      // GUARD (contrato M4): o audioLevelObserver mede nível de ÁUDIO — SÓ
+      // producers de áudio entram nele; adicionar vídeo seria bug
+      if (producer.kind === "audio") {
+        await session.room.observer.addProducer({ producerId: producer.id });
+        if (this.sessions.get(ctx.sessionId) !== session) {
+          throw new Error("sessão saiu da voz durante a operação");
+        }
       }
     } catch (err) {
       producer.close();
@@ -366,13 +401,55 @@ export class Voice {
     session.producers.set(producer.id, producer);
     session.room.producers.set(producer.id, producer);
     // broadcast simples para todos (inclusive o dono): o cliente filtra o
-    // próprio user_id — ninguém consome a si mesmo
+    // próprio user_id — ninguém consome a si mesmo; kind diz COMO consumir
     this.broadcast("VOICE_NEW_PRODUCER", {
       channel_id: session.room.channelId,
       user_id: session.userId,
       producer_id: producer.id,
+      kind: producer.kind,
     });
+    // câmera ligou → self_video (derivado de "producer de vídeo vivo") mudou;
+    // o indicador na lista de participantes vive do VOICE_STATE_UPDATE
+    if (producer.kind === "video") {
+      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
+    }
     return { producer_id: producer.id };
+  }
+
+  /**
+   * M4: fecha UM producer sem sair da voz (o caso é desligar a câmera). O
+   * close() cascateia nos consumers remotos (o worker os mata; o handler de
+   * 'producerclose' de cada sessão limpa o mapa) e o VOICE_PRODUCER_CLOSED
+   * avisa os clientes — o mesmo par de efeitos do doLeave, mas cirúrgico.
+   * Síncrono de ponta a ponta: sem await, sem janela para revalidar.
+   */
+  private closeProducer(ctx: VoiceCtx, p: VoiceCloseProducerParams): unknown {
+    const session = this.mustSession(ctx);
+    // lookup no mapa DA SESSÃO: producer alheio responde erro, não fecha nada
+    const producer = session.producers.get(p.producer_id);
+    if (!producer) throw new Error("producer desconhecido");
+    session.producers.delete(producer.id);
+    session.room.producers.delete(producer.id);
+    producer.close();
+    this.broadcast("VOICE_PRODUCER_CLOSED", {
+      channel_id: session.room.channelId,
+      producer_id: producer.id,
+    });
+    if (producer.kind === "video") {
+      // câmera desligou → self_video (derivado) voltou a false; a lista de
+      // participantes atualiza por aqui, não pelo VOICE_PRODUCER_CLOSED
+      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
+    } else {
+      // espelho do doLeave: fechou o último producer de áudio enquanto
+      // "falava" → corrige o conjunto já, sem esperar o tick do observer
+      const stillHasAudio = [...session.producers.values()].some((pr) => pr.kind === "audio");
+      if (!stillHasAudio && session.room.speaking.has(session.userId)) {
+        const next = new Set(session.room.speaking);
+        next.delete(session.userId);
+        this.setSpeaking(session.room, next);
+      }
+    }
+    return {};
   }
 
   private async consume(ctx: VoiceCtx, p: VoiceConsumeParams): Promise<unknown> {
@@ -421,6 +498,35 @@ export class Voice {
     const consumer = session.consumers.get(p.consumer_id);
     if (!consumer) throw new Error("consumer desconhecido");
     await consumer.resume();
+    return {};
+  }
+
+  /**
+   * M4 (doc §8): tile de vídeo saiu de tela → pausa o consumer — o worker
+   * PARA de encaminhar RTP deste assinante (economia real de egress, não é
+   * esconder na UI). resume_consumer religa. Espelho exato do resumeConsumer:
+   * nada é registrado após o await, então não há o que revalidar.
+   */
+  private async pauseConsumer(ctx: VoiceCtx, p: VoicePauseConsumerParams): Promise<unknown> {
+    const session = this.mustSession(ctx);
+    const consumer = session.consumers.get(p.consumer_id);
+    if (!consumer) throw new Error("consumer desconhecido");
+    await consumer.pause();
+    return {};
+  }
+
+  /**
+   * M4 (doc §3.4): camada de simulcast que ESTE assinante quer — 0/1/2 na
+   * escala 150k/500k/1,5M do produce do cliente. Por consumer, de propósito:
+   * cada assinante dimensiona pelo tamanho do SEU tile, sem afetar os demais.
+   */
+  private async setPreferredLayers(ctx: VoiceCtx, p: VoiceSetPreferredLayersParams): Promise<unknown> {
+    const session = this.mustSession(ctx);
+    const consumer = session.consumers.get(p.consumer_id);
+    if (!consumer) throw new Error("consumer desconhecido");
+    // áudio não tem camadas — pedir camada nele é bug de cliente, erro claro
+    if (consumer.kind !== "video") throw new Error("set_preferred_layers exige um consumer de vídeo");
+    await consumer.setPreferredLayers({ spatialLayer: p.spatial_layer });
     return {};
   }
 
@@ -580,6 +686,7 @@ export class Voice {
       channel_id: null, // null no fio = saiu de voz
       self_mute: session.selfMute,
       self_deaf: session.selfDeaf,
+      self_video: false, // os producers (câmera inclusa) já caíram todos acima
     });
 
     // canal esvaziou → o router fecha (observer e transports caem em cascata);
@@ -602,6 +709,9 @@ export class Voice {
       channel_id: session.room.channelId,
       self_mute: session.selfMute,
       self_deaf: session.selfDeaf,
+      // DERIVADO, nunca declarado (contrato M4): câmera ligada = existe
+      // producer de vídeo vivo — o flag não consegue mentir sobre a mídia
+      self_video: [...session.producers.values()].some((pr) => pr.kind === "video" && !pr.closed),
     };
   }
 }

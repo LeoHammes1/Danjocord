@@ -81,13 +81,17 @@ export type Message = z.infer<typeof Message>;
  * Estado de voz de um usuário (M3, doc §3.6). channel_id null = fora de voz
  * (é assim que um leave viaja no VOICE_STATE_UPDATE). Os flags são
  * declarativos: o mute REAL acontece no cliente (track.enabled) — o servidor
- * só espalha a intenção para a UI dos outros.
+ * só espalha a intenção para a UI dos outros. Exceção: self_video (M4) é
+ * DERIVADO no servidor (existe producer de vídeo vivo na sessão) — nunca vem
+ * de payload de cliente, então o flag não consegue mentir sobre a mídia.
  */
 export const VoiceState = z.object({
   user_id: z.string(),
   channel_id: z.string().nullable(),
   self_mute: z.boolean(),
   self_deaf: z.boolean(),
+  /** M4: câmera ligada (indicador na lista de participantes) — derivado, ver acima */
+  self_video: z.boolean(),
 });
 export type VoiceState = z.infer<typeof VoiceState>;
 
@@ -141,14 +145,16 @@ export const TypingStartData = z.object({
 export type TypingStartData = z.infer<typeof TypingStartData>;
 
 /**
- * Producer de áudio novo num canal de voz (M3): quem está no canal consome sob
- * demanda. Vai para TODO mundo (broadcast simples); o dono do producer se
- * reconhece pelo user_id e não consome a si mesmo.
+ * Producer novo num canal de voz (M3; M4 soma vídeo): quem está no canal
+ * consome sob demanda. Vai para TODO mundo (broadcast simples); o dono do
+ * producer se reconhece pelo user_id e não consome a si mesmo. `kind` diz ao
+ * cliente COMO consumir: áudio → <audio> fora do DOM; vídeo → tile na grade.
  */
 export const VoiceNewProducerData = z.object({
   channel_id: z.string(),
   user_id: z.string(),
   producer_id: z.string(),
+  kind: z.enum(["audio", "video"]),
 });
 export type VoiceNewProducerData = z.infer<typeof VoiceNewProducerData>;
 
@@ -252,13 +258,25 @@ export const VoiceConnectTransportParams = z.object({
 });
 export type VoiceConnectTransportParams = z.infer<typeof VoiceConnectTransportParams>;
 
-/** m: "produce" → { producer_id }. Só áudio neste milestone; vídeo entra no M5. */
+/**
+ * m: "produce" → { producer_id }. M4: kind "video" entra pelo MESMO send
+ * transport (webcam com simulcast de 3 camadas, doc §3.4) — no máximo UM
+ * producer de vídeo por sessão neste milestone (o segundo é erro).
+ */
 export const VoiceProduceParams = z.object({
   transport_id: z.string(),
-  kind: z.literal("audio"),
+  kind: z.enum(["audio", "video"]),
   rtp_parameters: z.unknown(),
 });
 export type VoiceProduceParams = z.infer<typeof VoiceProduceParams>;
+
+/**
+ * m: "close_producer" → {} (M4: desligar a câmera SEM sair da voz). O servidor
+ * broadcasta VOICE_PRODUCER_CLOSED; se o producer era de vídeo, também um
+ * VOICE_STATE_UPDATE com self_video=false. producer_id alheio → erro.
+ */
+export const VoiceCloseProducerParams = z.object({ producer_id: z.string() });
+export type VoiceCloseProducerParams = z.infer<typeof VoiceCloseProducerParams>;
 
 /** m: "consume" → { consumer_id, producer_id, kind, rtp_parameters } (nasce pausado) */
 export const VoiceConsumeParams = z.object({
@@ -268,9 +286,30 @@ export const VoiceConsumeParams = z.object({
 });
 export type VoiceConsumeParams = z.infer<typeof VoiceConsumeParams>;
 
-/** m: "resume_consumer" → {} (o cliente chama depois de plugar o track no <audio>) */
+/** m: "resume_consumer" → {} (o cliente chama depois de plugar o track no <audio>/<video>) */
 export const VoiceResumeConsumerParams = z.object({ consumer_id: z.string() });
 export type VoiceResumeConsumerParams = z.infer<typeof VoiceResumeConsumerParams>;
+
+/**
+ * m: "pause_consumer" → {} (M4, doc §8): tile de vídeo fora de tela — o
+ * servidor PARA de encaminhar RTP (economia real, não é esconder na UI);
+ * resume_consumer religa quando o tile volta a aparecer.
+ */
+export const VoicePauseConsumerParams = z.object({ consumer_id: z.string() });
+export type VoicePauseConsumerParams = z.infer<typeof VoicePauseConsumerParams>;
+
+/**
+ * m: "set_preferred_layers" → {} (M4, doc §3.4): camada de simulcast que ESTE
+ * assinante quer do consumer de vídeo. As camadas são RELATIVAS à captura do
+ * produtor (0 = baixa /4, 1 = média /2, 2 = inteira) — com câmera 4K a camada
+ * 2 chega a ~10 Mbps; o assinante escolhe pelo tamanho do tile que exibe.
+ * Em consumer de áudio (não tem camadas) → erro claro.
+ */
+export const VoiceSetPreferredLayersParams = z.object({
+  consumer_id: z.string(),
+  spatial_layer: z.number().int().min(0).max(2),
+});
+export type VoiceSetPreferredLayersParams = z.infer<typeof VoiceSetPreferredLayersParams>;
 
 /** m: "restart_ice" → { ice_parameters } (rede trocou por baixo do cliente) */
 export const VoiceRestartIceParams = z.object({ transport_id: z.string() });

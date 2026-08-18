@@ -100,7 +100,9 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
   Opus DTX+FEC, mute/deafen, indicador de "quem fala" (audioLevelObserver),
   cleanup serializado por sessão. Dev usa porta RTC 41000 (Windows/WSL2 reserva
   ~39000–40500 de forma invisível); produção usa 40000 via manifest.
-- [ ] **M4 — Vídeo** (simulcast)
+- [x] **M4 — Vídeo**: webcam até 4K com simulcast adaptativo de 3 camadas
+  (VP8 default; H.264 preferido ≥1080p pelo encode de hardware), camada por
+  tamanho de tile, grade com preview local, colapso pausa consumers no servidor
 - [ ] **M5 — Go Live** (screen share)
 - [ ] **M6 — App Electron**
 - [ ] **M7 — Estudo avançado**

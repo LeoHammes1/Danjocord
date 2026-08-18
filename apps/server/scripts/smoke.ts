@@ -4,9 +4,13 @@
  * Hello → Identify → Ready → Heartbeat/ACK → POST mensagem → MESSAGE_CREATE
  * → PATCH → MESSAGE_UPDATE → DELETE → MESSAGE_DELETE → typing → TYPING_START.
  *
- * Ato de voz (M3): depois do texto, um SEGUNDO socket (user dev de apoio)
+ * Ato de voz (M3+M4): depois do texto, um SEGUNDO socket (user dev de apoio)
  * entra em cena e a sinalização mediasoup roda fim-a-fim: ambos join →
- * A produce → B recebe VOICE_NEW_PRODUCER e consome → A muta → A sai.
+ * A produce áudio → B recebe VOICE_NEW_PRODUCER e consome → A liga a
+ * "câmera" (produce de VÍDEO VP8 simulcast forjado, 3 ssrcs) → B consome,
+ * escolhe camada (set_preferred_layers), pausa e retoma o consumer → A
+ * desliga a câmera (close_producer; self_video volta a false SEM sair da
+ * voz) → A muta → A sai.
  * Sem mídia real — Node puro não tem WebRTC, então DTLS/RTP nunca fluem;
  * o smoke prova a SINALIZAÇÃO, os testes de unidade provam a API do worker.
  *
@@ -24,8 +28,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-// 25s: o ato de voz soma um segundo socket e vários round-trips de sinalização
-const timeout = setTimeout(() => fail("timeout de 25s"), 25_000);
+// 30s: o ato de voz soma um segundo socket e os round-trips de áudio E vídeo
+const timeout = setTimeout(() => fail("timeout de 30s"), 30_000);
 
 const steps: string[] = [];
 function step(name: string) {
@@ -160,6 +164,8 @@ interface VoiceStateWire {
   channel_id: string | null;
   self_mute: boolean;
   self_deaf: boolean;
+  /** câmera ligada (M4) — derivado no servidor: existe producer de vídeo vivo */
+  self_video: boolean;
 }
 interface TransportWire {
   transport_id: string;
@@ -171,6 +177,8 @@ interface NewProducerWire {
   channel_id: string;
   user_id: string;
   producer_id: string;
+  /** "audio" | "video" (M4) — o cliente decide como consumir por aqui */
+  kind: string;
 }
 interface ProducerClosedWire {
   channel_id: string;
@@ -197,6 +205,21 @@ function opusRtpParameters(): unknown {
     ],
     headerExtensions: [],
     encodings: [{ ssrc: 424_242 }],
+    rtcp: { cname: "smoke" },
+  };
+}
+
+/**
+ * rtpParameters de VP8 SIMULCAST forjados (M4, doc §3.4): 3 encodings com
+ * ssrcs distintos = as 3 camadas espaciais da webcam. mid "1" porque o áudio
+ * já ocupa o "0" no MESMO send transport (o RtpListener rejeita mid repetido).
+ */
+function vp8RtpParameters(): unknown {
+  return {
+    mid: "1",
+    codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000, parameters: {}, rtcpFeedback: [] }],
+    headerExtensions: [],
+    encodings: [{ ssrc: 424_301 }, { ssrc: 424_302 }, { ssrc: 424_303 }],
     rtcp: { cname: "smoke" },
   };
 }
@@ -327,7 +350,8 @@ async function voiceAct(): Promise<void> {
   const newProd = (await b.bus.wait((e) => e.t === "VOICE_NEW_PRODUCER")).d as NewProducerWire;
   if (newProd.producer_id !== prod.producer_id || newProd.user_id !== meId || newProd.channel_id !== channel)
     fail("VOICE_NEW_PRODUCER com ids errados");
-  step("B recebeu VOICE_NEW_PRODUCER");
+  if (newProd.kind !== "audio") fail(`VOICE_NEW_PRODUCER do mic com kind errado ("${newProd.kind}")`);
+  step("B recebeu VOICE_NEW_PRODUCER kind audio");
   const tb = (await voiceRequest(b.sock, "create_transport", { direction: "recv" })) as TransportWire;
   const cons = (await voiceRequest(b.sock, "consume", {
     transport_id: tb.transport_id,
@@ -340,6 +364,62 @@ async function voiceAct(): Promise<void> {
   step("B consume");
   await voiceRequest(b.sock, "resume_consumer", { consumer_id: cons.consumer_id });
   step("B resume_consumer");
+
+  // ---- ato de vídeo (M4): A liga a "câmera" no MESMO send transport ----
+  const vprod = (await voiceRequest(ws, "produce", {
+    transport_id: ta.transport_id,
+    kind: "video",
+    rtp_parameters: vp8RtpParameters(),
+  })) as { producer_id: string };
+  if (typeof vprod.producer_id !== "string") fail("produce de vídeo sem producer_id");
+  step("A produce vídeo (simulcast 3 camadas)");
+
+  const newVideo = (
+    await b.bus.wait((e) => e.t === "VOICE_NEW_PRODUCER" && (e.d as NewProducerWire).kind === "video")
+  ).d as NewProducerWire;
+  if (newVideo.producer_id !== vprod.producer_id || newVideo.user_id !== meId || newVideo.channel_id !== channel)
+    fail("VOICE_NEW_PRODUCER de vídeo com ids errados");
+  step("B recebeu VOICE_NEW_PRODUCER kind video");
+
+  // B consome o vídeo no MESMO recv transport do áudio
+  const vcons = (await voiceRequest(b.sock, "consume", {
+    transport_id: tb.transport_id,
+    producer_id: vprod.producer_id,
+    rtp_capabilities: joinB.rtp_capabilities,
+  })) as ConsumerWire;
+  if (vcons.kind !== "video" || vcons.producer_id !== vprod.producer_id || typeof vcons.consumer_id !== "string")
+    fail("consume de vídeo com campos errados");
+  if (!vcons.rtp_parameters) fail("consume de vídeo sem rtp_parameters");
+  step("B consume vídeo");
+
+  // camada intermediária (500k, doc §3.4) — na UI real, escolhida pelo tamanho do tile
+  await voiceRequest(b.sock, "set_preferred_layers", { consumer_id: vcons.consumer_id, spatial_layer: 1 });
+  step("B set_preferred_layers spatial 1");
+
+  // tile fora de tela → pausa (economia real, doc §8); visível de novo → retoma
+  await voiceRequest(b.sock, "pause_consumer", { consumer_id: vcons.consumer_id });
+  step("B pause_consumer");
+  await voiceRequest(b.sock, "resume_consumer", { consumer_id: vcons.consumer_id });
+  step("B resume_consumer (vídeo de volta)");
+
+  // A desliga a câmera SEM sair da voz: producer fecha e self_video vai a false
+  await voiceRequest(ws, "close_producer", { producer_id: vprod.producer_id });
+  step("A close_producer (câmera desligada)");
+  const vclosed = (
+    await b.bus.wait((e) => e.t === "VOICE_PRODUCER_CLOSED" && (e.d as ProducerClosedWire).producer_id === vprod.producer_id)
+  ).d as ProducerClosedWire;
+  if (vclosed.channel_id !== channel) fail("VOICE_PRODUCER_CLOSED do vídeo com canal errado");
+  step("B recebeu VOICE_PRODUCER_CLOSED do vídeo");
+  const camOff = (
+    await b.bus.wait(
+      (e) =>
+        e.t === "VOICE_STATE_UPDATE" &&
+        (e.d as VoiceStateWire).user_id === meId &&
+        !(e.d as VoiceStateWire).self_video,
+    )
+  ).d as VoiceStateWire;
+  if (camOff.channel_id !== channel) fail("VOICE_STATE_UPDATE do self_video false deveria manter o canal");
+  step("B recebeu VOICE_STATE_UPDATE self_video false (A segue em voz)");
 
   // A muta (só flags — o mute de verdade é client-side, pausando o track)
   await voiceRequest(ws, "update_state", { self_mute: true, self_deaf: false });
