@@ -1,0 +1,241 @@
+/* Diálogo de configurações de som (M8) — ui/settings.ts.
+   Nada aqui existe no index.html: o overlay inteiro nasce em JS, e este é o
+   único arquivo de estilo que o conhece.
+
+   Superfícies: o painel usa --bg-chat e cada linha usa --bg-elevated por cima.
+   Por causa disso NENHUM texto daqui é --text-muted — sobre --bg-elevated ele
+   dá 4.05:1, abaixo do AA de 4.5:1 (revisão M7 #2). Texto secundário aqui é
+   --text-normal, e o destaque fica no peso/tamanho. */
+
+/* --- fundo ---------------------------------------------------------------
+   z-index alto de propósito: o app inteiro empilha entre 1 e 2 (header, menu
+   da engrenagem, painel de membros) e o modal tem que cobrir todos eles. */
+#sound-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: var(--bg-overlay);
+}
+
+.settings-panel {
+  width: min(520px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* min-height: 0 para o corpo poder encolher e rolar por dentro em janela
+     baixa — sem isto o painel estoura a tela e o rodapé some */
+  min-height: 0;
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  overflow: hidden; /* o raio recorta o cabeçalho e o rodapé */
+}
+
+/* --- cabeçalho e rodapé -------------------------------------------------- */
+.settings-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.settings-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.settings-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+/* restaurar padrões é ação de escape, não a principal: fica sem preenchimento */
+.settings-reset {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.settings-reset:hover {
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+}
+
+.settings-done {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.settings-done:hover {
+  background: var(--brand-hover);
+}
+
+/* --- corpo --------------------------------------------------------------- */
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* o <fieldset> é o que a chave geral desliga de uma vez — o `disabled` dele
+   desabilita todos os controles de dentro sem o JS tocar em um por um */
+.settings-group {
+  min-width: 0; /* fieldset tem largura mínima própria; sem isto ele não encolhe */
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.settings-group:disabled {
+  opacity: 0.5;
+}
+
+/* --- linha (chave + rótulo + descrição + testar) -------------------------- */
+.settings-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: var(--sp-3);
+  row-gap: var(--sp-1);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+/* a chave e o "Testar" ocupam as duas linhas (rótulo em cima, descrição
+   embaixo) e ficam centrados nelas */
+.settings-row > .settings-switch,
+.settings-row > .settings-test {
+  grid-row: 1 / span 2;
+}
+.settings-row > .settings-switch {
+  grid-column: 1;
+}
+.settings-row > .settings-label {
+  grid-column: 2;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.settings-row > .settings-desc {
+  grid-column: 2;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.settings-row > .settings-test {
+  grid-column: 3;
+}
+
+/* --- chave (checkbox de verdade, desenho de chave) ------------------------ */
+.settings-switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: var(--r-full);
+  background: var(--bg-guilds);
+  cursor: pointer;
+  transition: background-color var(--t-fast);
+}
+.settings-switch::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-full);
+  background: var(--text-strong);
+  transition: transform var(--t-fast);
+}
+.settings-switch:checked {
+  background: var(--brand);
+}
+/* 40 − 3 − 3 − 18 = 16: o botão encosta na borda oposta, sem folga */
+.settings-switch:checked::before {
+  transform: translateX(16px);
+}
+.settings-switch:disabled {
+  cursor: default;
+}
+
+/* --- botão testar -------------------------------------------------------- */
+.settings-test {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.settings-test:hover:not(:disabled) {
+  background: var(--bg-sidebar);
+  color: var(--text-strong);
+}
+.settings-test:disabled {
+  cursor: default;
+}
+
+/* --- volume -------------------------------------------------------------- */
+.settings-volume {
+  grid-template-columns: 1fr auto;
+}
+.settings-volume label {
+  grid-column: 1;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+.settings-volume .settings-value {
+  grid-column: 2;
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums; /* o número não pode dançar durante o arrasto */
+}
+/* o range fica NATIVO de propósito: accent-color veste o controle inteiro sem
+   reimplementar teclado, passos e leitor de tela em cima de uma <div> */
+.settings-volume input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+/* --- avisos -------------------------------------------------------------- */
+.settings-note {
+  padding: 0 var(--sp-1);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+/* áudio ainda travado pelo navegador: é aviso, não erro — daí --warn */
+.settings-locked {
+  padding: 0 var(--sp-1);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}

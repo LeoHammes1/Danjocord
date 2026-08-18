@@ -406,8 +406,14 @@
     background-color var(--t-fast),
     color var(--t-fast);
 }
-/* sair é destrutivo o bastante para avisar no hover (é o único item hoje) */
+/* hover neutro é o padrão do menu; o vermelho é reservado ao que destrói.
+   Era o contrário enquanto "Sair" foi o único item — com um vizinho inócuo
+   ao lado, o vermelho em tudo passa a mentir (integração do M8). */
 .menu-item:hover {
+  background: var(--bg-guilds);
+  color: var(--text-strong);
+}
+.menu-item.danger:hover {
   background: var(--danger);
   color: var(--text-strong);
 }

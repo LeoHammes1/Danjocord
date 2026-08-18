@@ -14,3 +14,7 @@
 @import "./sidebar.css";
 @import "./members.css";
 @import "./chat.css";
+
+/* por último porque o diálogo de som fica POR CIMA de tudo: a ordem aqui é o
+   que resolve o empilhamento, sem precisar de z-index inventado */
+@import "./settings.css";

@@ -11,6 +11,7 @@
 import { avatarColor, avatarEl } from "./avatar.js";
 import type { Channel, UiContext, VoiceState } from "./context.js";
 import { icon, type IconName } from "./icons.js";
+import { soundMenuItem } from "./settings.js";
 
 /**
  * O UiContext base não carrega estes três — e a sidebar precisa deles: o
@@ -128,7 +129,9 @@ userMenu.hidden = true;
 function setMenuOpen(open: boolean): void {
   userMenu.hidden = !open;
   el.userSettings.setAttribute("aria-expanded", String(open));
-  if (open) el.logout.focus();
+  // primeiro item, não o último: com mais de um item, focar o "Sair" jogaria
+  // quem abre por teclado direto no destrutivo (convenção de menu do ARIA)
+  if (open) userMenu.querySelector<HTMLElement>(".menu-item")?.focus();
 }
 
 let mounted = false;
@@ -179,7 +182,7 @@ export function mountSidebar(ctx: SidebarContext): void {
   el.userSettings.replaceChildren(icon("settings"));
   el.userSettings.addEventListener("click", () => setMenuOpen(userMenu.hidden));
 
-  el.logout.className = "menu-item";
+  el.logout.className = "menu-item danger"; // o único destrutivo do menu
   el.logout.removeAttribute("aria-label"); // agora tem texto visível
   el.logout.setAttribute("role", "menuitem");
   el.logout.replaceChildren(icon("logout", 16), document.createTextNode("Sair"));
@@ -187,7 +190,8 @@ export function mountSidebar(ctx: SidebarContext): void {
     setMenuOpen(false);
     ctx.actions.logout();
   });
-  userMenu.append(el.logout);
+  // som primeiro, "Sair" por último — destrutivo no fim é convenção de menu
+  userMenu.append(soundMenuItem(el.userSettings, () => setMenuOpen(false)), el.logout);
   el.userPanel.append(userMenu);
 
   // fechar o menu: Esc devolve o foco à engrenagem (quem abriu por teclado

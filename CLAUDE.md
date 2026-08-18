@@ -118,6 +118,32 @@ trim corta nas **duas pontas**, toda inserção e todo trim precisa chamar
 `regroupAt`/`regroupAll` — e, onde há compensação de scroll, **antes** de medir
 a altura. Os comentários nos call sites do `main.ts` dizem em quais.
 
+## Som (M8)
+
+14 clipes em `apps/client/assets/sounds/*.ogg` (~140 KB), **CC0 dos packs da
+Kenney** — procedência e regras de licença em [ATTRIBUTIONS.md](ATTRIBUTIONS.md),
+decisões em [docs/som.md](docs/som.md). Regra do projeto: **só CC0**; nada de
+Pixabay/Mixkit/ZapSplat (proíbem redistribuir sem modificação significativa) e
+nenhum som do Discord (as brand guidelines vedam "sounds" na cláusula).
+
+- **Nada é reencodado.** A normalização é um **ganho por som** no `catalog.ts`,
+  aplicado no playback pelo GainNode (alvo ~−20 dBFS de RMS, teto de pico 0.89).
+  O asset fica intacto e o nivelamento vira dado. Os fades de 5 ms também são no
+  envelope, não no arquivo.
+- `src/sound/` separa por um motivo: `catalog.ts` é **dado puro** e `assets.ts` é
+  o único que importa `.ogg` — sem isso o teste do Node não conseguiria importar
+  a política (o Node não carrega `.ogg`).
+- `policy.ts` é **pura e testada**: quem decide se um som toca é ela, nunca o
+  call site. Regra nova de contexto entra lá, não num `if` espalhado.
+- **`vite.config.ts` existe por causa da CSP**: asset < 4 KB viraria `data:` URI,
+  que `media-src` bloqueia nas duas CSPs. `ptt-on.ogg` tem 4686 bytes.
+- Deafen silencia `voice` e `notify`; `self` e `system` continuam — senão o
+  próprio som de "voltar a ouvir" não tocaria.
+- O evento próprio de join/leave sai do `voice.onChange` (local, imediato, e o
+  único que funciona na saída, quando `channelId` já zerou). O eco do
+  `VOICE_STATE_UPDATE` **não** pode emitir para o próprio usuário — senão toca
+  duas vezes; a política não separa as duas origens de propósito.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

@@ -12,7 +12,7 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | --- | --- | --- |
 | M0–M6 | repo, chat, auth, voz, vídeo, Go Live, app Electron | ✅ |
 | M7 | fundação visual — §6 + 75–77 | ✅ |
-| M8 | som — §1 e §2 + 113 | |
+| M8 | som — §1 e §2 + 113 | ✅ |
 | M9 | soundboard + controles de voz — §3 e §4 | |
 | M10 | convites + moderação — §5 + 114, 116 | |
 | M11 | chat completo — §7 | |
@@ -21,34 +21,34 @@ Fora de marco, mas **antes do primeiro release público**: 106 (versão travada 
 `0.0.1` quebra o auto-update), 115 (parse sem `try/catch` quebra cliente antigo
 no primeiro deploy) e 118 (backup — é irreversível quando falta).
 
-## 1. Sons — pesquisa e assets
+## 1. Sons — pesquisa e assets ✅ M8
 
 Licenças **verificadas nas páginas oficiais**, não deduzidas.
 
-1. `P` Baixar e triar o pack [Interface Sounds da Kenney](https://kenney.nl/assets/interface-sounds) — 100 sons, CC0 puro, sem cadastro, sem atribuição obrigatória. Base mais segura para um `.exe` distribuído.
-2. `P` Baixar [UI Audio](https://kenney.nl/assets/ui-audio) e [Digital Audio](https://kenney.nl/assets/digital-audio) da Kenney (CC0) — timbres distintos para mensagem, menção e call.
-3. `P` Baixar o [Interface SFX Pack 1](https://obsydianx.itch.io/interface-sfx-pack-1) (ObsydianX, CC0) — 200+ sons já em OGG, famílias confirm/back/cursor/error.
-4. `P` Baixar [512 Sound Effects 8-bit](https://opengameart.org/content/512-sound-effects-8-bit-style) (CC0) — matéria-prima do soundboard.
-5. `M` Curar busca no Freesound com filtro CC0 — sons gravados combinam mais com app de call que os 8-bit. Exige cadastro. **Só CC0**: CC-BY-NC é proibido no projeto.
-6. `P` Documentar a exclusão de **Pixabay, Mixkit e ZapSplat** — as três proíbem redistribuir o arquivo sem modificação significativa, que é exatamente o que um soundboard faz.
-7. `P` Documentar que nenhum som do Discord será reusado — as brand guidelines vedam copiar "sounds", com essa palavra na cláusula.
-8. `M` Gerar os sons que faltarem com jfxr/Bfxr em vez de garimpar mais pack.
-9. `P` Definir o formato canônico: OGG/Opus, 48 kHz, mono, ~64 kbps (3–8 KB por clipe; casa com o clock do mediasoup).
-10. `M` Script ffmpeg de normalização em lote — loudnorm EBU R128 entre −20 e −16 LUFS (abaixo da voz), fade de 5 ms, trim de silêncio.
-11. `P` Criar `ATTRIBUTIONS.md` com procedência e licença de cada arquivo.
+1. ✅ `P` Baixar e triar o pack [Interface Sounds da Kenney](https://kenney.nl/assets/interface-sounds) — 100 sons, CC0 puro, sem cadastro, sem atribuição obrigatória. Base mais segura para um `.exe` distribuído.
+2. ✅ `P` Baixar [UI Audio](https://kenney.nl/assets/ui-audio) e [Digital Audio](https://kenney.nl/assets/digital-audio) da Kenney (CC0) — timbres distintos para mensagem, menção e call.
+3. ✅ `P` Baixar o [Interface SFX Pack 1](https://obsydianx.itch.io/interface-sfx-pack-1) (ObsydianX, CC0) — 200+ sons já em OGG, famílias confirm/back/cursor/error.
+4. ✅ `P` Baixar [512 Sound Effects 8-bit](https://opengameart.org/content/512-sound-effects-8-bit-style) (CC0) — matéria-prima do soundboard.
+5. ✅ `M` Curar busca no Freesound com filtro CC0 — sons gravados combinam mais com app de call que os 8-bit. Exige cadastro. **Só CC0**: CC-BY-NC é proibido no projeto.
+6. ✅ `P` Documentar a exclusão de **Pixabay, Mixkit e ZapSplat** — as três proíbem redistribuir o arquivo sem modificação significativa, que é exatamente o que um soundboard faz.
+7. ✅ `P` Documentar que nenhum som do Discord será reusado — as brand guidelines vedam copiar "sounds", com essa palavra na cláusula.
+8. `M` (dispensado — os 14 vieram de pack CC0) Gerar os sons que faltarem com jfxr/Bfxr em vez de garimpar mais pack.
+9. ✅ `P` Definir o formato canônico: OGG/Opus, 48 kHz, mono, ~64 kbps (3–8 KB por clipe; casa com o clock do mediasoup).
+10. `M` (dispensado — a normalização virou ganho no playback, ver docs/som.md) Script ffmpeg de normalização em lote — loudnorm EBU R128 entre −20 e −16 LUFS (abaixo da voz), fade de 5 ms, trim de silêncio.
+11. ✅ `P` Criar `ATTRIBUTIONS.md` com procedência e licença de cada arquivo.
 
-## 2. Sons — sistema no cliente
+## 2. Sons — sistema no cliente ✅ M8
 
-12. `M` Trocar os chirps de `sounds.ts` por player de `AudioBuffer` com cache, ganho por categoria e ganho mestre.
-13. `P` Fechar o catálogo de eventos e a matriz de quem ouve o quê — **antes** de encomendar os arquivos.
-14. `P` Destravar o AudioContext no primeiro gesto (o comentário atual assume que todo som sucede um clique; deixa de valer com som de mensagem).
-15. `P` Sons de mute/unmute e deafen/undeafen (só para si). Deafen já implica mute — não pode disparar dois sons.
-16. `P` Som quando alguém começa Go Live no meu canal (hoje só o badge "AO VIVO", inútil com a janela no tray).
-17. `P` Sons de desconexão e reconexão, com anti-flapping de ~2 s.
-18. `P` Centralizar a regra de "não tocar o som do próprio usuário" (hoje duplicada em dois pontos do `main.ts`).
-19. `P` Extrair a decisão de tocar som para módulo puro e cobrir com `node --test`.
-20. `M` Investigar se os sons de UI vazam para o microfone (AEC e loopback do Go Live).
-21. `M` Painel de configurações de som: volume por categoria e chave geral.
+12. ✅ `M` Trocar os chirps de `sounds.ts` por player de `AudioBuffer` com cache, ganho por categoria e ganho mestre.
+13. ✅ `P` Fechar o catálogo de eventos e a matriz de quem ouve o quê — **antes** de encomendar os arquivos.
+14. ✅ `P` Destravar o AudioContext no primeiro gesto (o comentário atual assume que todo som sucede um clique; deixa de valer com som de mensagem).
+15. ✅ `P` Sons de mute/unmute e deafen/undeafen (só para si). Deafen já implica mute — não pode disparar dois sons.
+16. ✅ `P` Som quando alguém começa Go Live no meu canal (hoje só o badge "AO VIVO", inútil com a janela no tray).
+17. ✅ `P` Sons de desconexão e reconexão, com anti-flapping de ~2 s.
+18. ✅ `P` Centralizar a regra de "não tocar o som do próprio usuário" (hoje duplicada em dois pontos do `main.ts`).
+19. ✅ `P` Extrair a decisão de tocar som para módulo puro e cobrir com `node --test`.
+20. ✅ `M` (investigado; ver docs/som.md) Investigar se os sons de UI vazam para o microfone (AEC e loopback do Go Live).
+21. ✅ `M` Painel de configurações de som: volume por categoria e chave geral.
 
 ## 3. Soundboard (pad de sons)
 
@@ -160,7 +160,7 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 110. `P` Log em arquivo + "Abrir logs" no tray.
 111. `P` Sons de PTT press/release.
 112. `P` Decidir o que fazer com o SmartScreen (app não assinado).
-113. `P` Levar os assets de som para o `app://` e o `client-dist` + criar `vite.config.ts`: asset < 4 KB vira `data:` URI e **as duas CSPs bloqueiam `data:` em mídia**.
+113. ✅ `P` Levar os assets de som para o `app://` e o `client-dist` + criar `vite.config.ts`: asset < 4 KB vira `data:` URI e **as duas CSPs bloqueiam `data:` em mídia**.
 
 ## 9. Buracos reais encontrados no levantamento
 

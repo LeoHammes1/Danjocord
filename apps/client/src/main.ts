@@ -13,11 +13,12 @@ import {
 import { GatewayClient, type GatewayStatus } from "./gateway.js";
 import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, hydrateAuth, logout, refresh } from "./auth.js";
 import { desktop } from "./bridge.js";
-import { playJoin, playLeave } from "./sounds.js";
+import { emit, emitConnection, mountSound } from "./sound/index.js";
 import { TypingSender, TypingTracker } from "./typing.js";
 import { mountChrome, renderChannelHead, setConnectionStatus } from "./ui/chrome.js";
 import { clearComposer, focusComposer, mountComposer, setComposerChannel, setComposerValue } from "./ui/composer.js";
 import { renderMembers } from "./ui/members.js";
+import { closeSettings } from "./ui/settings.js";
 import {
   editDraftOf,
   findMessageEl,
@@ -197,6 +198,10 @@ const typingSender = new TypingSender(TYPING_THROTTLE_MS, (channelId) => {
 // ---------------------------------------------------------------------------
 
 function showLogin(error?: string): void {
+  // o diálogo de som é filho do <body> e não da view: sem isto ele fica
+  // flutuando por cima do formulário de login depois de um logout ou de um
+  // token revogado, com o foco preso dentro dele (revisão M8 #7)
+  closeSettings();
   el.app.hidden = true;
   el.login.hidden = false;
   el.loginError.textContent = error ?? "";
@@ -526,6 +531,21 @@ class AuthGateway extends GatewayClient {
 
 let currentGateway: AuthGateway | null = null;
 
+/**
+ * Detecção MÍNIMA de menção (M8): só o suficiente para o som de `mention` ter
+ * significado. O recurso completo — realce no texto, @todos, regra de
+ * notificação, persistência — é o item 79 do ROADMAP (M11); aqui não há
+ * modelo de dados novo, só uma leitura do conteúdo.
+ */
+function mentionsMe(msg: Message): boolean {
+  const me = state.me;
+  if (me === null || msg.author_id === me.id) return false;
+  // \b não serve como borda: username pode ter "." e "_", que são word chars,
+  // e aí "@leo" casaria dentro de "@leonardo". A borda tem que ser explícita.
+  const nome = me.username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`@${nome}(?![\\w.-])`, "i").test(msg.content);
+}
+
 function onDispatch(t: DispatchName, d: unknown): void {
   if (t === "READY") {
     const ready = d as ReadyData;
@@ -576,13 +596,17 @@ function onDispatch(t: DispatchName, d: unknown): void {
       // — um leave de melhor esforço reconcilia (revisão M3 #3)
       if (v.user_id === state.me?.id) voice.reconcile(v.channel_id);
     }
-    // sons de join/leave (M6, doc §8): só os movimentos dos OUTROS no MEU
-    // canal — os próprios tocam no onChange local (mais imediato, e na saída
-    // o voice.channelId daqui já estaria null quando o eco chegasse)
-    const mine = voice.channelId;
-    if (mine !== null && v.user_id !== state.me?.id) {
-      if (v.channel_id === mine && prevChannel !== mine) playVoiceSound("join");
-      else if (prevChannel === mine && v.channel_id !== mine) playVoiceSound("leave");
+    // sons de join/leave (M8): quem decide se toca é sound/policy — aqui só se
+    // relata o FATO. No leave o canal do evento é o `prevChannel` (de ONDE a
+    // pessoa saiu), nunca o v.channel_id, que já é o destino (ou null).
+    //
+    // Os MEUS movimentos NÃO saem daqui: já saíram do voice.onChange, antes
+    // deste eco. A política não tem como separar as duas origens (ela precisa
+    // deixar o evento próprio passar, senão o onChange emudece), então quem
+    // corta a duplicata é este guard — sem ele o próprio join toca DUAS vezes.
+    if (v.user_id !== state.me?.id && v.channel_id !== prevChannel) {
+      if (v.channel_id !== null) emit({ name: "voice-join", actorId: v.user_id, channelId: v.channel_id });
+      if (prevChannel !== null) emit({ name: "voice-leave", actorId: v.user_id, channelId: prevChannel });
     }
     renderVoiceUi();
     return;
@@ -597,6 +621,8 @@ function onDispatch(t: DispatchName, d: unknown): void {
     // viram só estado no VoiceClient (o badge vem do self_stream; o clique em
     // "Assistir" acha o producer por lá) — viewers sob demanda, doc §3.6
     const source = p.source ?? (p.kind === "video" ? "camera" : "mic");
+    // só a tela anuncia; o screen_audio vem logo atrás como par e tocaria duas vezes
+    if (source === "screen") emit({ name: "stream-start", actorId: p.user_id, channelId: p.channel_id });
     if (source === "screen" || source === "screen_audio") {
       voice.registerStreamProducer(p.user_id, p.producer_id, source);
       renderChannels(); // o item da lista pode virar clicável antes do VOICE_STATE_UPDATE chegar
@@ -628,6 +654,10 @@ function onDispatch(t: DispatchName, d: unknown): void {
       state.members.set(msg.author_id, { id: msg.author_id, username: `user-${msg.author_id.slice(-4)}`, avatar_url: null });
       renderMembers(ui);
     }
+    // Som ANTES do return abaixo: mensagem em canal que não estou vendo é
+    // justamente o caso que precisa avisar. A política descarta a minha
+    // própria e decide entre "estou vendo este canal" e "janela sem foco".
+    emit({ name: mentionsMe(msg) ? "mention" : "message", actorId: msg.author_id, channelId: msg.channel_id });
     if (msg.channel_id !== state.currentChannel) return;
     // resync em voo: o snapshot pode não conter esta mensagem e o
     // replaceChildren descartaria o append — bufferiza e aplica depois
@@ -719,7 +749,10 @@ function startGateway(): void {
   // um close tardio ("offline") que não deve sobrescrever o status da nova
   const gw: AuthGateway = new AuthGateway(GATEWAY, token, {
     status: (s) => {
-      if (gw === currentGateway) setConnectionStatus(s);
+      if (gw === currentGateway) {
+        setConnectionStatus(s);
+        emitConnection(s); // anti-flapping mora lá dentro: ~2 s estáveis viram som
+      }
     },
     dispatch: (t, d) => {
       if (gw === currentGateway) onDispatch(t, d);
@@ -745,6 +778,7 @@ async function onGatewayAuthFailed(gw: AuthGateway): Promise<void> {
   // transitório: reconectar já repetiria o 4004 num loop quente — espera e
   // tenta o ciclo inteiro de novo (o guard mata a retentativa se houve logout)
   setConnectionStatus("offline");
+  emitConnection("offline");
   setTimeout(() => {
     if (gw === currentGateway) void onGatewayRetry();
   }, 5000);
@@ -846,9 +880,20 @@ const ui: SidebarContext = {
     joinVoice: (id) => void joinVoice(id),
     leaveVoice: () => void voice.leave(),
     // seguros fora da call: applyMute() protege com track != null e pushState()
-    // sai cedo sem canal — mutar antes de entrar VALE para o próximo join
-    toggleMute: () => void voice.toggleMute(),
-    toggleDeafen: () => void voice.toggleDeafen(),
+    // sai cedo sem canal — mutar antes de entrar VALE para o próximo join.
+    //
+    // O som sai SÍNCRONO, logo após a chamada: o toggle já mudou o estado na
+    // primeira linha, antes de qualquer await. Esperar a promise amarraria o
+    // clipe ao round-trip do update_state — dois cliques rápidos resolveriam
+    // fora de ordem e tocariam o som errado duas vezes (revisão M8 #2).
+    toggleMute: () => {
+      void voice.toggleMute();
+      emit({ name: voice.muted ? "self-mute" : "self-unmute" });
+    },
+    toggleDeafen: () => {
+      void voice.toggleDeafen();
+      emit({ name: voice.deafened ? "self-deafen" : "self-undeafen" });
+    },
     watchStream: (userId) => {
       const producerId = voice.streamProducerIdOf(userId);
       if (producerId === null) return; // anúncio ainda em trânsito — clique de novo
@@ -864,24 +909,37 @@ const ui: SidebarContext = {
 mountSidebar(ui);
 
 /**
- * Sons de join/leave (M6, doc §8): tocam quando ALGUÉM (inclusive eu) entra
- * ou sai do MEU canal de voz — web e desktop. Deafen silencia tudo, sons de
- * UI inclusive. Os movimentos dos OUTROS saem do VOICE_STATE_UPDATE; os MEUS
- * saem daqui: o onChange dispara na hora do join/leave local (mais imediato
- * que o eco do gateway, e cobre kick/logout, onde eco nem viria a tempo).
+ * Som (M8). O callback é lido no INSTANTE de cada evento — nada de listener de
+ * focus/blur nem de espelhar estado: a política pergunta, o main responde.
  */
-function playVoiceSound(kind: "join" | "leave"): void {
-  if (voice.deafened) return;
-  if (kind === "join") playJoin();
-  else playLeave();
-}
+mountSound(() => ({
+  meId: state.me?.id ?? null,
+  deafened: voice.deafened,
+  muted: voice.muted,
+  voiceChannelId: voice.channelId,
+  viewingChannelId: state.currentChannel,
+  windowFocused: document.hasFocus(),
+}));
 
+/**
+ * Sons de join/leave (M6, doc §8): tocam quando ALGUÉM (inclusive eu) entra
+ * ou sai do MEU canal de voz — web e desktop. Os movimentos dos OUTROS saem do
+ * VOICE_STATE_UPDATE; os MEUS saem daqui: o onChange dispara na hora do
+ * join/leave local (mais imediato que o eco do gateway, e cobre kick/logout,
+ * onde o eco nem viria a tempo).
+ */
 let lastOwnVoiceChannel: string | null = null;
 voice.onChange = () => {
   const cur = voice.channelId;
   if (cur !== lastOwnVoiceChannel) {
-    // troca direta de canal (X→Y) toca só o join — a saída é implícita
-    playVoiceSound(cur !== null ? "join" : "leave");
+    // troca direta de canal (X→Y) toca só o join — a saída é implícita.
+    // No leave o voice.channelId JÁ é null: o canal do evento tem que vir do
+    // último conhecido, senão a política não tem com o que comparar.
+    emit({
+      name: cur !== null ? "voice-join" : "voice-leave",
+      actorId: state.me?.id ?? null,
+      channelId: cur ?? lastOwnVoiceChannel,
+    });
     lastOwnVoiceChannel = cur;
   }
   renderVoiceUi();
@@ -913,6 +971,9 @@ async function joinVoice(channelId: string): Promise<void> {
  */
 let voiceErrorTimer: ReturnType<typeof setTimeout> | null = null;
 function flashVoiceError(msg: string): void {
+  // o par sonoro do aviso visual: se a mensagem existe porque o usuário PRECISA
+  // perceber, o som pertence ao mesmo lugar (revisão M8 #3)
+  emit({ name: "error" });
   el.voiceFooter.hidden = false;
   el.voiceFooterStatus.textContent = msg;
   el.voiceFooterStatus.classList.add("error");
@@ -1042,6 +1103,10 @@ if (desktop !== undefined) {
   desktop.onPtt((down) => {
     pttHeld = down;
     voice.setPttPressed(down);
+    // o retorno audível É o ponto do PTT: quem segura a tecla costuma estar
+    // com a janela escondida atrás de um jogo, sem ver o rótulo mudar. Quem
+    // decide se ele CABE (em chamada, mic não mutado) é a política.
+    emit({ name: down ? "ptt-on" : "ptt-off" });
     renderPtt();
   });
 
