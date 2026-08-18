@@ -1,0 +1,322 @@
+/* Diálogo de voz e vídeo (M9) — ui/voice-settings.ts, e a casca de ui/dialog.ts.
+   Nada aqui existe no index.html: o overlay inteiro nasce em JS.
+
+   CONTRASTE (a mesma armadilha que o settings.css do M8 documenta): o painel
+   é --bg-chat e cada bloco usa --bg-elevated por cima. Sobre --bg-elevated, o
+   --text-muted dá 4.05:1 — abaixo do AA de 4.5:1. Por isso NENHUM texto daqui
+   é --text-muted: texto secundário é --text-normal, e a hierarquia sai do peso
+   e do tamanho.
+
+   E o mesmo cuidado vale para as cores de estado: --ok sobre --bg-elevated dá
+   3.5:1 e --danger dá 3.0:1 — servem para uma FORMA (a barra do medidor, a
+   borda da pilha), nunca para texto. O veredito da conexão é por isso uma
+   pilha de fundo TINGIDO com texto em --text-strong, e não texto colorido: a
+   palavra ("Boa", "Ruim") carrega o significado sozinha, a cor só reforça. */
+
+/* --- casca do diálogo (ui/dialog.ts) --------------------------------------
+   Estas regras são da CASCA, não deste diálogo: se o ui/settings.ts do M8 um
+   dia passar a usar o ui/dialog.ts (sugestão no relatório do M9), este bloco
+   vira um styles/dialog.css e o settings.css encolhe junto.
+
+   z-index igual ao do #sound-settings pelo mesmo motivo: o app inteiro empilha
+   entre 1 e 2 e o modal precisa cobrir todos eles. Os dois diálogos nunca
+   ficam abertos ao mesmo tempo (um abre do menu que o outro fecha). */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: var(--bg-overlay);
+}
+
+.dialog-panel {
+  width: min(560px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  /* min-height: 0 para o corpo poder encolher e rolar por dentro em janela
+     baixa — sem isto o painel estoura a tela e o rodapé some */
+  min-height: 0;
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  overflow: hidden; /* o raio recorta o cabeçalho e o rodapé */
+}
+
+.dialog-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.dialog-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.dialog-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+
+/* --- seções --------------------------------------------------------------- */
+.vs-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+
+.vs-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+/* --- seletor de dispositivo ----------------------------------------------- */
+.vs-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.vs-field-label {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+/* O <select> fica NATIVO (só repintado): a lista suspensa do sistema já é
+   acessível por teclado, por leitor de tela e por digitação — reimplementar
+   isso numa <div> custaria mais linhas do que todo o resto deste arquivo. */
+.vs-select {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-strong);
+  cursor: pointer;
+}
+.vs-select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- botões --------------------------------------------------------------- */
+.vs-btn {
+  align-self: flex-start;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.vs-btn:hover:not(:disabled) {
+  background: var(--bg-sidebar);
+  color: var(--text-strong);
+}
+.vs-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vs-done {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.vs-done:hover {
+  background: var(--brand-hover);
+}
+
+/* --- medidor de nível -----------------------------------------------------
+   A barra é DECORAÇÃO (aria-hidden no JS): quem não enxerga julga o microfone
+   pelo "Gravar e ouvir", que é audível por definição. */
+.vs-meter {
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--bg-guilds);
+  overflow: hidden;
+}
+.vs-meter-fill {
+  width: 0;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--ok);
+  /* a transição é curtíssima de propósito: com 100ms a barra viraria uma
+     média preguiçosa e deixaria de mostrar os picos, que é o que importa */
+  transition: width 60ms linear;
+}
+/* quase estourando — reforço visual, a explicação está no texto ao lado */
+.vs-meter-fill.is-hot {
+  background: var(--danger);
+}
+
+/* --- linhas de chave (reusam .settings-switch do M8) ---------------------- */
+.vs-switch-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: var(--sp-3);
+  row-gap: var(--sp-1);
+  padding: var(--sp-2) 0;
+}
+.vs-switch-row > .settings-switch {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+}
+.vs-switch-label {
+  grid-column: 2;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.vs-switch-desc {
+  grid-column: 2;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+
+/* --- prévia da câmera ----------------------------------------------------- */
+.vs-preview {
+  width: 100%;
+  max-width: 280px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-sm);
+  background: var(--bg-guilds);
+  object-fit: cover;
+  /* espelhada como todo preview de webcam: a pessoa se vê como no espelho, e
+     é assim que ela consegue se centralizar sem pensar ao contrário */
+  transform: scaleX(-1);
+}
+
+/* --- qualidade da conexão ------------------------------------------------- */
+.vs-stat {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: var(--sp-3);
+  row-gap: 2px;
+  padding: var(--sp-1) 0;
+}
+.vs-stat-label {
+  grid-column: 1;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+.vs-stat-value {
+  grid-column: 2;
+  color: var(--text-normal);
+  /* o número não pode dançar de largura a cada leitura de 2 s */
+  font-variant-numeric: tabular-nums;
+}
+.vs-stat-desc {
+  grid-column: 1 / -1;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+
+/* A pilha do veredito: fundo TINGIDO com a cor de estado + texto --text-strong.
+   Ver o cabeçalho — texto na cor pura não passa AA sobre estas superfícies. */
+.vs-pill {
+  grid-column: 2;
+  justify-self: end;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--text-faint);
+  border-radius: var(--r-full);
+  background: var(--bg-chat);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+.vs-pill.is-boa {
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 22%, var(--bg-chat));
+}
+.vs-pill.is-media {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 22%, var(--bg-chat));
+}
+.vs-pill.is-ruim {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 22%, var(--bg-chat));
+}
+
+/* --- textos auxiliares ---------------------------------------------------- */
+.vs-hint {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+
+/* estado do teste: é a saída NÃO-VISUAL do diálogo (aria-live no JS), então
+   pesa um pouco mais que uma dica solta */
+.vs-status {
+  min-height: 1.4em; /* reservar a linha evita o layout pular a cada estado */
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+/* Aviso: é alerta, não erro — daí --warn.
+   O fundo é --bg-chat (e não --bg-elevated) porque o mesmo bloco aparece nos
+   dois lugares: solto no corpo do diálogo e DENTRO de uma seção elevada. Sobre
+   --bg-chat o --warn dá 6.7:1, com folga de AA; a barra lateral é o que dá
+   presença ao bloco quando o fundo empata com o do vizinho. */
+.vs-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  font-size: var(--fs-xs);
+}
+.vs-warn {
+  color: var(--warn);
+}
+/* o botão dentro do aviso volta a ser legível: o --warn do bloco não pode
+   vazar para o texto de um controle */
+.vs-note .vs-btn {
+  color: var(--text-normal);
+  background: var(--bg-elevated);
+}
+.vs-note .vs-btn:hover:not(:disabled) {
+  color: var(--text-strong);
+  background: var(--bg-sidebar);
+}

@@ -41,6 +41,15 @@ services:
         - action: sync
           path: ./apps/client/index.html
           target: /app/apps/client/index.html
+        # assets de áudio (M8 sons de UI, M9 seeds do soundboard): sem estas
+        # duas linhas, trocar um .ogg exigia rebuild da imagem para o container
+        # ver o arquivo novo — e o seed do soundboard leria os antigos
+        - action: sync
+          path: ./apps/client/assets
+          target: /app/apps/client/assets
+        - action: sync
+          path: ./apps/server/assets
+          target: /app/apps/server/assets
         # mudou dependência? rebuild da imagem
         - action: rebuild
           path: ./pnpm-lock.yaml

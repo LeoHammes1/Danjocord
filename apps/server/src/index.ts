@@ -9,6 +9,8 @@ import { Sessions } from "./sessions.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { registerStaticClient } from "./static-client.js";
+import { registerSoundRoutes } from "./sounds/routes.js";
+import { seedSounds } from "./sounds/seed.js";
 import { Voice } from "./voice.js";
 
 // Sem segredo real em produção, todo JWT emitido seria forjável — aborta já.
@@ -51,6 +53,13 @@ const sessions = new Sessions(db, store);
 // atribuição pós-construção porque Store e Gateway não se conhecem
 store.onUserCreated = (u) => gateway.broadcast("MEMBER_ADD", u);
 
+// soundboard (M9): os 9 embutidos entram no banco no primeiro boot — depois
+// disso o banco é a ÚNICA fonte do catálogo (embutido = som sem uploader)
+const seeded = seedSounds(store, (msg) => {
+  app.log.warn(msg);
+});
+if (seeded > 0) app.log.info(`soundboard: ${seeded} sons embutidos semeados`);
+
 // --- voz (M3, doc §3.6): o mediasoup vive aqui, atrás da sinalização op 20/21 ---
 const voice = await Voice.create(store).catch((err: unknown) => {
   // fail-fast com diagnóstico: o EADDRINUSE clássico aqui é porta RTC presa
@@ -65,8 +74,12 @@ voice.broadcast = gateway.broadcast.bind(gateway) as typeof voice.broadcast;
 gateway.onVoiceRequest = (ctx, m, p) => voice.handleRequest(ctx, m, p);
 gateway.onSessionGone = (ctx) => voice.sessionGone(ctx);
 gateway.voiceStatesProvider = () => voice.voiceStates();
+gateway.soundsProvider = () => store.listSounds();
 
 registerRoutes(app, store, gateway);
+// o canal onde o som toca é o que o SERVIDOR vê, nunca o que o cliente diz —
+// a rota pergunta ao módulo de voz e responde 403 para quem está fora
+registerSoundRoutes(app, store, gateway, { voiceChannelOf: (userId) => voice.channelOfUser(userId) });
 registerAuthRoutes(app, store, sessions);
 registerOAuthRoutes(app, db, store, sessions);
 await registerStaticClient(app);

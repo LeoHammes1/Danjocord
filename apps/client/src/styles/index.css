@@ -15,6 +15,20 @@
 @import "./members.css";
 @import "./chat.css";
 
+/* o card do membro (M9) flutua sobre as duas listas, então vem depois delas —
+   e ANTES do diálogo de som, que é modal e cobre o card também */
+@import "./user-controls.css";
+
 /* por último porque o diálogo de som fica POR CIMA de tudo: a ordem aqui é o
    que resolve o empilhamento, sem precisar de z-index inventado */
 @import "./settings.css";
+
+/* soundboard (M9) depois do sidebar.css de propósito: o anel de "quem tocou"
+   e o de "quem fala" têm a MESMA especificidade (.voice-user.classe .av) e é a
+   ordem que decide qual aparece quando os dois valem ao mesmo tempo */
+@import "./soundboard.css";
+
+/* o diálogo de voz e vídeo (M9) e a casca de ui/dialog.ts — mesma razão de
+   estar no fim, e depois do settings.css porque reusa o `.settings-switch`
+   dele (a chave liga/desliga é primitiva, o diálogo é que não é) */
+@import "./voice-settings.css";

@@ -57,6 +57,10 @@ COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build /app/packages/protocol/package.json ./packages/protocol/package.json
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/server/migrations ./apps/server/migrations
+# assets/soundboard: os 9 sons embutidos (93 KB, CC0 da Kenney) que o boot
+# semeia na tabela `sounds` quando ela está vazia (M9). Sem esta cópia o
+# soundboard nasce vazio na imagem de produção — e só lá.
+COPY --from=build /app/apps/server/assets ./apps/server/assets
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json
 # scripts/ entra pela CLI de allowlist (node scripts/allowlist.ts — doc §5)
 COPY --from=build /app/apps/server/scripts ./apps/server/scripts

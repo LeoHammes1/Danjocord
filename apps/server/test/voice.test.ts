@@ -71,6 +71,8 @@ interface VoiceStateWire {
   self_video: boolean;
   /** transmitindo tela (M5, badge AO VIVO) — derivado: existe producer source screen vivo */
   self_stream: boolean;
+  /** silenciado por admin (M9) — derivado do conjunto de silenciados; NÃO é declarativo */
+  server_mute: boolean;
 }
 interface TransportWire {
   transport_id: string;
@@ -237,7 +239,16 @@ async function produceScreenAudio(ctx: Ctx, transportId: string): Promise<{ prod
  */
 interface VoiceInternals {
   rooms: Map<string, { observer: { addProducer(o: { producerId: string }): Promise<void> } }>;
-  sessions: Map<string, { consumers: Map<string, { paused: boolean; closed: boolean }> }>;
+  sessions: Map<
+    string,
+    {
+      /** M9: o kick varre POR USUÁRIO — o teste forja a segunda sessão mexendo aqui */
+      userId: string;
+      consumers: Map<string, { paused: boolean; closed: boolean }>;
+      /** M9: o teste de server mute confere producer.paused — enforcement real, não flag */
+      producers: Map<string, { paused: boolean; closed: boolean; appData: { source?: string } }>;
+    }
+  >;
 }
 const internals = voice as unknown as VoiceInternals;
 
@@ -269,6 +280,7 @@ test("join devolve as rtp_capabilities do router (opus) e broadcasta VOICE_STATE
       self_deaf: false,
       self_video: false,
       self_stream: false,
+      server_mute: false,
     });
   } finally {
     await leaveQuietly(ctx);
@@ -504,6 +516,7 @@ test("update_state broadcasta as flags (o mute REAL é client-side, pausando o t
       self_deaf: false,
       self_video: false,
       self_stream: false,
+      server_mute: false,
     });
 
     const mine = voice.voiceStates().find((s) => s.user_id === carol.id);
@@ -1272,5 +1285,216 @@ test("produce H264 aceito; assinante VP8-only fica CEGO para o tile mas não MUD
   } finally {
     await leaveQuietly(a);
     await leaveQuietly(b);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// M9: moderação de voz (roadmap 34 e 37). Os dois únicos métodos do op 20 que
+// exigem admin — e o server mute é o único estado do VoiceState com
+// enforcement REAL no mediasoup (producer.pause()), não declarativo.
+// ---------------------------------------------------------------------------
+
+const admin = store.findOrCreateDevUser("admin");
+db.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").run(BigInt(admin.id));
+const dave = store.findOrCreateDevUser("dave");
+
+/** producer de mic vivo de uma sessão (é nele que o server mute morde). */
+function micProducerOf(sessionId: string): { paused: boolean; closed: boolean } | undefined {
+  const session = internals.sessions.get(sessionId);
+  if (!session) return undefined;
+  for (const producer of session.producers.values()) {
+    if (producer.appData.source === "mic" && !producer.closed) return producer;
+  }
+  return undefined;
+}
+
+/** O admin não precisa estar em voz para moderar — a sessão dele é só identidade. */
+const adminCtx: Ctx = { userId: admin.id, sessionId: "s-admin" };
+
+test("server_mute e disconnect_user exigem admin (não-admin é recusado nos dois)", async () => {
+  const naoAdmin: Ctx = { userId: bob.id, sessionId: "s-nao-admin" };
+  await assert.rejects(
+    () => voice.handleRequest(naoAdmin, "server_mute", { user_id: dave.id, muted: true }),
+    /admin/,
+    "qualquer um silenciando qualquer um seria pior que não ter moderação",
+  );
+  await assert.rejects(() => voice.handleRequest(naoAdmin, "disconnect_user", { user_id: dave.id }), /admin/);
+  // Zod na entrada, como todo o resto do op 20
+  await assert.rejects(() => voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id }));
+  await assert.rejects(() => voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: "sim" }));
+  await assert.rejects(() => voice.handleRequest(adminCtx, "disconnect_user", {}));
+  // usuário que não existe não pode entrar na lista de silenciados (lixo eterno)
+  await assert.rejects(
+    () => voice.handleRequest(adminCtx, "server_mute", { user_id: "4611686018427387904", muted: true }),
+    /desconhecido/,
+  );
+});
+
+test("server_mute PAUSA o producer de verdade e broadcasta server_mute true", async () => {
+  const alvo: Ctx = { userId: dave.id, sessionId: "s-mute-alvo" };
+  try {
+    await join(alvo, "2");
+    const t = await createTransport(alvo, "send");
+    await produce(alvo, t.transport_id);
+    const mic = micProducerOf(alvo.sessionId);
+    assert.ok(mic, "sanidade: o dave tem um producer de mic");
+    assert.equal(mic.paused, false, "producer nasce tocando quando ninguém silenciou");
+
+    reset();
+    const r = await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: true });
+    assert.deepEqual(r ?? {}, {}, "server_mute responde payload vazio");
+    assert.equal(mic.paused, true, "enforcement REAL: o worker para de encaminhar o RTP do mic");
+
+    const last = findAll<VoiceStateWire>("VOICE_STATE_UPDATE").at(-1);
+    assert.ok(last, "server_mute broadcasta VOICE_STATE_UPDATE");
+    assert.equal(last.user_id, dave.id);
+    assert.equal(last.channel_id, "2", "silenciar NÃO tira da voz");
+    assert.equal(last.server_mute, true);
+    assert.equal(voice.voiceStates().find((s) => s.user_id === dave.id)?.server_mute, true);
+
+    // liberar volta a soltar o áudio
+    reset();
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    assert.equal(mic.paused, false, "unmute retoma o producer");
+    assert.equal(findAll<VoiceStateWire>("VOICE_STATE_UPDATE").at(-1)?.server_mute, false);
+  } finally {
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    await leaveQuietly(alvo);
+  }
+});
+
+test("ARMADILHA: sair e voltar (ou refazer o producer) NÃO burla o server mute", async () => {
+  const alvo: Ctx = { userId: dave.id, sessionId: "s-mute-fuga" };
+  const volta: Ctx = { userId: dave.id, sessionId: "s-mute-volta" };
+  try {
+    await join(alvo, "2");
+    const t = await createTransport(alvo, "send");
+    await produce(alvo, t.transport_id);
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: true });
+    assert.equal(micProducerOf(alvo.sessionId)?.paused, true, "sanidade: silenciado");
+
+    // 1) refazer o producer da MESMA source (restart do M5): o novo nasce pausado
+    await produce(alvo, t.transport_id);
+    assert.equal(micProducerOf(alvo.sessionId)?.paused, true, "producer novo não pode nascer solto");
+
+    // 2) sair da voz e voltar por OUTRA sessão — o caminho óbvio de fuga
+    await voice.handleRequest(alvo, "leave", {});
+    await join(volta, "2");
+    const t2 = await createTransport(volta, "send");
+    await produce(volta, t2.transport_id);
+    assert.equal(
+      micProducerOf(volta.sessionId)?.paused,
+      true,
+      "o silêncio é do USUÁRIO: sair e voltar não pode devolver o microfone",
+    );
+    assert.equal(voice.voiceStates().find((s) => s.user_id === dave.id)?.server_mute, true);
+
+    // e o unmute vale para a sessão nova, sem o admin ter que repetir nada
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    assert.equal(micProducerOf(volta.sessionId)?.paused, false);
+  } finally {
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    await leaveQuietly(alvo);
+    await leaveQuietly(volta);
+  }
+});
+
+test("server_mute de quem está FORA da voz vale quando ele entra", async () => {
+  const alvo: Ctx = { userId: dave.id, sessionId: "s-mute-fora" };
+  try {
+    assert.ok(!voice.voiceStates().some((s) => s.user_id === dave.id), "sanidade: dave fora da voz");
+    reset();
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: true });
+    assert.equal(events.length, 0, "não há sessão para anunciar — nada é broadcastado");
+
+    await join(alvo, "2");
+    const t = await createTransport(alvo, "send");
+    await produce(alvo, t.transport_id);
+    assert.equal(micProducerOf(alvo.sessionId)?.paused, true, "o mute esperava por ele na porta");
+    assert.equal(
+      findAll<VoiceStateWire>("VOICE_STATE_UPDATE")
+        .filter((u) => u.user_id === dave.id)
+        .at(-1)?.server_mute,
+      true,
+      "o VOICE_STATE_UPDATE do join já anuncia o silêncio",
+    );
+  } finally {
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    await leaveQuietly(alvo);
+  }
+});
+
+test("disconnect_user tira o alvo da voz e não encosta em quem está junto", async () => {
+  const s1: Ctx = { userId: carol.id, sessionId: "s-kick-1" };
+  const s2: Ctx = { userId: carol.id, sessionId: "s-kick-2" };
+  const vizinho: Ctx = { userId: bob.id, sessionId: "s-kick-vizinho" };
+  try {
+    await join(s1, "2");
+    await join(s2, "3"); // expulsa a s1 (invariante do M3) — sobra a s2
+    await join(vizinho, "2");
+    assert.equal(voice.voiceStates().filter((s) => s.user_id === carol.id).length, 1);
+
+    reset();
+    const r = await voice.handleRequest(adminCtx, "disconnect_user", { user_id: carol.id });
+    assert.deepEqual(r ?? {}, {}, "disconnect_user responde payload vazio");
+    await settle();
+    assert.ok(!voice.voiceStates().some((s) => s.user_id === carol.id), "o alvo saiu da voz");
+    const last = findAll<VoiceStateWire>("VOICE_STATE_UPDATE")
+      .filter((u) => u.user_id === carol.id)
+      .at(-1);
+    assert.equal(last?.channel_id, null, "a saída viaja como channel_id null, igual a um leave");
+    assert.ok(
+      voice.voiceStates().some((s) => s.user_id === bob.id),
+      "quem estava no canal continua lá — o kick é cirúrgico",
+    );
+    // a sessão derrubada perdeu o direito de mexer em voz
+    await assert.rejects(() => voice.handleRequest(s2, "create_transport", { direction: "send" }));
+    // repetir é inofensivo (não há o que derrubar)
+    await voice.handleRequest(adminCtx, "disconnect_user", { user_id: carol.id });
+  } finally {
+    await leaveQuietly(s1);
+    await leaveQuietly(s2);
+    await leaveQuietly(vizinho);
+  }
+});
+
+test("disconnect_user com DUAS sessões de voz do MESMO usuário derruba as duas", async () => {
+  // Pelo join, duas sessões de voz do mesmo usuário não coexistem (a segunda
+  // expulsa a primeira). O cenário é forjado a partir de duas sessões REAIS,
+  // trocando o dono da segunda: é o que aconteceria se algum caminho futuro
+  // relaxasse aquele invariante — e o kick tem que varrer POR USUÁRIO, não
+  // parar na primeira sessão que encontrar.
+  const s1: Ctx = { userId: dave.id, sessionId: "s-duas-1" };
+  const s2: Ctx = { userId: carol.id, sessionId: "s-duas-2" };
+  try {
+    await join(s1, "2");
+    await join(s2, "3");
+    const segunda = internals.sessions.get(s2.sessionId);
+    assert.ok(segunda, "sanidade: a segunda sessão está no mapa");
+    segunda.userId = dave.id; // agora são duas sessões vivas do MESMO usuário
+    assert.equal(voice.voiceStates().filter((s) => s.user_id === dave.id).length, 2);
+
+    await voice.handleRequest(adminCtx, "disconnect_user", { user_id: dave.id });
+    await settle();
+    assert.ok(!voice.voiceStates().some((s) => s.user_id === dave.id), "nenhuma sessão do alvo sobreviveu");
+    assert.ok(!internals.sessions.has(s1.sessionId), "a sessão do canal 2 caiu");
+    assert.ok(!internals.sessions.has(s2.sessionId), "e a do canal 3 também");
+  } finally {
+    await leaveQuietly(s1);
+    await leaveQuietly(s2);
+  }
+});
+
+test("admin pode se desconectar (a fila da própria sessão não pode travar)", async () => {
+  const eu: Ctx = { userId: admin.id, sessionId: "s-admin-em-voz" };
+  try {
+    await join(eu, "2");
+    assert.ok(voice.voiceStates().some((s) => s.user_id === admin.id));
+    // sem o desvio, enfileirar o kick na PRÓPRIA sessão esperaria por si mesmo
+    // (deadlock) e este teste travaria em vez de falhar
+    await voice.handleRequest(eu, "disconnect_user", { user_id: admin.id });
+    assert.ok(!voice.voiceStates().some((s) => s.user_id === admin.id), "o admin saiu");
+  } finally {
+    await leaveQuietly(eu);
   }
 });

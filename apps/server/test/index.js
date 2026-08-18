@@ -14,6 +14,10 @@ import "./sessions.test.ts";
 // depois de sessions de propósito: os testes de lá com relógio mockado deixam
 // o gerador de snowflakes "no futuro", e esta suíte usa banco novo — sem risco
 import "./messages.test.ts";
+// M9: o provador de duração é puro (nem banco nem Fastify), então entra em
+// qualquer ordem; as rotas do soundboard usam banco :memory: próprio
+import "./sound-probe.test.ts";
+import "./sounds.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte

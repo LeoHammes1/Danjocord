@@ -5,11 +5,13 @@ import {
   VoiceConnectTransportParams,
   VoiceConsumeParams,
   VoiceCreateTransportParams,
+  VoiceDisconnectUserParams,
   VoiceJoinParams,
   VoicePauseConsumerParams,
   VoiceProduceParams,
   VoiceRestartIceParams,
   VoiceResumeConsumerParams,
+  VoiceServerMuteParams,
   VoiceSetPreferredLayersParams,
   VoiceUpdateStateParams,
   type DispatchEvent,
@@ -19,6 +21,7 @@ import {
 } from "@danjocord/protocol";
 import type { z } from "zod";
 import { config } from "./config.js";
+import { canonicalId, idFromString } from "./db/snowflake.js";
 import type { Store } from "./store.js";
 
 // Tetos por sessão (revisão M3 #7): a guild tem ≤10 pessoas — números acima
@@ -136,6 +139,14 @@ export class Voice {
   private readonly sessions = new Map<string, VoiceSession>();
   /** salas vivas por channel_id (routers lazy) */
   private readonly rooms = new Map<string, VoiceRoom>();
+  /**
+   * M9 (roadmap 34): usuários silenciados por admin. É do USUÁRIO, não da
+   * sessão — e é por isso que sair e voltar da voz (ou refazer o producer) não
+   * burla o mute: todo produce de `mic` consulta este conjunto. Em memória,
+   * como todo estado efêmero do projeto: um restart o perde, mas o restart já
+   * derruba todas as sessões de voz junto.
+   */
+  private readonly serverMuted = new Set<string>();
   /** criação de sala em andamento — dois joins simultâneos compartilham a promise */
   private readonly roomPending = new Map<string, Promise<VoiceRoom>>();
 
@@ -234,6 +245,11 @@ export class Voice {
         return this.restartIce(ctx, parseParams(VoiceRestartIceParams, method, p));
       case "update_state":
         return this.updateState(ctx, parseParams(VoiceUpdateStateParams, method, p));
+      // moderação (M9) — os dois únicos métodos de voz que exigem admin
+      case "server_mute":
+        return this.serverMute(ctx, parseParams(VoiceServerMuteParams, method, p));
+      case "disconnect_user":
+        return this.disconnectUser(ctx, parseParams(VoiceDisconnectUserParams, method, p));
       case "leave": {
         // idempotente: leave sem estar em voz é um no-op, não um erro
         const session = this.sessions.get(ctx.sessionId);
@@ -465,6 +481,20 @@ export class Voice {
     }
     session.producers.set(producer.id, producer);
     session.room.producers.set(producer.id, producer);
+    // ARMADILHA do server mute (M9): o silêncio é do USUÁRIO e não da sessão —
+    // um producer novo (re-produce, ou sair e voltar da voz) tem que nascer
+    // pausado se o admin silenciou, senão burlar seria só clicar em sair/entrar
+    if (p.source === "mic") {
+      try {
+        await this.syncServerMute(session);
+      } catch (err) {
+        // não deu para garantir o silêncio → fail-closed: o producer morre em
+        // vez de ficar um mic solto de alguém silenciado (o VOICE_NEW_PRODUCER
+        // ainda não saiu; o CLOSED que sai daqui é inofensivo para os clientes)
+        this.closeOneProducer(session, producer);
+        throw err;
+      }
+    }
     // broadcast simples para todos (inclusive o dono): o cliente filtra o
     // próprio user_id — ninguém consome a si mesmo; kind diz COMO consumir e
     // source diz SE consumir (screen/screen_audio são sob demanda, M5)
@@ -660,6 +690,113 @@ export class Voice {
   }
 
   // -------------------------------------------------------------------------
+  // Moderação de voz (M9, roadmap 34 e 37) — só admin
+  // -------------------------------------------------------------------------
+
+  /**
+   * Silencia (ou libera) um usuário para TODOS, com enforcement de verdade:
+   * `producer.pause()` no producer de `mic` do alvo, no worker. Os flags do
+   * VoiceState são declarativos por contrato do M3 — este NÃO pode ser, senão
+   * um cliente modificado ignoraria o flag e continuaria sendo ouvido.
+   *
+   * A ARMADILHA é a volta: se o silêncio morasse na sessão, bastaria sair e
+   * entrar de novo (ou só refazer o producer) para escapar. Por isso o conjunto
+   * é indexado por USUÁRIO e o produce consulta ele — ver syncServerMute.
+   */
+  private async serverMute(ctx: VoiceCtx, p: VoiceServerMuteParams): Promise<unknown> {
+    this.mustAdmin(ctx);
+    const userId = canonicalId(p.user_id);
+    // usuário precisa EXISTIR: silenciar um id inventado encheria o conjunto de
+    // lixo que nunca sai (ninguém vai "desmutar" quem não existe)
+    if (userId === null || this.store.getUserById(idFromString(userId)) === null) {
+      throw new Error("usuário desconhecido");
+    }
+    if (p.muted) this.serverMuted.add(userId);
+    else this.serverMuted.delete(userId);
+
+    // vale para o alvo mesmo FORA da voz (aí não há o que pausar nem o que
+    // anunciar; quando ele entrar, o produce aplica)
+    for (const session of [...this.sessions.values()]) {
+      if (session.userId !== userId) continue;
+      await this.syncServerMute(session);
+      // revalidação pós-await (achado do M3): o alvo pode ter saído da voz
+      // durante o pause — anunciar por uma sessão morta seria mentira
+      if (this.sessions.get(session.sessionId) !== session) continue;
+      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
+    }
+    return {};
+  }
+
+  /**
+   * Alinha os producers de `mic` de UMA sessão ao conjunto de silenciados.
+   * Chamado no produce (para o mute sobreviver a re-produce e a sair/voltar) e
+   * no server_mute (para valer já, sem esperar o próximo producer).
+   */
+  private async syncServerMute(session: VoiceSession): Promise<void> {
+    for (const producer of [...session.producers.values()]) {
+      if (producerSource(producer) !== "mic" || producer.closed) continue;
+      // a lista é lida a cada producer, e não uma vez no topo: um mute e um
+      // unmute concorrentes convergem para a última leitura, nunca para um
+      // estado misto entre producers da mesma sessão
+      const muted = this.serverMuted.has(session.userId);
+      if (muted && !producer.paused) await producer.pause();
+      else if (!muted && producer.paused) await producer.resume();
+    }
+  }
+
+  /**
+   * Tira o alvo do canal de voz. TODAS as sessões dele saem: o mesmo usuário
+   * pode ter mais de uma sessão de gateway viva (aba antiga sem Resume ainda
+   * expirado, desktop + navegador), e derrubar só uma seria teatro.
+   *
+   * Cada saída passa pela fila DA SESSÃO ALVO (chainOp), não pela do admin: um
+   * join do alvo em voo terminaria de se registrar e só então seria derrubado —
+   * sem isso, o kick poderia rodar entre o await e o registro e não derrubar
+   * nada (é a mesma classe de corrida da revisão do M3).
+   */
+  private async disconnectUser(ctx: VoiceCtx, p: VoiceDisconnectUserParams): Promise<unknown> {
+    this.mustAdmin(ctx);
+    const userId = canonicalId(p.user_id);
+    if (userId === null) throw new Error("usuário desconhecido");
+
+    const targets = [...this.sessions.values()].filter((s) => s.userId === userId).map((s) => s.sessionId);
+    const pending: Promise<unknown>[] = [];
+    for (const sessionId of targets) {
+      const kick = (): void => {
+        const session = this.sessions.get(sessionId);
+        if (session) this.doLeave(session);
+      };
+      if (sessionId === ctx.sessionId) {
+        // admin se desconectando: JÁ estamos dentro da fila desta sessão —
+        // enfileirar de novo seria esperar por nós mesmos (deadlock)
+        kick();
+      } else {
+        pending.push(this.chainOp(sessionId, kick));
+      }
+    }
+    await Promise.all(pending);
+    return {};
+  }
+
+  /** Fonte única de "é admin?": a coluna users.is_admin (a mesma do DELETE do M2). */
+  private mustAdmin(ctx: VoiceCtx): void {
+    if (!this.store.isAdmin(ctx.userId)) throw new Error("só admin pode moderar a voz");
+  }
+
+  /**
+   * Em que canal de voz o usuário está agora (null = fora). É o que a rota do
+   * soundboard pergunta para recusar quem tenta tocar de fora do canal — o
+   * canal nunca vem do payload do cliente. Uma sessão de voz por usuário é
+   * invariante do join, então a primeira encontrada é a única.
+   */
+  channelOfUser(userId: string): string | null {
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId) return session.room.channelId;
+    }
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
   // Salas (router por canal, lazy)
   // -------------------------------------------------------------------------
 
@@ -798,6 +935,9 @@ export class Voice {
       self_deaf: session.selfDeaf,
       self_video: false, // os producers (câmera inclusa) já caíram todos acima
       self_stream: false, // idem para a tela (M5) — a cascata fechou tudo
+      // NÃO zera ao sair (M9): o silêncio é do usuário e continua valendo na
+      // volta — é exatamente o que impede burlar saindo e entrando
+      server_mute: this.serverMuted.has(session.userId),
     });
 
     // canal esvaziou → o router fecha (observer e transports caem em cascata);
@@ -826,6 +966,8 @@ export class Voice {
       // vivo — os flags não conseguem mentir sobre a mídia
       self_video: producers.some((pr) => producerSource(pr) === "camera" && !pr.closed),
       self_stream: producers.some((pr) => producerSource(pr) === "screen" && !pr.closed),
+      // M9: idem — derivado do conjunto de silenciados, nunca declarado
+      server_mute: this.serverMuted.has(session.userId),
     };
   }
 }

@@ -7,6 +7,7 @@ import {
   type DispatchName,
   type Message,
   type ReadyData,
+  type Sound,
   type User,
   type VoiceState,
 } from "@danjocord/protocol";
@@ -18,6 +19,24 @@ import { TypingSender, TypingTracker } from "./typing.js";
 import { mountChrome, renderChannelHead, setConnectionStatus } from "./ui/chrome.js";
 import { clearComposer, focusComposer, mountComposer, setComposerChannel, setComposerValue } from "./ui/composer.js";
 import { renderMembers } from "./ui/members.js";
+import { isUserSilenced, setUserSilenced } from "./sound/soundboard.js";
+import {
+  applySoundCatalog,
+  applySoundDelete,
+  applySoundUpsert,
+  handleSoundboardEvent,
+  mountSoundboard,
+  renderSoundboard,
+  soundboardSettingsSection,
+} from "./ui/soundboard.js";
+import {
+  closeUserControls,
+  mountUserControls,
+  openUserControls,
+  refreshUserControls,
+  type UserControlsContext,
+} from "./ui/user-controls.js";
+import { closeVoiceSettings, restoreVoicePrefs, voiceSettingsMenuItem } from "./ui/voice-settings.js";
 import { closeSettings } from "./ui/settings.js";
 import {
   editDraftOf,
@@ -198,10 +217,16 @@ const typingSender = new TypingSender(TYPING_THROTTLE_MS, (channelId) => {
 // ---------------------------------------------------------------------------
 
 function showLogin(error?: string): void {
-  // o diálogo de som é filho do <body> e não da view: sem isto ele fica
-  // flutuando por cima do formulário de login depois de um logout ou de um
-  // token revogado, com o foco preso dentro dele (revisão M8 #7)
+  // As três camadas flutuantes são filhas do <body>, não da view: sem isto
+  // ficam por cima do formulário de login com o foco preso dentro (foi o
+  // achado M8 #7, e o M9 repetiu para os dois novos).
+  //
+  // Aqui e não no doLogout: showLogin é o ponto ÚNICO por onde passam TODOS os
+  // caminhos de volta ao login — logout pelo menu, token revogado, falha de
+  // OAuth. Fechar só no doLogout cobria um de nove.
   closeSettings();
+  closeVoiceSettings();
+  closeUserControls(false);
   el.app.hidden = true;
   el.login.hidden = false;
   el.loginError.textContent = error ?? "";
@@ -559,10 +584,11 @@ function onDispatch(t: DispatchName, d: unknown): void {
       if (v.channel_id !== null) state.voiceStates.set(v.user_id, v);
     }
     state.speaking = new Map(); // "quem fala" não vem no snapshot; o próximo VOICE_SPEAKING repõe
+    applySoundCatalog(ready.sounds); // antes dos renders: o pad já nasce certo
     renderUserPanel(ui);
     renderChannels();
     renderChannelHead(ui); // a lista de canais só existe a partir daqui
-    renderMembers(ui);
+    renderMembers(ui, (userId) => openUserControls(userId));
     renderVoiceFooter();
     // READY = sessão NOVA (re-Identify): o estado de voz da sessão antiga
     // morreu no servidor — se estávamos em voz, re-join limpo, mídia zerada
@@ -594,8 +620,17 @@ function onDispatch(t: DispatchName, d: unknown): void {
       // fantasma da PRÓPRIA sessão (join que completou no servidor com o WS
       // caindo antes da resposta): estamos idle mas o servidor nos vê em voz
       // — um leave de melhor esforço reconcilia (revisão M3 #3)
-      if (v.user_id === state.me?.id) voice.reconcile(v.channel_id);
+      if (v.user_id === state.me?.id) {
+        voice.reconcile(v.channel_id);
+        // M9: silenciado por admin. O servidor pausa o producer de verdade —
+        // aqui o cliente fecha o mic e a UI passa a explicar que desmutar não
+        // adianta (é o primeiro flag de voz que NÃO é declarativo).
+        voice.setServerMuted(v.server_mute);
+      }
     }
+    // o card aberto (se for deste usuário) repinta: quem está com server_mute
+    // aparece para TODOS, não só para o admin que aplicou
+    refreshUserControls();
     // sons de join/leave (M8): quem decide se toca é sound/policy — aqui só se
     // relata o FATO. No leave o canal do evento é o `prevChannel` (de ONDE a
     // pessoa saiu), nunca o v.channel_id, que já é o destino (ou null).
@@ -644,6 +679,21 @@ function onDispatch(t: DispatchName, d: unknown): void {
     updateSpeaking(ui); // chega a cada ~200 ms: só alterna a classe, sem recriar a lista
     return;
   }
+  if (t === "SOUND_CREATE" || t === "SOUND_UPDATE") {
+    applySoundUpsert(d as Sound);
+    return;
+  }
+  if (t === "SOUND_DELETE") {
+    applySoundDelete((d as { id: string }).id);
+    return;
+  }
+  if (t === "VOICE_SOUNDBOARD") {
+    // o servidor manda só o id: o áudio nunca passa pelo SFU. Todo mundo do
+    // canal (inclusive quem apertou) toca pelo MESMO caminho — sem regra
+    // separada para o eco próprio.
+    handleSoundboardEvent(d as { user_id: string; channel_id: string; sound_id: string });
+    return;
+  }
   if (t === "MESSAGE_CREATE") {
     const msg = d as Message;
     // quem publicou obviamente parou de digitar — some antes dos 10s
@@ -652,7 +702,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
       // fallback para MEMBER_ADD perdido fora da janela de Resume; o evento
       // real substitui este placeholder quando (re)chegar
       state.members.set(msg.author_id, { id: msg.author_id, username: `user-${msg.author_id.slice(-4)}`, avatar_url: null });
-      renderMembers(ui);
+      renderMembers(ui, (userId) => openUserControls(userId));
     }
     // Som ANTES do return abaixo: mensagem em canal que não estou vendo é
     // justamente o caso que precisa avisar. A política descarta a minha
@@ -725,7 +775,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
   if (t === "MEMBER_ADD") {
     const user = d as User;
     state.members.set(user.id, user); // substitui o placeholder "user-XXXX", se havia
-    renderMembers(ui);
+    renderMembers(ui, (userId) => openUserControls(userId));
     renderTypingBar(); // "Usuário desconhecido" na barra pode virar o nome real
     return;
   }
@@ -733,7 +783,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
     const p = d as { user_id: string; online: boolean };
     if (p.online) state.online.add(p.user_id);
     else state.online.delete(p.user_id);
-    renderMembers(ui);
+    renderMembers(ui, (userId) => openUserControls(userId));
     renderUserPanel(ui); // a bolinha de status do painel do usuário é minha presença
   }
 }
@@ -814,11 +864,18 @@ async function doLogout(): Promise<void> {
  * AuthGateway é descartado e recriado a cada renovação de token — o VoiceClient
  * sempre fala com o gateway ATUAL.
  */
-const voice = new VoiceClient((m, p) => {
+/**
+ * Delegador do op 20. Extraído do construtor do VoiceClient porque a moderação
+ * de voz (M9: server_mute e disconnect_user) fala pelo MESMO caminho — e tem
+ * que ser o gateway ATUAL, que é recriado a cada renovação de token.
+ */
+const voiceRequest = (m: string, p?: unknown): Promise<unknown> => {
   const gw = currentGateway;
   if (gw === null) return Promise.reject(new Error("gateway desconectado"));
   return gw.request(m, p);
-});
+};
+
+const voice = new VoiceClient(voiceRequest);
 
 /**
  * O contexto que os módulos de ui/ enxergam (M7). Nasce aqui, depois do
@@ -828,7 +885,7 @@ const voice = new VoiceClient((m, p) => {
  * mount, mas cada render precisa ler o estado do instante — um snapshot por
  * chamada devolveria a lista de canais do boot para sempre.
  */
-const ui: SidebarContext = {
+const ui: SidebarContext & UserControlsContext = {
   state: {
     get me() {
       return state.me;
@@ -905,8 +962,34 @@ const ui: SidebarContext = {
     stopWatching: () => voice.stopWatching(),
     logout: () => void doLogout(),
   },
+  // M9: o card do membro. O volume/mute VIVOS são do VoiceClient; o
+  // localStorage é só memória entre sessões, e quem o reaplica é o
+  // mountUserControls — um ponto só, senão duas fontes divergem.
+  controls: {
+    getUserVolume: (id) => voice.getUserVolume(id),
+    setUserVolume: (id, v) => voice.setUserVolume(id, v),
+    isUserMuted: (id) => voice.isUserMuted(id),
+    setUserMuted: (id, m) => voice.setUserMuted(id, m),
+    isSoundboardMuted: isUserSilenced,
+    setSoundboardMuted: setUserSilenced,
+    serverMute: async (userId, muted) => {
+      await voiceRequest("server_mute", { user_id: userId, muted });
+    },
+    disconnectUser: async (userId) => {
+      await voiceRequest("disconnect_user", { user_id: userId });
+    },
+  },
 };
 mountSidebar(ui);
+mountSoundboard(ui);
+mountUserControls(ui); // aqui as preferências salvas voltam para o VoiceClient
+restoreVoicePrefs(voice); // dispositivo escolhido vale para o próximo join
+
+// "Voz e vídeo" no menu da engrenagem: o menu é montado pela sidebar, mas o
+// item precisa do VoiceClient — que a sidebar não conhece, e nem deveria.
+// Entra ANTES do "Sair", que continua sendo o último (é o destrutivo).
+const userMenu = el.userPanel.querySelector<HTMLElement>(".user-menu");
+if (userMenu !== null) userMenu.insertBefore(voiceSettingsMenuItem(voice, el.userSettings), el.logout);
 
 /**
  * Som (M8). O callback é lido no INSTANTE de cada evento — nada de listener de
@@ -949,6 +1032,7 @@ function renderVoiceUi(): void {
   renderChannels(); // as listas de participantes moram sob os canais de voz
   renderVoiceFooter();
   renderUserPanel(ui); // mic/fone do painel do usuário espelham o estado de voz
+  renderSoundboard(); // o pad só existe conectado
   renderVideoGrid(); // câmera ligada/desligada e teardown mexem nos tiles (M4)
   renderStreamPanel(); // nome do streamer/visibilidade do painel assistido (M5)
 }

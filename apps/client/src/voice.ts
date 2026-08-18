@@ -51,15 +51,76 @@ import type {
  * vez) e stopWatching devolve a banda com close_consumer (o servidor LIBERA
  * o consumer; pause só o deixaria alocado).
  *
+ * Controles de saída e de captura (M9, itens 33–40): o áudio de cada consumer
+ * deixou de tocar solto num <audio> e passa por uma cadeia WebAudio
+ * (MediaStreamSource → GainNode do usuário → GainNode mestre → destino), que é
+ * o que torna possível volume por usuário (0..200%) e mute LOCAL. O deafen
+ * virou REAL — pause_consumer em todos os consumers de áudio, não só mudar o
+ * elemento — e a captura ficou configurável (dispositivo de entrada/saída,
+ * echoCancellation/noiseSuppression/autoGainControl, medidor de nível do
+ * próprio mic). getConnectionStats() lê o getStats() dos dois transports.
+ *
  * Métodos no fio (m do op 20), casando com os schemas Voice*Params do
  * protocolo: "join", "create_transport", "connect_transport", "produce",
  * "consume", "resume_consumer", "restart_ice", "update_state", "leave",
  * "close_producer", "pause_consumer", "set_preferred_layers",
- * "close_consumer".
+ * "close_consumer". O M9 NÃO acrescentou método nenhum: o deafen real reusa
+ * pause_consumer/resume_consumer, que já existiam para os tiles de vídeo.
  */
 
 /** Assinatura do GatewayClient.request — o main.ts injeta um delegador. */
 export type VoiceRequestFn = (m: string, p?: unknown) => Promise<unknown>;
+
+/**
+ * Processamento do microfone (M9, item 39). Os três eram fixos em `true` dentro
+ * do captureAudio; agora são estado, porque num headset bom o AGC "bombeia" e a
+ * supressão de ruído come o começo das palavras — quem sabe o que faz precisa
+ * poder desligar.
+ */
+export interface AudioProcessing {
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+}
+
+/**
+ * Dispositivos disponíveis (M9, item 38). **Os `label` vêm VAZIOS enquanto o
+ * navegador não tiver concedido permissão de mídia** — é regra dele, não bug:
+ * antes do primeiro getUserMedia a lista existe, mas anônima. A UI deve pedir
+ * permissão (ou entrar na voz) antes de mostrar o seletor.
+ */
+export interface VoiceDevices {
+  audioInputs: MediaDeviceInfo[];
+  audioOutputs: MediaDeviceInfo[];
+  videoInputs: MediaDeviceInfo[];
+}
+
+/** Veredito resumido de getConnectionStats — os limiares estão em qualityOf(). */
+export type ConnectionQuality = "boa" | "media" | "ruim" | "desconhecida";
+
+/**
+ * Qualidade da conexão de mídia (M9, item 40). **Metade do getStats é
+ * CUMULATIVA** (bytes, pacotes, perdas contam desde o início da sessão): o que
+ * vale é a DIFERENÇA entre duas amostras, e é isso que estes campos são —
+ * exceto rtt e jitter, que já são instantâneos. Por isso a PRIMEIRA chamada
+ * volta com os campos de taxa/perda em null: não há amostra anterior com que
+ * comparar. Chame a cada 1–2 s.
+ */
+export interface ConnectionStats {
+  /** ida-e-volta até o servidor, em ms (remote-inbound-rtp; cai no par ICE) */
+  rttMs: number | null;
+  /** variação de chegada dos pacotes que RECEBEMOS, em ms — jitter alto = voz picotada */
+  jitterMs: number | null;
+  /** % dos nossos pacotes que o servidor NÃO recebeu (o que ele reporta de volta) */
+  sendLossPct: number | null;
+  /** % dos pacotes do servidor que não chegaram aqui */
+  recvLossPct: number | null;
+  /** taxa de subida no intervalo entre as duas amostras */
+  sendKbps: number | null;
+  /** taxa de descida no intervalo entre as duas amostras */
+  recvKbps: number | null;
+  quality: ConnectionQuality;
+}
 
 /**
  * Simulcast de 3 camadas ADAPTATIVO (doc §3.4 + requisito de até 4K): a
@@ -88,6 +149,46 @@ function simulcastEncodingsFor(height: number): { maxBitrate: number; scaleResol
  * (mic → <audio>; camera → tile; screen/screen_audio → viewers sob demanda).
  */
 type ProducerSourceWire = "mic" | "camera" | "screen" | "screen_audio";
+
+/**
+ * Linha do getStats que nos interessa (M9, item 40). O RTCStatsReport do
+ * lib.dom é um `ReadonlyMap<string, any>`: os campos por tipo não são tipados,
+ * então declaramos só o punhado que lemos, todo opcional — o resto de cada
+ * relatório continua sendo ignorado sem drama.
+ */
+interface StatsRow {
+  type?: string;
+  bytesSent?: number;
+  packetsSent?: number;
+  bytesReceived?: number;
+  packetsReceived?: number;
+  packetsLost?: number;
+  /** segundos (RTCP) — vira ms na saída */
+  jitter?: number;
+  roundTripTime?: number;
+  currentRoundTripTime?: number;
+  /** candidate-pair: só o par "succeeded" é o caminho em uso */
+  state?: string;
+}
+
+/** uma casa decimal — porcentagem de perda com 12 dígitos não ajuda ninguém */
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/**
+ * Veredito de qualidade (item 40). Limiares pensados para VOZ, que é o uso
+ * dominante: acima de ~300 ms de ida-e-volta a conversa começa a atropelar, e
+ * ~5% de perda já picota mesmo com o FEC do Opus. `worstLoss` é a pior das
+ * duas direções; `anyLoss` diz se ALGUMA medida de perda existe — sem rtt e
+ * sem perda não há o que julgar (primeira amostra, ou transport recém-nascido).
+ */
+function qualityOf(rttMs: number | null, worstLoss: number, anyLoss: number | null): ConnectionQuality {
+  if (rttMs === null && anyLoss === null) return "desconhecida";
+  if ((rttMs !== null && rttMs > 300) || worstLoss > 5) return "ruim";
+  if ((rttMs !== null && rttMs > 150) || worstLoss > 2) return "media";
+  return "boa";
+}
 
 /** Respostas do servidor (blobs do mediasoup viajam como unknown, doc §3.6). */
 interface JoinResponse {
@@ -196,8 +297,25 @@ export class VoiceClient {
   /** trava de reentrância: clique duplo em "Assistir" durante a sinalização */
   private watchStarting = false;
 
-  /** producer_id → consumer + <audio> (fora do DOM; guardado para cleanup/deafen) */
-  private readonly consumers = new Map<string, { consumer: Consumer; audio: HTMLAudioElement }>();
+  /**
+   * producer_id → consumer de ÁUDIO e a cadeia que o toca (M9). O <audio> não
+   * é mais quem faz o som: ele é uma BOMBA (ver ensureChain) e fica sempre
+   * mudo; quem toca é `chain`. Continua guardado para cleanup e para o
+   * fallback de quando o WebAudio não sobe.
+   */
+  private readonly consumers = new Map<
+    string,
+    {
+      consumer: Consumer;
+      audio: HTMLAudioElement;
+      /** dono do producer — chave do volume/mute por usuário (item 33/36) */
+      userId: string;
+      /** null = WebAudio indisponível; o volume cai no próprio elemento */
+      chain: { source: MediaStreamAudioSourceNode; gain: GainNode } | null;
+      /** pausado NO SERVIDOR (deafen real, item 35) — nasce true se entrarmos ensurdecidos */
+      paused: boolean;
+    }
+  >();
   /** producer_id → consumer de VÍDEO + <video> entregue à UI + estado do tile (M4) */
   private readonly videoConsumers = new Map<
     string,
@@ -209,6 +327,58 @@ export class VoiceClient {
   private readonly consuming = new Set<string>();
   /** VOICE_NEW_PRODUCER chegado durante o join — drenado quando conectar (rev. M3 #4); o M5 carrega source e user_id junto */
   private pendingProducers: { producerId: string; userId: string; source: ProducerSourceWire }[] = [];
+
+  // --- saída de áudio: cadeia WebAudio compartilhada (M9, itens 33/35/36) ---
+  /**
+   * UM AudioContext para TODA a voz — separado do de `sound/player.ts` de
+   * propósito: aquele é do módulo de som (com destravamento por gesto e
+   * preload) e não expõe o contexto. Dois contextos custam um device de saída
+   * cada; em troca, nenhum dos dois mexe no estado do outro.
+   */
+  private audioCtx: AudioContext | null = null;
+  /** nó mestre — é ele que o deafen zera NA HORA (o pause_consumer é assíncrono) */
+  private masterGain: GainNode | null = null;
+  /** WebAudio já falhou uma vez: não adianta tentar de novo a cada consumer */
+  private audioGraphFailed = false;
+  /** user_id → volume 0..2 (1 = 100%). Preferência: NÃO some no teardown. */
+  private readonly userVolumes = new Map<string, number>();
+  /** usuários que EU silenciei localmente (item 33). Preferência: sobrevive ao leave. */
+  private readonly userLocalMutes = new Set<string>();
+  /** dispositivo de SAÍDA escolhido (item 38); null = default do sistema */
+  private outputDeviceId: string | null = null;
+  /** dispositivos de ENTRADA escolhidos (item 38); null = default do sistema */
+  private micDeviceId: string | null = null;
+  private cameraDeviceId: string | null = null;
+  /** item 39: era fixo em true dentro do captureAudio */
+  private processing: AudioProcessing = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  /** medidor do próprio mic (item 39) — um por vez; o stop devolvido desmonta */
+  private levelWatch: {
+    cb: (level: number) => void;
+    analyser: AnalyserNode;
+    /** dreno mudo: sem caminho até o destino o grafo não é "puxado" (ver onLocalLevel) */
+    sink: GainNode;
+    source: MediaStreamAudioSourceNode | null;
+    /** o parâmetro do getFloatTimeDomainData exige o buffer NÃO compartilhado */
+    data: Float32Array<ArrayBuffer>;
+    timer: number;
+  } | null = null;
+  /** amostra anterior do getStats (item 40) — o delta é o que vale; ver ConnectionStats */
+  private statsSample: {
+    epoch: number;
+    at: number;
+    sendBytes: number;
+    sendPackets: number;
+    sendLost: number;
+    recvBytes: number;
+    recvPackets: number;
+    recvLost: number;
+  } | null = null;
+  /**
+   * Mute imposto por um ADMIN (item 34). O enforcement de verdade é no
+   * servidor (ele pausa o nosso producer); isto aqui é o espelho local — o mic
+   * fecha de fato e a UI sabe que desmutar não adianta.
+   */
+  private serverMute = false;
 
   /**
    * Geração da sessão de mídia: todo await no join/consume captura o valor e
@@ -231,6 +401,25 @@ export class VoiceClient {
   }
   get deafened(): boolean {
     return this.selfDeaf;
+  }
+  /**
+   * Um admin me silenciou (item 34). Enquanto for true o microfone fica
+   * fechado por baixo do mute próprio: a UI deve mostrar o botão de mic
+   * travado, senão o usuário fica clicando em "desmutar" sem efeito nenhum.
+   */
+  get serverMuted(): boolean {
+    return this.serverMute;
+  }
+  /** dispositivos escolhidos (item 38) — null = default do sistema */
+  get inputDeviceIds(): { audio: string | null; video: string | null } {
+    return { audio: this.micDeviceId, video: this.cameraDeviceId };
+  }
+  get outputDevice(): string | null {
+    return this.outputDeviceId;
+  }
+  /** cópia: o chamador não altera o estado interno por referência */
+  get audioProcessing(): AudioProcessing {
+    return { ...this.processing };
   }
   get cameraOn(): boolean {
     return this.videoProducer !== null;
@@ -338,7 +527,10 @@ export class VoiceClient {
           this.remoteStreams.set(p.producer_id, { userId: p.user_id, source });
           continue;
         }
-        const task = source === "camera" ? this.consumeVideo(p.user_id, p.producer_id) : this.consume(p.producer_id);
+        const task =
+          source === "camera"
+            ? this.consumeVideo(p.user_id, p.producer_id)
+            : this.consume(p.producer_id, p.user_id);
         void task.catch((err: unknown) => console.warn("voz: consume inicial falhou", err));
       }
       // e quem produziu DURANTE o nosso join (a janela inclui o prompt de
@@ -350,7 +542,9 @@ export class VoiceClient {
           continue;
         }
         const task =
-          pend.source === "camera" ? this.consumeVideo(pend.userId, pend.producerId) : this.consume(pend.producerId);
+          pend.source === "camera"
+            ? this.consumeVideo(pend.userId, pend.producerId)
+            : this.consume(pend.producerId, pend.userId);
         void task.catch((err: unknown) => console.warn("voz: consume pendente falhou", err));
       }
     } catch (err) {
@@ -417,15 +611,20 @@ export class VoiceClient {
 
   /**
    * Consome um producer remoto: consume (o servidor cria PAUSADO — best
-   * practice mediasoup) → recvTransport.consume → track num <audio autoplay>
-   * → resume_consumer só com o track já plugado.
+   * practice mediasoup) → recvTransport.consume → track na cadeia WebAudio do
+   * dono → resume_consumer só com a cadeia montada.
+   *
+   * `userId` (M9) é quem produziu: é a chave do volume e do mute local. É
+   * OPCIONAL só para não quebrar chamadores antigos — sem ele o áudio toca em
+   * 100% e ignora o mute local do usuário, então o call site do
+   * VOICE_NEW_PRODUCER deve passá-lo.
    */
-  async consume(producerId: string): Promise<void> {
+  async consume(producerId: string, userId?: string): Promise<void> {
     if (this.phase === "connecting") {
       // producer nascido durante o nosso join: descartar seria mudez permanente
       // até um re-join (revisão M3 #4) — guarda e o fim do join drena
       if (!this.pendingProducers.some((p) => p.producerId === producerId)) {
-        this.pendingProducers.push({ producerId, userId: "", source: "mic" });
+        this.pendingProducers.push({ producerId, userId: userId ?? "", source: "mic" });
       }
       return;
     }
@@ -455,16 +654,37 @@ export class VoiceClient {
         return;
       }
 
-      // <audio> fora do DOM toca normalmente; fica guardado para deafen/cleanup
+      const stream = new MediaStream([consumer.track]);
+      // ARMADILHA DO CHROMIUM (não "limpe" este elemento): um MediaStream que
+      // veio de WebRTC só ANDA se estiver plugado num sink de mídia — se ele
+      // existir apenas dentro do WebAudio, o MediaStreamAudioSourceNode entrega
+      // SILÊNCIO (crbug 933677; o workaround é o mesmo dos samples oficiais do
+      // WebRTC). Por isso o <audio> continua aqui, vivo e MUDO: ele bombeia os
+      // pacotes, quem toca é a cadeia. Quando o WebAudio não sobe (chain null),
+      // este mesmo elemento vira o tocador de verdade — daí ele nascer mudo e
+      // o applyAudioLevels decidir depois.
       const audio = new Audio();
       audio.autoplay = true;
-      audio.srcObject = new MediaStream([consumer.track]);
-      audio.muted = this.selfDeaf; // quem entra ensurdecido não ouve o novo também
-      this.consumers.set(producerId, { consumer, audio });
+      audio.srcObject = stream;
+      audio.muted = true;
+      this.applyOutputDevice(audio);
+      const owner = userId ?? "";
+      const entry = {
+        consumer,
+        audio,
+        userId: owner,
+        chain: this.buildChain(stream, this.effectiveVolume(owner)),
+        // quem entra ensurdecido nasce PAUSADO no servidor (item 35): nem RTP
+        // vem, e o un-deafen resume junto com os outros
+        paused: this.selfDeaf,
+      };
+      this.consumers.set(producerId, entry);
+      this.applyAudioLevels(entry);
       // autoplay: o join nasceu de um clique, então costuma passar; se o
       // navegador barrar mesmo assim, só avisa — destrava na próxima interação
       audio.play().catch((err: unknown) => console.warn("voz: play() rejeitado", err));
 
+      if (entry.paused) return; // ensurdecido: o resume é o un-deafen quem dá
       try {
         await this.request("resume_consumer", { consumer_id: consumer.id });
       } catch (err) {
@@ -472,6 +692,11 @@ export class VoiceClient {
         // <audio> — remove; um re-join reconstrói o consumo do canal inteiro
         this.closeConsumer(producerId);
         throw err;
+      }
+      // ensurdeceu DURANTE o resume: o sync do deafen já passou por aqui e não
+      // viu este consumer (ou viu antes do resume) — repõe o estado desejado
+      if (this.selfDeaf && this.consumers.get(producerId) === entry) {
+        void this.setConsumerPaused(entry, true);
       }
     } finally {
       this.consuming.delete(producerId);
@@ -887,8 +1112,13 @@ export class VoiceClient {
       video.setAttribute("playsinline", ""); // Safari antigo lê o atributo, não a propriedade
       // NÃO muted (contrato M5): o soundshare toca por ESTE <video>. Autoplay
       // sem mute pode ser barrado sem gesto recente — a UI trata o play()
-      // rejeitado (warn + botão de unmute). Deafen silencia o stream também.
-      video.muted = this.selfDeaf;
+      // rejeitado (warn + botão de unmute). Deafen silencia o stream também, e
+      // o M9 acrescenta o volume/mute local do dono (teto de 100%: o volume de
+      // um elemento não passa de 1 — a cadeia WebAudio é só para os consumers)
+      const volume = this.effectiveVolume(userId);
+      video.muted = this.selfDeaf || volume === 0;
+      video.volume = Math.min(1, volume);
+      this.applyOutputDevice(video); // saída escolhida (item 38)
       video.srcObject = stream;
       const watching = {
         userId,
@@ -981,6 +1211,12 @@ export class VoiceClient {
       }
       target.consumers.set(producerId, consumer);
       target.stream.addTrack(consumer.track);
+      // ensurdecido (M9, item 35): nasce pausado no servidor — nenhum RTP de
+      // soundshare atravessa a rede à toa. O un-deafen resume junto com o resto
+      if (this.selfDeaf) {
+        consumer.pause();
+        return;
+      }
       try {
         await this.request("resume_consumer", { consumer_id: consumer.id });
       } catch (err) {
@@ -1110,13 +1346,67 @@ export class VoiceClient {
       this.selfMute = true;
     }
     this.applyMute();
-    // deafen local = silenciar os <audio> — os consumers continuam vivos (o
-    // servidor nem sabe; un-deafen volta a ouvir sem re-sinalizar nada)
-    for (const { audio } of this.consumers.values()) audio.muted = this.selfDeaf;
-    // o soundshare toca pelo <video> do stream assistido — silencia junto (M5)
-    if (this.watching !== null) this.watching.video.muted = this.selfDeaf;
+    // O DEAFEN É REAL (M9, item 35): até o M8 ele só fazia `audio.muted = true`
+    // e o servidor continuava mandando TODO o RTP — quem se ensurdecia "para
+    // economizar" não economizava nada. Agora a economia é de verdade: os
+    // consumers de áudio são PAUSADOS no servidor, que para de encaminhar.
+    //
+    // O silêncio local vem antes e é SÍNCRONO (ganho mestre em 0, elementos
+    // mudos): pausar é assíncrono e o RTP em voo ainda tocaria no meio-tempo —
+    // este é o cinto de segurança, não o mecanismo.
+    this.applyMasterGain();
+    for (const entry of this.consumers.values()) this.applyAudioLevels(entry);
+    // o soundshare toca pelo <video> do stream assistido — silencia junto (M5).
+    // Via applyUserLevels e não `video.muted = selfDeaf`: sair do deafen não
+    // pode "desmutar" alguém que eu tinha silenciado localmente (item 33)
+    if (this.watching !== null) this.applyUserLevels(this.watching.userId);
+    this.syncDeafenConsumers();
     this.onChange?.();
     await this.pushState();
+  }
+
+  /**
+   * Aplica o deafen aos consumers (item 35). Cada um vai por conta própria: um
+   * pause/resume que falhe não pode levar os outros junto — o pior caso é UM
+   * usuário continuar gastando banda até o próximo toggle, e o ganho mestre
+   * garante que ninguém é OUVIDO enquanto ensurdecido.
+   */
+  private syncDeafenConsumers(): void {
+    const deaf = this.selfDeaf;
+    for (const entry of this.consumers.values()) void this.setConsumerPaused(entry, deaf);
+    // o soundshare do stream assistido também é RTP que chega (M5): pausar
+    // aqui é o mesmo dinheiro. Bookkeeping no próprio Consumer do
+    // mediasoup-client (`consumer.paused`), cujo pause local já desliga o
+    // track — instantâneo, enquanto o pause do servidor está em voo.
+    const w = this.watching;
+    if (w === null) return;
+    for (const consumer of w.consumers.values()) {
+      if (consumer.kind !== "audio" || consumer.paused === deaf) continue;
+      if (deaf) consumer.pause();
+      else consumer.resume();
+      void this.request(deaf ? "pause_consumer" : "resume_consumer", { consumer_id: consumer.id }).catch(
+        (err: unknown) => console.warn("voz: deafen do soundshare falhou", err),
+      );
+    }
+  }
+
+  /**
+   * Pausa/religa UM consumer no servidor. Otimista ANTES do await (padrão do
+   * setTileVisibility): toggles rápidos se dedupam pelo campo; se o request
+   * falhar, o flag fica adiantado e o próximo toggle re-sincroniza.
+   */
+  private async setConsumerPaused(
+    entry: { consumer: Consumer; paused: boolean },
+    paused: boolean,
+  ): Promise<void> {
+    if (entry.paused === paused) return;
+    entry.paused = paused;
+    try {
+      await this.request(paused ? "pause_consumer" : "resume_consumer", { consumer_id: entry.consumer.id });
+    } catch (err) {
+      // consumer já morto no servidor responde erro inócuo; o resto não muda
+      console.warn("voz: pause/resume de consumer falhou", err);
+    }
   }
 
   /**
@@ -1142,6 +1432,280 @@ export class VoiceClient {
     if (this.pttDown === down) return;
     this.pttDown = down;
     if (this.pttOn) this.applyMute();
+  }
+
+  /**
+   * Um admin silenciou (ou liberou) ESTA sessão (M9, item 34). Vem do
+   * `server_mute` do nosso VOICE_STATE_UPDATE — quem manda é o servidor, que
+   * pausa o producer de verdade; aqui o mic fecha e a UI passa a saber que
+   * desmutar não resolve (`serverMuted`).
+   */
+  setServerMuted(on: boolean): void {
+    if (this.serverMute === on) return;
+    this.serverMute = on;
+    this.applyMute();
+    this.onChange?.();
+  }
+
+  // --- volume e mute por usuário (M9, itens 33 e 36) ------------------------
+
+  /**
+   * Volume de UM usuário: 0..2 (0% a 200%). Vale para todos os consumers dele
+   * (mic hoje; o soundshare do Go Live entra no teto de 100% do elemento) e
+   * para os PRÓXIMOS — ligar a câmera, sair e voltar, tudo herda o valor.
+   * Persistência é da UI: aqui é estado vivo, não preferência salva.
+   */
+  setUserVolume(userId: string, volume: number): void {
+    const clamped = Math.min(2, Math.max(0, volume));
+    if (clamped === 1) this.userVolumes.delete(userId);
+    else this.userVolumes.set(userId, clamped);
+    this.applyUserLevels(userId);
+  }
+
+  /**
+   * Mute LOCAL de um usuário (item 33): só EU paro de ouvir fulano — ninguém
+   * mais fica sabendo (nada vai para o servidor; para silenciar para todos, o
+   * caminho é o server mute do admin). O consumer segue vivo de propósito: o
+   * contrato do item é "puro cliente", e voltar a ouvir precisa ser instantâneo.
+   */
+  setUserMuted(userId: string, muted: boolean): void {
+    if (muted) this.userLocalMutes.add(userId);
+    else this.userLocalMutes.delete(userId);
+    this.applyUserLevels(userId);
+  }
+
+  /** volume vivo de um usuário (1 = 100%) — a UI lê daqui para desenhar o slider */
+  getUserVolume(userId: string): number {
+    return this.userVolumes.get(userId) ?? 1;
+  }
+
+  /** este usuário está silenciado só para mim? */
+  isUserMuted(userId: string): boolean {
+    return this.userLocalMutes.has(userId);
+  }
+
+  /** todos os mutes locais (para a UI persistir/mostrar de uma vez) */
+  get locallyMutedUsers(): ReadonlySet<string> {
+    return this.userLocalMutes;
+  }
+
+  // --- dispositivos (M9, item 38) -------------------------------------------
+
+  /**
+   * Dispositivos do sistema. **Os labels só aparecem depois de o usuário ter
+   * concedido permissão de mídia** (ver VoiceDevices) — antes disso a lista
+   * existe, mas anônima: a UI deve pedir para entrar na voz primeiro.
+   */
+  async listDevices(): Promise<VoiceDevices> {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return {
+      audioInputs: all.filter((d) => d.kind === "audioinput"),
+      audioOutputs: all.filter((d) => d.kind === "audiooutput"),
+      videoInputs: all.filter((d) => d.kind === "videoinput"),
+    };
+  }
+
+  /**
+   * Escolhe o microfone ou a câmera. Com a chamada EM CURSO a troca é por
+   * `replaceTrack`: o producer continua o mesmo, ninguém do outro lado
+   * renegocia nada e o áudio/vídeo não pisca. Fora da voz só guarda a escolha,
+   * que o próximo join usa. `null` volta ao default do sistema.
+   */
+  async setInputDevice(kind: "audio" | "video", deviceId: string | null): Promise<void> {
+    if (kind === "audio") {
+      if (this.micDeviceId === deviceId) return;
+      this.micDeviceId = deviceId;
+      await this.replaceMicTrack();
+      return;
+    }
+    if (this.cameraDeviceId === deviceId) return;
+    this.cameraDeviceId = deviceId;
+    await this.replaceCameraTrack();
+  }
+
+  /**
+   * Escolhe a SAÍDA de áudio (item 38). Vai em dois lugares: no AudioContext,
+   * por onde sai a voz de todo mundo (`AudioContext.setSinkId`, Chromium 110+
+   * — ainda fora do lib.dom do TS, daí o cast), e nos elementos que tocam
+   * sozinhos (o <video> do Go Live). Onde não houver suporte, degrada: a voz
+   * continua saindo no dispositivo default, só não obedece a escolha.
+   */
+  async setOutputDevice(deviceId: string | null): Promise<void> {
+    this.outputDeviceId = deviceId;
+    for (const { audio } of this.consumers.values()) this.applyOutputDevice(audio);
+    if (this.watching !== null) this.applyOutputDevice(this.watching.video);
+    await this.applyOutputDeviceToContext();
+  }
+
+  // --- captura do microfone (M9, item 39) -----------------------------------
+
+  /**
+   * Liga/desliga o processamento do microfone. Eram três `true` fixos no
+   * captureAudio; em headset com boa isolação o AGC bombeia e a supressão come
+   * o ataque das palavras. Aplica na chamada em curso por `applyConstraints`
+   * (não derruba nada); se o navegador recusar a mudança a quente, recaptura o
+   * mic e troca por replaceTrack — mais caro, mas honesto.
+   */
+  async setAudioProcessing(options: Partial<AudioProcessing>): Promise<void> {
+    this.processing = { ...this.processing, ...options };
+    const track = this.micTrack;
+    if (track === null || FAKE_AUDIO) return; // fora da voz vale para o próximo join
+    try {
+      await track.applyConstraints(this.audioConstraints());
+    } catch (err) {
+      console.warn("voz: applyConstraints recusado — recapturando o microfone", err);
+      await this.replaceMicTrack();
+    }
+  }
+
+  /**
+   * Nível do PRÓPRIO microfone, 0..1, a ~20 fps (item 39: "teste de
+   * microfone"). O valor é o RMS linear da janela: fala normal fica na casa de
+   * 0,05..0,3 — quem decide a escala visual é a UI.
+   *
+   * É o que os OUTROS ouvem, não o que o microfone capta: mutado (ou fora do
+   * press do PTT) o track está desabilitado e o nível é 0 — a UI de teste
+   * precisa dizer isso, senão parece defeito.
+   *
+   * Devolve o stop. Só existe UM medidor por vez (chamar de novo troca) e
+   * NADA fica vivo depois do stop — nem o intervalo, nem os nós.
+   */
+  onLocalLevel(cb: (level: number) => void): () => void {
+    this.stopLocalLevel();
+    const graph = this.ensureAudioGraph();
+    if (graph === null) {
+      cb(0);
+      return () => undefined; // sem WebAudio não há medidor — e não é erro fatal
+    }
+    const analyser = graph.ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    // dreno MUDO até o destino: um AnalyserNode pendurado no vazio pode não ser
+    // "puxado" pelo grafo em alguns navegadores. O ganho 0 garante o pull sem
+    // mandar o microfone para os alto-falantes — isso seria larsen imediato.
+    const sink = graph.ctx.createGain();
+    sink.gain.value = 0;
+    analyser.connect(sink).connect(graph.ctx.destination);
+    const watch: NonNullable<typeof this.levelWatch> = {
+      cb,
+      analyser,
+      sink,
+      source: null,
+      data: new Float32Array(analyser.fftSize),
+      timer: 0,
+    };
+    this.levelWatch = watch;
+    this.attachLevelSource();
+    // setInterval e não requestAnimationFrame: o rAF congela com a janela em
+    // segundo plano (o painel de configurações pode estar num monitor
+    // secundário) e é justamente o tipo de loop que fica vivo para sempre
+    watch.timer = window.setInterval(() => {
+      if (this.levelWatch !== watch) return; // trocado por outro medidor
+      if (watch.source === null) {
+        watch.cb(0); // sem microfone (fora da voz, ou captura falhando)
+        return;
+      }
+      watch.analyser.getFloatTimeDomainData(watch.data);
+      let sum = 0;
+      for (const sample of watch.data) sum += sample * sample;
+      watch.cb(Math.min(1, Math.sqrt(sum / watch.data.length)));
+    }, 50);
+    return () => {
+      if (this.levelWatch === watch) this.stopLocalLevel();
+    };
+  }
+
+  // --- qualidade da conexão (M9, item 40) -----------------------------------
+
+  /**
+   * Amostra o getStats dos DOIS transports e devolve o resumo. Ver
+   * ConnectionStats para o que cada número é — em especial: taxas e perdas são
+   * DELTAS entre esta chamada e a anterior, então a primeira volta com esses
+   * campos em null. Retorna null fora da voz.
+   *
+   * UM chamador por vez (o painel de configurações): a amostra anterior é
+   * única, e dois polls concorrentes dividiriam os deltas entre si.
+   */
+  async getConnectionStats(): Promise<ConnectionStats | null> {
+    const send = this.sendTransport;
+    const recv = this.recvTransport;
+    if (this.phase !== "connected" || send === null || recv === null) return null;
+    const epoch = this.epoch;
+    const [sendReport, recvReport] = await Promise.all([send.getStats(), recv.getStats()]);
+    if (epoch !== this.epoch) return null; // saiu da voz durante a amostragem
+
+    let sendBytes = 0;
+    let sendPackets = 0;
+    let sendLost = 0;
+    let rttMs: number | null = null;
+    let pairRttMs: number | null = null;
+    sendReport.forEach((raw) => {
+      const s = raw as StatsRow;
+      if (s.type === "outbound-rtp") {
+        sendBytes += s.bytesSent ?? 0;
+        sendPackets += s.packetsSent ?? 0;
+      } else if (s.type === "remote-inbound-rtp") {
+        // é o RECEPTOR (o servidor) contando o que perdeu do que MANDAMOS —
+        // a única visão honesta da nossa subida, e vem no RTCP
+        sendLost += s.packetsLost ?? 0;
+        if (typeof s.roundTripTime === "number") rttMs = Math.round(s.roundTripTime * 1000);
+      } else if (
+        // plano B do rtt: o par ICE EM USO ("succeeded"). Os outros pares
+        // ficam no relatório com medidas velhas — usar qualquer um mentiria
+        s.type === "candidate-pair" &&
+        s.state === "succeeded" &&
+        typeof s.currentRoundTripTime === "number"
+      ) {
+        pairRttMs = Math.round(s.currentRoundTripTime * 1000);
+      }
+    });
+
+    let recvBytes = 0;
+    let recvPackets = 0;
+    let recvLost = 0;
+    let jitterMs: number | null = null;
+    recvReport.forEach((raw) => {
+      const s = raw as StatsRow;
+      if (s.type !== "inbound-rtp") return;
+      recvBytes += s.bytesReceived ?? 0;
+      recvPackets += s.packetsReceived ?? 0;
+      recvLost += s.packetsLost ?? 0;
+      // o pior jitter entre os fluxos manda: é o que o ouvido percebe
+      if (typeof s.jitter === "number") jitterMs = Math.max(jitterMs ?? 0, Math.round(s.jitter * 1000));
+    });
+
+    const prev = this.statsSample;
+    const sample = { epoch, at: Date.now(), sendBytes, sendPackets, sendLost, recvBytes, recvPackets, recvLost };
+    this.statsSample = sample;
+    // amostra anterior de OUTRA sessão de mídia não serve: os contadores
+    // zeraram no transport novo e o delta sairia negativo
+    const elapsed = prev !== null && prev.epoch === epoch ? (sample.at - prev.at) / 1000 : 0;
+    const kbps = (now: number, before: number): number | null =>
+      elapsed > 0 ? Math.round(((now - before) * 8) / elapsed / 1000) : null;
+    // perdas podem VOLTAR ATRÁS (pacote duplicado desconta) — delta negativo é 0
+    const delta = (now: number, before: number): number => Math.max(0, now - before);
+
+    let sendLossPct: number | null = null;
+    let recvLossPct: number | null = null;
+    if (prev !== null && elapsed > 0) {
+      // subida: o denominador é o que MANDAMOS (os perdidos estão lá dentro)
+      const sent = delta(sendPackets, prev.sendPackets);
+      if (sent > 0) sendLossPct = round1((delta(sendLost, prev.sendLost) / sent) * 100);
+      // descida: packetsReceived NÃO inclui os perdidos — o total é a soma
+      const got = delta(recvPackets, prev.recvPackets);
+      const lost = delta(recvLost, prev.recvLost);
+      if (got + lost > 0) recvLossPct = round1((lost / (got + lost)) * 100);
+    }
+
+    const rtt = rttMs ?? pairRttMs;
+    return {
+      rttMs: rtt,
+      jitterMs,
+      sendLossPct,
+      recvLossPct,
+      sendKbps: prev !== null ? kbps(sendBytes, prev.sendBytes) : null,
+      recvKbps: prev !== null ? kbps(recvBytes, prev.recvBytes) : null,
+      quality: qualityOf(rtt, Math.max(sendLossPct ?? 0, recvLossPct ?? 0), sendLossPct ?? recvLossPct),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -1257,9 +1821,9 @@ export class VoiceClient {
       if (track === undefined) throw new Error("voz: fake audio sem track");
       return track;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    // M9: dispositivo e processamento vêm do estado (itens 38/39) — eram três
+    // `true` fixos aqui e nenhum deviceId
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: this.audioConstraints() });
     const track = stream.getAudioTracks()[0];
     if (track === undefined) throw new Error("voz: getUserMedia sem track de áudio");
     return track;
@@ -1302,7 +1866,14 @@ export class VoiceClient {
     // o máximo que a câmera tem — as camadas de simulcast e o codec são
     // derivados depois, da resolução REAL do track (simulcastEncodingsFor)
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } },
+      video: {
+        // M9 (item 38): câmera escolhida, como `ideal` — webcam removida cai
+        // no default em vez de estourar OverconstrainedError
+        ...(this.cameraDeviceId !== null && { deviceId: { ideal: this.cameraDeviceId } }),
+        width: { ideal: 3840 },
+        height: { ideal: 2160 },
+        frameRate: { ideal: 30 },
+      },
     });
     const track = stream.getVideoTracks()[0];
     if (track === undefined) throw new Error("voz: getUserMedia sem track de vídeo");
@@ -1375,6 +1946,262 @@ export class VoiceClient {
     }
   }
 
+  // --- cadeia de saída de áudio (M9, itens 33/35/36) -----------------------
+
+  /**
+   * AudioContext + ganho mestre, criados na primeira necessidade (o join é um
+   * clique, então o contexto nasce destravado). Volta null quando o WebAudio
+   * não está disponível — aí o áudio cai no fallback pelo próprio <audio>, com
+   * volume limitado a 100%. Falhou uma vez, não tenta de novo: seria um
+   * `new AudioContext()` por consumer.
+   */
+  private ensureAudioGraph(): { ctx: AudioContext; master: GainNode } | null {
+    if (this.audioGraphFailed) return null;
+    let ctx = this.audioCtx;
+    let master = this.masterGain;
+    if (ctx === null || master === null) {
+      try {
+        ctx = new AudioContext();
+        master = ctx.createGain();
+        master.connect(ctx.destination);
+      } catch (err) {
+        console.warn("voz: WebAudio indisponível — volume por usuário desligado", err);
+        this.audioGraphFailed = true;
+        return null;
+      }
+      this.audioCtx = ctx;
+      this.masterGain = master;
+      this.applyMasterGain();
+      void this.applyOutputDeviceToContext();
+    }
+    // o teardown suspende o contexto para soltar o dispositivo de saída; e a
+    // janela em segundo plano por muito tempo suspende sozinha
+    if (ctx.state === "suspended") void ctx.resume().catch(() => undefined);
+    return { ctx, master };
+  }
+
+  /**
+   * MediaStreamSource → GainNode do usuário → mestre. null = sem WebAudio.
+   * O ganho já NASCE no valor certo (e não em 1 com rampa depois): quem entra
+   * silenciado localmente não pode soltar 15 ms de voz antes de calar.
+   */
+  private buildChain(
+    stream: MediaStream,
+    initialGain: number,
+  ): { source: MediaStreamAudioSourceNode; gain: GainNode } | null {
+    const graph = this.ensureAudioGraph();
+    if (graph === null) return null;
+    try {
+      const source = graph.ctx.createMediaStreamSource(stream);
+      const gain = graph.ctx.createGain();
+      gain.gain.value = initialGain;
+      source.connect(gain).connect(graph.master);
+      return { source, gain };
+    } catch (err) {
+      console.warn("voz: cadeia WebAudio do consumer falhou — tocando pelo elemento", err);
+      return null;
+    }
+  }
+
+  /** ganho efetivo de um usuário: mute local vence o slider */
+  private effectiveVolume(userId: string): number {
+    if (this.userLocalMutes.has(userId)) return 0;
+    return this.userVolumes.get(userId) ?? 1;
+  }
+
+  /** deafen: silêncio imediato de TUDO enquanto os pause_consumer voam */
+  private applyMasterGain(): void {
+    if (this.masterGain !== null) this.ramp(this.masterGain.gain, this.selfDeaf ? 0 : 1);
+  }
+
+  /**
+   * Ganho nunca muda em degrau: mexer no `.value` seco estala (zipper noise).
+   * ~15 ms de constante de tempo é rápido para o ouvido e suave para o alto-falante.
+   */
+  private ramp(param: AudioParam, value: number): void {
+    const ctx = this.audioCtx;
+    if (ctx === null) {
+      param.value = value;
+      return;
+    }
+    param.setTargetAtTime(value, ctx.currentTime, 0.015);
+  }
+
+  /** Reaplica volume/mute de UM usuário em tudo que já toca dele. */
+  private applyUserLevels(userId: string): void {
+    for (const entry of this.consumers.values()) {
+      if (entry.userId === userId) this.applyAudioLevels(entry);
+    }
+    // o soundshare do Go Live toca pelo <video> grande: aqui o teto é 100% (o
+    // volume do elemento não passa de 1) — a UI pode dizer isso no slider
+    const w = this.watching;
+    if (w !== null && w.userId === userId) {
+      const volume = this.effectiveVolume(userId);
+      w.video.muted = this.selfDeaf || volume === 0;
+      w.video.volume = Math.min(1, volume);
+    }
+  }
+
+  private applyAudioLevels(entry: { audio: HTMLAudioElement; chain: { gain: GainNode } | null; userId: string }): void {
+    const volume = this.effectiveVolume(entry.userId);
+    if (entry.chain !== null) {
+      this.ramp(entry.chain.gain.gain, volume);
+      entry.audio.muted = true; // o elemento é só a bomba (ver consume)
+      return;
+    }
+    // fallback sem WebAudio: o elemento volta a ser o tocador — o volume trava
+    // em 100% e o deafen entra como mute, do jeito que era até o M8
+    entry.audio.muted = this.selfDeaf || volume === 0;
+    entry.audio.volume = Math.min(1, volume);
+  }
+
+  /** Manda um elemento tocar no dispositivo escolhido (item 38); no-op sem escolha. */
+  private applyOutputDevice(el: HTMLMediaElement): void {
+    const id = this.outputDeviceId;
+    // o typeof não é paranoia: onde setSinkId não existe (Firefox antigo) a
+    // chamada estoura SÍNCRONA — não há promise para o .catch pegar
+    if (id === null || typeof el.setSinkId !== "function") return;
+    void el.setSinkId(id).catch((err: unknown) => console.warn("voz: setSinkId no elemento falhou", err));
+  }
+
+  /**
+   * O mesmo para o AudioContext, por onde sai a voz de todos. `setSinkId` de
+   * AudioContext existe no Chromium 110+ mas ainda não está no lib.dom do TS —
+   * daí o cast e o `?.`: onde não houver, a voz sai no default (degrada, não quebra).
+   */
+  private async applyOutputDeviceToContext(): Promise<void> {
+    const ctx = this.audioCtx;
+    const id = this.outputDeviceId;
+    if (ctx === null || id === null) return;
+    const selectable = ctx as unknown as { setSinkId?: (sinkId: string) => Promise<void> };
+    try {
+      await selectable.setSinkId?.(id);
+    } catch (err) {
+      console.warn("voz: setSinkId no AudioContext falhou", err);
+    }
+  }
+
+  // --- captura configurável (M9, itens 38 e 39) ----------------------------
+
+  /**
+   * Constraints do microfone: dispositivo escolhido + processamento. O
+   * deviceId vai como `ideal`, NÃO `exact`, de propósito — com `exact`, um
+   * fone desplugado faria o recoverMic falhar em vez de cair no default, que é
+   * exatamente o caso que ele existe para cobrir.
+   */
+  private audioConstraints(): MediaTrackConstraints {
+    return {
+      ...(this.micDeviceId !== null && { deviceId: { ideal: this.micDeviceId } }),
+      echoCancellation: this.processing.echoCancellation,
+      noiseSuppression: this.processing.noiseSuppression,
+      autoGainControl: this.processing.autoGainControl,
+    };
+  }
+
+  /**
+   * Troca o track do microfone na chamada em curso (mudança de dispositivo ou
+   * de processamento). Mesmo padrão do recoverMic: atribui ANTES do
+   * replaceTrack para que um teardown intercalado já saiba parar o track novo.
+   */
+  private async replaceMicTrack(): Promise<void> {
+    const producer = this.producer;
+    if (producer === null) return; // fora da voz: a escolha vale no próximo join
+    const epoch = this.epoch;
+    const previousFake = this.fakeAudio;
+    const track = await this.captureAudio();
+    if (epoch !== this.epoch || this.producer !== producer) {
+      track.stop(); // a voz caiu/trocou de canal durante a captura
+      return;
+    }
+    this.stopFakeAudio(previousFake); // no modo ?fakeaudio=1 o oscilador antigo vazaria
+    const previous = this.micTrack;
+    this.micTrack = track;
+    try {
+      await producer.replaceTrack({ track });
+    } catch (err) {
+      // o track ANTIGO ainda está no producer e vivo — desfazer aqui é o que
+      // separa "a troca não deu" de "ficamos mudos" (por isso ele só para
+      // DEPOIS do replaceTrack dar certo)
+      if (this.epoch === epoch) this.micTrack = previous;
+      track.stop();
+      throw err;
+    }
+    previous?.stop(); // apaga o indicador do dispositivo velho
+    this.applyMute(); // track novo nasce enabled — reimpõe mute/PTT/server mute
+    this.attachLevelSource(); // o medidor estava lendo o track velho
+  }
+
+  /**
+   * Idem para a câmera. As camadas de simulcast NÃO são recalculadas: elas
+   * foram negociadas no produce e mexer nelas exigiria derrubar o producer —
+   * trocar de câmera não vale um piscar de tela para todo mundo. Se a
+   * resolução mudar muito, desligar e ligar a câmera renegocia.
+   */
+  private async replaceCameraTrack(): Promise<void> {
+    const producer = this.videoProducer;
+    if (producer === null) return; // câmera desligada: vale no próximo toggle
+    const epoch = this.epoch;
+    const previousFake = this.fakeVideo;
+    const track = await this.captureVideo();
+    if (epoch !== this.epoch || this.videoProducer !== producer) {
+      track.stop();
+      return;
+    }
+    if (previousFake !== null && this.fakeVideo !== previousFake) previousFake.stop();
+    const previous = this.camTrack;
+    this.camTrack = track;
+    try {
+      await producer.replaceTrack({ track });
+    } catch (err) {
+      // mesma regra do microfone: falhou, a câmera antiga continua no ar
+      if (this.epoch === epoch) this.camTrack = previous;
+      track.stop();
+      throw err;
+    }
+    previous?.stop();
+    this.onChange?.(); // o preview local é montado com o camTrack — precisa remontar
+  }
+
+  /** para o oscilador/contexto de um ?fakeaudio=1 antigo, se o novo já o substituiu */
+  private stopFakeAudio(previous: { ctx: AudioContext; osc: OscillatorNode } | null): void {
+    if (previous === null || this.fakeAudio === previous) return;
+    previous.osc.stop();
+    void previous.ctx.close().catch(() => undefined);
+  }
+
+  /** (re)liga o medidor de nível no track de mic ATUAL — chamado a cada troca de track */
+  private attachLevelSource(): void {
+    const watch = this.levelWatch;
+    if (watch === null) return;
+    if (watch.source !== null) {
+      watch.source.disconnect();
+      watch.source = null;
+    }
+    const track = this.micTrack;
+    const ctx = this.audioCtx;
+    if (track === null || ctx === null) return; // sem mic o medidor reporta 0
+    try {
+      // stream novo com o MESMO track: o node quer um MediaStream e o do
+      // getUserMedia não fica guardado (só o track interessa)
+      const source = ctx.createMediaStreamSource(new MediaStream([track]));
+      source.connect(watch.analyser);
+      watch.source = source;
+    } catch (err) {
+      console.warn("voz: medidor não conseguiu ler o microfone", err);
+    }
+  }
+
+  /** desmonta o medidor: intervalo E nós (nada pode sobreviver ao stop) */
+  private stopLocalLevel(): void {
+    const watch = this.levelWatch;
+    if (watch === null) return;
+    this.levelWatch = null;
+    window.clearInterval(watch.timer);
+    watch.source?.disconnect();
+    watch.analyser.disconnect();
+    watch.sink.disconnect();
+  }
+
   private applyMute(): void {
     // o mute REAL é client-side: track.enabled=false gera silêncio e o DTX
     // para de mandar pacotes — o servidor só replica flags via update_state
@@ -1382,8 +2209,12 @@ export class VoiceClient {
     // PTT (M6): no modo PTT o mic só abre com a tecla segurada — a ordem dos
     // && é a hierarquia (mute manual vence a tecla). Chamado também no join e
     // no recoverMic: um track novo já nasce respeitando o PTT.
+    // M9 (item 34): o server mute vem ANTES de tudo — quando um admin silencia,
+    // o servidor pausa o nosso producer de verdade; fechar o track aqui só
+    // evita que o cliente fique gastando encode falando com uma parede (e
+    // deixa o indicador de mic honesto).
     const track = this.producer?.track;
-    if (track != null) track.enabled = !this.selfMute && (!this.pttOn || this.pttDown);
+    if (track != null) track.enabled = !this.serverMute && !this.selfMute && (!this.pttOn || this.pttDown);
   }
 
   private async pushState(): Promise<void> {
@@ -1401,6 +2232,10 @@ export class VoiceClient {
     if (entry !== undefined) {
       this.consumers.delete(producerId);
       entry.consumer.close();
+      // desconectar a cadeia é obrigatório: nó de WebAudio pendurado no mestre
+      // segura o grafo (e o stream) vivo mesmo com o consumer fechado
+      entry.chain?.source.disconnect();
+      entry.chain?.gain.disconnect();
       entry.audio.pause();
       entry.audio.srcObject = null;
       return;
@@ -1427,8 +2262,10 @@ export class VoiceClient {
   /** Fecha TODA a mídia local (transports fecham producers/consumers em cadeia). */
   private teardown(): void {
     this.pendingProducers = [];
-    for (const { consumer, audio } of this.consumers.values()) {
+    for (const { consumer, audio, chain } of this.consumers.values()) {
       consumer.close();
+      chain?.source.disconnect(); // nó solto segura o grafo e o stream vivos
+      chain?.gain.disconnect();
       audio.pause();
       audio.srcObject = null;
     }
@@ -1461,12 +2298,20 @@ export class VoiceClient {
     this.recvTransport = null;
     this.micTrack?.stop(); // apaga o indicador de "mic em uso" do navegador
     this.micTrack = null;
+    this.attachLevelSource(); // sem mic: o medidor (se houver) solta o node e reporta 0
+    this.statsSample = null; // contadores do getStats zeram com os transports (item 40)
     if (this.fakeAudio !== null) {
       this.fakeAudio.osc.stop();
       void this.fakeAudio.ctx.close().catch(() => {
         // contexto já fechado — nada a fazer
       });
       this.fakeAudio = null;
+    }
+    // o AudioContext SOBREVIVE ao leave (recriar custa e perderia o setSinkId),
+    // mas suspenso: contexto rodando segura o dispositivo de saída aberto — e o
+    // ensureAudioGraph dá resume() no próximo consumer
+    if (this.audioCtx !== null && this.levelWatch === null) {
+      void this.audioCtx.suspend().catch(() => undefined);
     }
     this.device = null;
   }

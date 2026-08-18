@@ -1,0 +1,292 @@
+/* Card do membro (M9, item 48) — ui/user-controls.ts.
+   Nada aqui existe no index.html: o popover inteiro nasce em JS, e este é o
+   único arquivo de estilo que o conhece.
+
+   Duas regras que valem para o arquivo inteiro:
+
+   1. --danger é RESERVADO à moderação (silenciar para todos, desconectar) e ao
+      selo de quem já foi silenciado. Volume, mute local e soundboard são
+      "só para mim": mudar o áudio para você não é perigo nenhum, e pintar tudo
+      de vermelho apagaria a diferença que o card existe para deixar clara.
+
+   2. Superfícies: o card usa --bg-chat e cada linha usa --bg-elevated por cima
+      — e por isso NENHUM texto daqui é --text-muted: sobre --bg-elevated ele dá
+      4.05:1, abaixo do AA de 4.5:1 (mesma restrição do settings.css). Texto
+      secundário é --text-normal, e o destaque vem do peso e do tamanho. */
+
+/* --- caixa ----------------------------------------------------------------
+   position: fixed + left/top escritos pelo place(): o card é ancorado numa
+   linha que vive dentro de uma coluna com overflow, e um popover `absolute`
+   ali dentro seria recortado pela própria coluna.
+
+   z-index 10: acima de tudo que o app empilha (header, menu da engrenagem e
+   painel de membros ficam entre 1 e 2) e abaixo do diálogo de som (20), que é
+   modal e precisa cobrir o card também. */
+.uc-pop {
+  position: fixed;
+  z-index: 10;
+  width: 300px;
+  /* o card cresce com a seção de moderação; em janela baixa ele rola por
+     dentro em vez de vazar pela borda */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+}
+
+/* --- cabeçalho ----------------------------------------------------------- */
+.uc-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.uc-idbox {
+  flex: 1;
+  min-width: 0; /* sem isto um nome comprido empurra o botão de fechar para fora */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sp-2);
+}
+.uc-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere; /* o username vem do Discord: pode não ter espaço nenhum */
+}
+.uc-sub {
+  width: 100%;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.uc-badge {
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.uc-close {
+  align-self: start; /* o X acompanha o topo do card, não o meio do avatar */
+}
+
+/* --- selo de silenciado por admin ---------------------------------------
+   Aparece para TODO MUNDO (não é controle, é explicação de por que a pessoa
+   sumiu do áudio) — por isso fica no cabeçalho e não na seção de moderação. */
+.uc-server-flag {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.uc-server-flag svg {
+  flex: none;
+}
+
+/* --- corpo --------------------------------------------------------------- */
+.uc-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.uc-row {
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+.uc-label {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+.uc-desc {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+/* aviso de "isto não vale para tudo" (volume acima de 100%) — é ressalva, não
+   erro: --warn, o mesmo do aviso de áudio travado do diálogo de som */
+.uc-warn {
+  margin-top: var(--sp-1);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
+/* --- linha com chave ------------------------------------------------------
+   Grade de duas colunas: a chave ocupa as duas linhas (rótulo em cima,
+   descrição embaixo) — o mesmo desenho das linhas do diálogo de som. */
+.uc-switch-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: var(--sp-3);
+  row-gap: var(--sp-1);
+}
+/* a chave em si é a `.settings-switch` do M8 (settings.css) — a primitiva já
+   existia, e uma segunda chave idêntica com outro nome só criaria duas formas
+   para o mesmo papel. Aqui só se diz ONDE ela fica na grade. */
+.uc-switch-row > .settings-switch {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+}
+.uc-switch-row > .uc-label,
+.uc-switch-row > .uc-desc {
+  grid-column: 2;
+}
+
+/* --- volume ---------------------------------------------------------------
+   Rótulo e número na primeira linha, o "voltar a 100%" à direita, o range
+   ocupando a largura toda embaixo. */
+.uc-volume {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
+}
+.uc-volume > .uc-label {
+  grid-column: 1;
+}
+.uc-value {
+  grid-column: 2;
+  color: var(--text-normal);
+  /* o número não pode dançar de largura durante o arrasto */
+  font-variant-numeric: tabular-nums;
+}
+.uc-reset {
+  grid-column: 3;
+  justify-self: end;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.uc-reset:hover {
+  background: var(--bg-chat);
+  color: var(--text-strong);
+}
+/* o range fica NATIVO (só accent-color): teclado, passos e leitor de tela
+   saem de graça, e reimplementá-los sobre uma <div> nunca sai igual */
+.uc-volume input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+.uc-volume > .uc-desc,
+.uc-volume > .uc-warn {
+  grid-column: 1 / -1;
+}
+
+/* --- moderação (só admin) ------------------------------------------------
+   Separada por uma linha: o que está abaixo dela vale para TODOS, e a
+   fronteira precisa ser visível antes de o rótulo ser lido. */
+.uc-admin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.uc-admin-head {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* borda esquerda em --danger: marca as duas linhas destrutivas sem tingir o
+   texto inteiro de vermelho (que gritaria mais que o próprio estado) */
+.uc-destructive {
+  border-left: 2px solid var(--danger);
+}
+/* a chave da moderação é a mesma primitiva, mas LIGADA ela é vermelha e não
+   azul: "silenciado para todos" não é uma preferência ligada, é um estado
+   imposto a outra pessoa (especificidade maior que a do settings.css, então
+   a ordem dos @import não importa aqui) */
+.uc-destructive .settings-switch:checked {
+  background: var(--danger);
+}
+
+.uc-danger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  color: var(--danger);
+  font-weight: var(--fw-medium);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.uc-danger-btn:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--text-strong);
+}
+.uc-danger-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.uc-row > .uc-danger-btn + .uc-desc {
+  margin-top: var(--sp-2);
+}
+
+/* --- confirmação do desconectar ------------------------------------------
+   Fica DENTRO da mesma linha, no lugar do botão (que some enquanto ela está no
+   ar): a pergunta e a resposta no mesmo ponto da tela, sem diálogo do
+   navegador por cima e sem a linha virar uma caixa vazia. */
+.uc-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.uc-confirm-text {
+  width: 100%;
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+.uc-cancel {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.uc-cancel:hover:not(:disabled) {
+  background: var(--bg-chat);
+  color: var(--text-strong);
+}
+
+/* --- erro ---------------------------------------------------------------
+   Op 20 recusado (não sou admin, alvo saiu no meio): a falha aparece NO card,
+   não no console — "cliquei e nada aconteceu" é o pior retorno possível. */
+.uc-error {
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}

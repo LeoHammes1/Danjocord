@@ -1,0 +1,491 @@
+/* Dono: agente do SOUNDBOARD (M9) — o pad no rodapé de voz (#soundboard) e o
+   diálogo de adicionar/editar som (#soundboard-dialog).
+
+   Nada aqui existe no index.html: os dois nascem em JS (ui/soundboard.ts).
+
+   Duas notas de contraste que valem para o arquivo inteiro:
+   - sobre --bg-elevated, --text-muted dá 4.05:1 e REPROVA no AA (revisão M7
+     #2). Texto secundário do pad é --text-normal, e a hierarquia fica no
+     tamanho/peso;
+   - o pad mora na coluna mais estreita da tela (~240px). Toda medida aqui é
+     pensada para caber lá, não para uma janela larga. */
+
+/* --- o pad --------------------------------------------------------------- */
+
+#soundboard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  background: var(--bg-guilds);
+}
+
+/* arrastar um arquivo em cima do pad abre o diálogo já com ele */
+#soundboard.sb-dragging {
+  outline: 2px dashed var(--brand);
+  outline-offset: -2px;
+}
+
+.sb-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.sb-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-normal);
+}
+
+.sb-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.sb-add:hover {
+  background: var(--brand);
+  color: var(--text-strong);
+}
+
+/* auto-fill com minmax: dois por linha na sidebar padrão, três se a janela
+   crescer — sem media query, porque quem manda é a largura da COLUNA */
+.sb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: var(--sp-1);
+  /* teto de altura: 100 sons não podem empurrar o painel do usuário para fora
+     da tela — a lista rola por dentro */
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+/* a célula existe por causa do lápis: botão dentro de botão é HTML inválido,
+   então o pad e a edição são irmãos, e o lápis flutua no canto */
+.sb-cell {
+  position: relative;
+  min-width: 0;
+}
+
+.sb-pad {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-sidebar);
+  color: var(--text-normal);
+  text-align: left;
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast),
+    box-shadow var(--t-fast);
+}
+.sb-pad:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+}
+.sb-pad:active:not(:disabled) {
+  background: var(--brand);
+  color: var(--text-strong);
+}
+.sb-pad:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* alguém apertou este som agora — o mesmo verde do anel de quem fala */
+.sb-pad.sb-flash {
+  box-shadow: inset 0 0 0 2px var(--ok);
+  color: var(--text-strong);
+}
+
+.sb-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+}
+
+/* o número do atalho: presença discreta, some do fluxo de leitura */
+.sb-key {
+  flex: none;
+  width: 14px;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* a espera do cooldown ocupa o lugar do nome, do lado direito */
+.sb-wait {
+  flex: none;
+  color: var(--warn);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* o lápis só aparece no hover ou quando o teclado chega nele — 100 lápis
+   sempre visíveis fariam a grade parecer um formulário */
+.sb-edit {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  background: var(--bg-guilds);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.sb-cell:hover .sb-edit,
+.sb-edit:focus-visible {
+  opacity: 1;
+}
+
+.sb-empty {
+  padding: var(--sp-2);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+
+.sb-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-1);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.sb-status.is-error {
+  color: var(--danger);
+}
+.sb-status > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-silence {
+  flex: none;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  text-decoration: underline;
+  transition: color var(--t-fast);
+}
+.sb-silence:hover {
+  color: var(--text-strong);
+}
+
+/* --- "quem tocou" na lista de participantes ------------------------------
+   Os nós são do sidebar.ts; o que este arquivo faz é dar ao anel de som a
+   MESMA linguagem do `.speaking` (styles/sidebar.css), em --brand para não se
+   confundir com "está falando". O seletor precisa vencer a regra de .speaking
+   quando as duas valem, daí a ordem: este arquivo entra depois no index.css. */
+.voice-user.sb-hit .av {
+  box-shadow: 0 0 0 2px var(--brand);
+}
+.voice-user.sb-hit {
+  color: var(--int-active);
+}
+
+/* --- diálogo de adicionar/editar ----------------------------------------
+   z-index acima do diálogo de som (20): se os dois estiverem abertos, quem
+   abriu por último é quem está sendo usado. */
+#soundboard-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: var(--bg-overlay);
+}
+
+.sb-dialog {
+  width: min(440px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  overflow: hidden;
+}
+
+.sb-dialog-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.sb-dialog-head h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.sb-dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.sb-dialog-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+/* apagar é o único destrutivo e fica na ponta oposta do "Salvar" */
+.sb-remove {
+  margin-right: auto;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--danger);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.sb-remove:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--text-strong);
+}
+/* segundo toque: o botão já está armado, e isso precisa ser óbvio */
+.sb-remove.is-confirming {
+  background: var(--danger);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+.sb-cancel {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.sb-cancel:hover {
+  background: var(--bg-elevated);
+  color: var(--text-strong);
+}
+
+.sb-submit {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.sb-submit:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+.sb-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- área de soltar o arquivo -------------------------------------------- */
+.sb-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-4);
+  border: 2px dashed var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  text-align: center;
+}
+.sb-drop.is-over {
+  border-color: var(--brand);
+}
+.sb-drop-text {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+.sb-drop-hint {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.sb-pick {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  color: var(--text-normal);
+  transition: color var(--t-fast);
+}
+.sb-pick:hover {
+  color: var(--text-strong);
+}
+/* o <input type=file> real fica fora da tela: o botão acima é quem o aciona.
+   display:none também o tira da armadilha de Tab do diálogo, que filtra por
+   offsetParent — é o comportamento desejado (ele não é um controle visível). */
+.sb-file-input {
+  display: none;
+}
+
+/* --- resumo do arquivo escolhido ----------------------------------------- */
+.sb-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+.sb-summary-name {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+.sb-summary-meta {
+  flex: 1 0 100%;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.sb-preview,
+.sb-swap {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-chat);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition: color var(--t-fast);
+}
+.sb-preview:hover:not(:disabled),
+.sb-swap:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+.sb-preview:disabled,
+.sb-swap:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- campo de nome ------------------------------------------------------- */
+.sb-field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--sp-1);
+}
+.sb-field label {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+.sb-counter {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.sb-field input {
+  grid-column: 1 / -1;
+  padding: var(--sp-2) var(--sp-3);
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-strong);
+}
+.sb-field input:disabled {
+  opacity: 0.5;
+}
+
+.sb-error {
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+/* --- progresso do envio -------------------------------------------------- */
+.sb-progress {
+  height: 4px;
+  border-radius: var(--r-full);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.sb-bar {
+  width: 0;
+  height: 100%;
+  background: var(--brand);
+  transition: width var(--t-fast);
+}
+
+/* --- seção no painel de configurações de som -----------------------------
+   Reusa .settings-row/.settings-switch/.settings-test do settings.css: a
+   seção precisa parecer parte daquele diálogo, não um enxerto. O que está
+   aqui é só o que não existe lá. */
+.sb-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.sb-silenced-row-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
+}
+
+.sb-silenced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.sb-silenced-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.sb-silenced-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+}
+.sb-silenced-empty {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}

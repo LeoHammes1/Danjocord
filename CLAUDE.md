@@ -144,6 +144,51 @@ nenhum som do Discord (as brand guidelines vedam "sounds" na cláusula).
   `VOICE_STATE_UPDATE` **não** pode emitir para o próprio usuário — senão toca
   duas vezes; a política não separa as duas origens de propósito.
 
+## Soundboard e controles de voz (M9)
+
+**Upload compartilhado, como no Discord** (decisão do Leonardo): qualquer membro
+sobe um som e ele vale para o servidor inteiro. Os 9 clipes CC0 da Kenney em
+`apps/server/assets/soundboard/` são **seed**, não catálogo — semeados na tabela
+no primeiro boot para existir UMA fonte da verdade (o banco) e o cliente ter um
+caminho só. Apagar um embutido é definitivo; o seed só roda com a tabela vazia.
+
+- **Reprodução é LOCAL.** O áudio nunca passa pelo SFU: o gateway só faz fan-out
+  do `sound_id` (`VOICE_SOUNDBOARD`) e cada cliente do canal toca o arquivo que
+  já baixou. É imediato, não entra no AEC de ninguém e não gasta banda.
+  Todo mundo — inclusive quem apertou — toca pelo MESMO caminho: o cliente faz o
+  POST e **espera o dispatch voltar**, então não há regra separada para o eco.
+- **Bytes em BLOB no SQLite.** O pod tem um PVC só e o banco já mora nele: com
+  BLOB, backup e restore continuam sendo um arquivo. Teto de 100 sons × 512 KB.
+- **Upload por corpo binário cru**, não multipart — o Fastify 5 não lê multipart
+  sem plugin e o projeto não instala dependência. Metadados vão na query.
+- **Duração é medida pelo servidor abrindo o container** (`sounds/probe.ts`), sem
+  ffmpeg: *granule position* da última página Ogg, `data`/byte-rate do WAV, soma
+  de frames no MP3 (com o atalho do `Xing` em VBR). O tipo sai dos **magic
+  bytes**, nunca da extensão ou do `Content-Type`. Nunca confie na duração que o
+  cliente declara.
+- **O `gain` é sugestão, não ordem**: o cliente mede o RMS no preview (alvo
+  ~−20 dBFS, mesmo critério do M8) e o servidor **clampa** em 0,05..2,0.
+- Rate limit: a **tentativa** conta, não só o sucesso — mandar lixo repetidamente
+  custa ler e abrir o container.
+
+`server_mute` é o **primeiro flag de voz que NÃO é declarativo**. Os do M3
+(`self_mute`, `self_deaf`) são declarações que o cliente pode mentir; este é
+imposto com `producer.pause()` no mediasoup. O conjunto de silenciados é indexado
+por **usuário** (não por sessão) e o `produce` de `mic` re-sincroniza — senão
+bastava sair e voltar para burlar. É estado em memória: restart perde.
+
+O cache de sons do pad tem **teto em bytes decodificados** (`sound/lru.ts`,
+24 MB, descarte do menos usado): um clipe de 5 s a 48 kHz estéreo é ~1,9 MB
+DESCOMPRIMIDO, e sem teto quem tocasse os 100 sons de uma sessão acumularia
+~190 MB numa aba que fica semanas aberta na bandeja. O orçamento de pré-carga é
+outra coisa — ele conta bytes **comprimidos** e só governa o download.
+
+Deafen agora é **real**: pausa os consumers (`pause_consumer`) em vez de só mutar
+o `<audio>`. Cada consumer de áudio passa por `MediaStreamSource → GainNode(por
+usuário) → GainNode(mestre)`, o que dá mute local e volume 0..200% por pessoa.
+O `<audio>` continua no DOM, vivo e mudo, porque no Chromium um MediaStream de
+WebRTC só "anda" ligado a um sink — está comentado no `voice.ts`; não remova.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

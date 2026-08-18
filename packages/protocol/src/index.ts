@@ -91,10 +91,9 @@ export type ProducerSource = z.infer<typeof ProducerSource>;
  * Estado de voz de um usuário (M3, doc §3.6). channel_id null = fora de voz
  * (é assim que um leave viaja no VOICE_STATE_UPDATE). Os flags são
  * declarativos: o mute REAL acontece no cliente (track.enabled) — o servidor
- * só espalha a intenção para a UI dos outros. Exceção: self_video (M4) e
- * self_stream (M5) são DERIVADOS no servidor (existe producer da source viva
- * na sessão) — nunca vêm de payload de cliente, então os flags não conseguem
- * mentir sobre a mídia.
+ * só espalha a intenção para a UI dos outros. Exceção: self_video (M4),
+ * self_stream (M5) e server_mute (M9) são DERIVADOS no servidor — nunca vêm de
+ * payload de cliente, então os flags não conseguem mentir sobre a mídia.
  */
 export const VoiceState = z.object({
   user_id: z.string(),
@@ -105,8 +104,39 @@ export const VoiceState = z.object({
   self_video: z.boolean(),
   /** M5: transmitindo a tela (badge "AO VIVO" na lista) — derivado, ver acima */
   self_stream: z.boolean(),
+  /**
+   * M9: silenciado por um admin. Ao contrário dos self_*, este NÃO é
+   * declarativo: o servidor pausa o producer de `mic` do alvo no mediasoup —
+   * o flag só conta à UI o que já está sendo imposto na mídia.
+   */
+  server_mute: z.boolean(),
 });
 export type VoiceState = z.infer<typeof VoiceState>;
+
+/**
+ * Som do soundboard (M9). Como no Discord, QUALQUER membro sobe um som e ele
+ * fica disponível para a guild inteira; os 9 embutidos (CC0 da Kenney) são
+ * semeados no banco no primeiro boot e só se distinguem por `uploader_id` null.
+ *
+ * Os bytes NÃO viajam aqui: o cliente baixa uma vez de
+ * `GET /api/sounds/:id/audio` (imutável e cacheável — o id é snowflake e o
+ * conteúdo nunca muda) e guarda o AudioBuffer decodificado.
+ */
+export const Sound = z.object({
+  id: z.string(),
+  name: z.string().min(1).max(32),
+  /** null = som embutido (semeado no boot), sem dono para renomear/apagar */
+  uploader_id: z.string().nullable(),
+  /** guardado no upload e devolvido no GET de áudio — nunca ecoado do request */
+  mime: z.enum(["audio/ogg", "audio/wav", "audio/mpeg"]),
+  size_bytes: z.number().int(),
+  /** medido pelo SERVIDOR abrindo o container (o cliente não é fonte disso) */
+  duration_ms: z.number().int(),
+  /** normalização como no M8: ganho no playback (alvo ~-20 dBFS de RMS), asset intacto */
+  gain: z.number(),
+  created_at: z.number().int(),
+});
+export type Sound = z.infer<typeof Sound>;
 
 // ---------------------------------------------------------------------------
 // Payloads (`d`) de cada opcode
@@ -136,6 +166,8 @@ export const ReadyData = z.object({
   members: z.array(User),
   /** snapshot de quem está em voz agora (M3) — só entradas com channel_id preenchido */
   voice_states: z.array(VoiceState),
+  /** catálogo do soundboard (M9): metadados; os bytes vêm por REST sob demanda */
+  sounds: z.array(Sound),
 });
 export type ReadyData = z.infer<typeof ReadyData>;
 
@@ -192,6 +224,24 @@ export const VoiceSpeakingData = z.object({
 });
 export type VoiceSpeakingData = z.infer<typeof VoiceSpeakingData>;
 
+/** Som apagado (M9): só o id — o cliente descarta o AudioBuffer em cache. */
+export const SoundDeleteData = z.object({ id: z.string() });
+export type SoundDeleteData = z.infer<typeof SoundDeleteData>;
+
+/**
+ * Alguém apertou um pad do soundboard (M9). O áudio NÃO passa pelo SFU: o
+ * gateway só replica o id e CADA cliente do canal toca o arquivo localmente
+ * (imediato, fora do AEC de todo mundo, sem gastar banda) — arquitetura (a) do
+ * roadmap item 22. `channel_id` é o canal de voz onde o som foi disparado:
+ * quem não está nele ignora o evento.
+ */
+export const VoiceSoundboardData = z.object({
+  user_id: z.string(),
+  channel_id: z.string(),
+  sound_id: z.string(),
+});
+export type VoiceSoundboardData = z.infer<typeof VoiceSoundboardData>;
+
 // ---------------------------------------------------------------------------
 // Eventos Dispatch (op 0), discriminados por `t`
 // ---------------------------------------------------------------------------
@@ -213,6 +263,12 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_NEW_PRODUCER"), d: VoiceNewProducerData }),
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_PRODUCER_CLOSED"), d: VoiceProducerClosedData }),
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_SPEAKING"), d: VoiceSpeakingData }),
+  // soundboard (M9): catálogo (mutado por REST, como toda mutação — doc §4) e
+  // o disparo, que é só o fan-out do id (o playback é local em cada cliente)
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("SOUND_CREATE"), d: Sound }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("SOUND_UPDATE"), d: Sound }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("SOUND_DELETE"), d: SoundDeleteData }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_SOUNDBOARD"), d: VoiceSoundboardData }),
 ]);
 export type DispatchEvent = z.infer<typeof DispatchEvent>;
 export type DispatchName = DispatchEvent["t"];
@@ -365,6 +421,32 @@ export const VoiceUpdateStateParams = z.object({
 });
 export type VoiceUpdateStateParams = z.infer<typeof VoiceUpdateStateParams>;
 
+/**
+ * m: "server_mute" → {} (M9, roadmap 34) — SÓ ADMIN. Silenciar para TODOS não
+ * pode ser declarativo como os self_*: o servidor pausa o producer de `mic` do
+ * alvo no mediasoup, então nem um cliente modificado continua sendo ouvido. O
+ * estado é do USUÁRIO (não da sessão) e sobrevive a sair/voltar da voz e a
+ * refazer o producer — do contrário bastaria sair e voltar para burlar. Vive em
+ * memória, como todo estado efêmero do projeto: um restart o perde (e derruba
+ * todas as sessões de voz junto).
+ */
+export const VoiceServerMuteParams = z.object({
+  user_id: z.string(),
+  muted: z.boolean(),
+});
+export type VoiceServerMuteParams = z.infer<typeof VoiceServerMuteParams>;
+
+/**
+ * m: "disconnect_user" → {} (M9, roadmap 37) — SÓ ADMIN. Tira o alvo do canal
+ * de voz; TODAS as sessões dele saem (o mesmo usuário pode estar em mais de uma
+ * sessão de gateway). Não impede voltar: quem quiser barrar de vez usa ban
+ * (M10) — isto é o "sai daí" imediato.
+ */
+export const VoiceDisconnectUserParams = z.object({
+  user_id: z.string(),
+});
+export type VoiceDisconnectUserParams = z.infer<typeof VoiceDisconnectUserParams>;
+
 // m: "leave" não tem schema: `p` vazio/ausente → resposta {}.
 
 // ---------------------------------------------------------------------------
@@ -382,3 +464,54 @@ export const UpdateMessageBody = z.object({
   content: z.string().min(1).max(4000),
 });
 export type UpdateMessageBody = z.infer<typeof UpdateMessageBody>;
+
+// --- soundboard (M9) ---
+
+/**
+ * Nome de som: 1..32 depois de aparar. Sem caractere de controle — o nome
+ * viaja em evento e vira texto de botão; uma quebra de linha ou um BEL no
+ * meio dele só serviriam para enfeiar a UI de todo mundo.
+ */
+const SoundName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(32)
+  // por codepoint e não por regex: a faixa de controle dentro de uma classe de
+  // caractere vira byte invisível no arquivo — some no diff e ninguém revisa
+  .refine(
+    (s) => ![...s].some((ch) => (ch.codePointAt(0) ?? 0) < 0x20 || ch.codePointAt(0) === 0x7f),
+    "nome com caractere de controle",
+  );
+
+/**
+ * `POST /api/sounds?name=&gain=` — os metadados vão na QUERY porque o corpo é
+ * o arquivo binário CRU (`application/octet-stream` ou o mime do arquivo).
+ * Não é multipart de propósito: o Fastify 5 não lê multipart sem plugin, e o
+ * projeto não ganha dependência nova por causa disso (regra do M9).
+ *
+ * `gain` é SUGESTÃO: o cliente decodifica o arquivo no preview, mede o RMS e
+ * propõe o ganho que leva o som a ~-20 dBFS (mesmo critério do M8). O servidor
+ * CLAMPA a faixa útil — um cliente modificado não manda gain 50 para estourar
+ * o ouvido da guild. Ausente = 1.0.
+ */
+export const CreateSoundQuery = z.object({
+  name: SoundName,
+  gain: z.coerce.number().finite().optional(),
+});
+export type CreateSoundQuery = z.infer<typeof CreateSoundQuery>;
+
+/** `PATCH /api/sounds/:id` — só renomeia (o áudio é imutável, o id é o cache key) */
+export const UpdateSoundBody = z.object({
+  name: SoundName,
+});
+export type UpdateSoundBody = z.infer<typeof UpdateSoundBody>;
+
+/**
+ * `POST /api/voice/soundboard` — tocar. Só o id: o canal é o que o SERVIDOR vê
+ * (quem não está em voz recebe 403), nunca o que o cliente declara.
+ */
+export const PlaySoundBody = z.object({
+  sound_id: z.string(),
+});
+export type PlaySoundBody = z.infer<typeof PlaySoundBody>;

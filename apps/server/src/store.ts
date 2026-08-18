@@ -1,4 +1,4 @@
-import type { Channel, Message, User } from "@danjocord/protocol";
+import type { Channel, Message, Sound, User } from "@danjocord/protocol";
 import type { Db } from "./db/index.js";
 import { idFromString, idToString, nextId } from "./db/snowflake.js";
 
@@ -31,6 +31,29 @@ interface MessageRow {
   created_at: bigint;
   edited_at: bigint | null;
   deleted_at: bigint | null;
+}
+
+/** M9: linha da tabela `sounds` — `bytes` só é lido na rota de áudio */
+interface SoundRow {
+  id: bigint;
+  name: string;
+  uploader_id: bigint | null;
+  mime: string;
+  size_bytes: bigint;
+  duration_ms: bigint;
+  gain: number;
+  created_at: bigint;
+}
+
+/** Tudo que a rota de upload já mediu e validou — o Store só grava. */
+export interface NewSound {
+  name: string;
+  /** null = som embutido (seed do boot) */
+  uploaderId: string | null;
+  mime: Sound["mime"];
+  bytes: Buffer;
+  durationMs: number;
+  gain: number;
 }
 
 export class Store {
@@ -180,6 +203,98 @@ export class Store {
       .run(Date.now(), idFromString(messageId));
   }
 
+  // ---------------------------------------------------------------------------
+  // Soundboard (M9). Os BYTES ficam no banco (BLOB) e não em disco: o pod tem um
+  // PVC só, e backup/restore continuam sendo um arquivo. Toda leitura de lista
+  // omite a coluna `bytes` de propósito — 100 sons × 512 KB não podem viajar
+  // junto de um READY.
+  // ---------------------------------------------------------------------------
+
+  /** Catálogo completo (metadados). Embutidos primeiro, uploads na ordem de chegada. */
+  listSounds(): Sound[] {
+    const rows = this.db
+      .prepare(
+        "SELECT id, name, uploader_id, mime, size_bytes, duration_ms, gain, created_at FROM sounds ORDER BY created_at, id",
+      )
+      .all() as SoundRow[];
+    return rows.map((r) => soundToWire(r));
+  }
+
+  /** Teto de 100 sons da guild — checado ANTES de bufferizar qualquer upload. */
+  countSounds(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS n FROM sounds").get() as { n: bigint };
+    return Number(row.n);
+  }
+
+  getSound(soundId: string): Sound | null {
+    const row = this.db
+      .prepare(
+        "SELECT id, name, uploader_id, mime, size_bytes, duration_ms, gain, created_at FROM sounds WHERE id = ?",
+      )
+      .get(idFromString(soundId)) as SoundRow | undefined;
+    return row ? soundToWire(row) : null;
+  }
+
+  /**
+   * Bytes + mime GUARDADO (nunca o do request): é este mime que a rota de áudio
+   * devolve. Servir um content-type escolhido por quem sobe o arquivo, na mesma
+   * origem do app, seria XSS de graça.
+   */
+  getSoundAudio(soundId: string): { mime: Sound["mime"]; bytes: Buffer } | null {
+    const row = this.db.prepare("SELECT mime, bytes FROM sounds WHERE id = ?").get(idFromString(soundId)) as
+      | { mime: string; bytes: Buffer }
+      | undefined;
+    if (!row) return null;
+    return { mime: row.mime as Sound["mime"], bytes: row.bytes };
+  }
+
+  createSound(input: NewSound): Sound {
+    const id = nextId();
+    const createdAt = Date.now();
+    this.db
+      .prepare(
+        "INSERT INTO sounds (id, name, uploader_id, mime, bytes, size_bytes, duration_ms, gain, created_at)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        input.name,
+        input.uploaderId === null ? null : idFromString(input.uploaderId),
+        input.mime,
+        input.bytes,
+        input.bytes.length,
+        Math.round(input.durationMs),
+        input.gain,
+        createdAt,
+      );
+    return {
+      id: idToString(id),
+      name: input.name,
+      uploader_id: input.uploaderId,
+      mime: input.mime,
+      size_bytes: input.bytes.length,
+      duration_ms: Math.round(input.durationMs),
+      gain: input.gain,
+      created_at: createdAt,
+    };
+  }
+
+  /** Só o nome muda: o áudio é imutável (o id é o cache key do GET, doc do M9). */
+  renameSound(soundId: string, name: string): Sound | null {
+    this.db.prepare("UPDATE sounds SET name = ? WHERE id = ?").run(name, idFromString(soundId));
+    return this.getSound(soundId);
+  }
+
+  /**
+   * Delete de verdade, sem soft delete: a linha carrega o BLOB, e manter meio
+   * mega de áudio "apagado" no PVC para sempre é o oposto do que o teto de 100
+   * sons quer garantir.
+   */
+  deleteSound(soundId: string): boolean {
+    const info = this.db.prepare("DELETE FROM sounds WHERE id = ?").run(idFromString(soundId));
+    return info.changes > 0;
+  }
+
   private messageToWire(r: MessageRow): Message {
     return {
       id: idToString(r.id),
@@ -190,5 +305,22 @@ export class Store {
       edited_at: r.edited_at === null ? null : Number(r.edited_at),
     };
   }
+}
+
+/**
+ * Linha → entidade do fio. O `mime` sai do banco, onde a migration tem CHECK
+ * com os três valores — o cast declara o que o esquema já garante.
+ */
+function soundToWire(r: SoundRow): Sound {
+  return {
+    id: idToString(r.id),
+    name: r.name,
+    uploader_id: r.uploader_id === null ? null : idToString(r.uploader_id),
+    mime: r.mime as Sound["mime"],
+    size_bytes: Number(r.size_bytes),
+    duration_ms: Number(r.duration_ms),
+    gain: r.gain,
+    created_at: Number(r.created_at),
+  };
 }
 

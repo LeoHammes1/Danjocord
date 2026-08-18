@@ -11,6 +11,7 @@
 import { avatarColor, avatarEl } from "./avatar.js";
 import type { Channel, UiContext, VoiceState } from "./context.js";
 import { icon, type IconName } from "./icons.js";
+import { openUserControls } from "./user-controls.js";
 import { soundMenuItem } from "./settings.js";
 
 /**
@@ -379,9 +380,22 @@ function voiceUserItem(ctx: SidebarContext, v: VoiceState, speaking: boolean): H
     btn.onclick = () => ctx.actions.watchStream(v.user_id);
     row = btn;
   } else {
-    row = document.createElement("div");
+    // M9: sem transmissão para assistir, o clique abre os controles daquela
+    // pessoa (volume, mute local, moderação). Vira <button> — controle
+    // clicável nunca é <div> com onclick, mesma regra do M5.
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("aria-label", `Controles de ${name}`);
+    btn.onclick = () => openUserControls(v.user_id, btn);
+    row = btn;
     if (watchingThis) row.title = "Assistindo — use “Parar de assistir”";
   }
+  // a linha ASSISTÍVEL não perde o gesto do M5: nela os controles saem pelo
+  // menu de contexto, que serve às duas sem disputar o clique
+  row.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    openUserControls(v.user_id, row);
+  });
   row.className = speaking ? "voice-user speaking" : "voice-user";
   if (watchable) row.classList.add("watchable");
   // âncoras do updateSpeaking: o anel de "falando" muda sem re-render da lista

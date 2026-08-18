@@ -34,3 +34,9 @@ export function authenticate(store: Store, token: string): User | null {
     return null;
   }
 }
+
+/** Açúcar das rotas REST: "Authorization: Bearer <token>" → usuário (ou null). */
+export function authFromHeader(header: string | undefined, store: Store): User | null {
+  if (!header?.startsWith("Bearer ")) return null;
+  return authenticate(store, header.slice("Bearer ".length));
+}

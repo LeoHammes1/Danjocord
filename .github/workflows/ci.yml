@@ -19,3 +19,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm typecheck
+      # os testes existem desde o M1 e nunca rodaram sozinhos (roadmap 122):
+      # 105 no servidor + 23 no cliente, e os do M9 cobrem justamente a
+      # validação de upload — o lugar onde um erro é furo de segurança
+      - run: pnpm test

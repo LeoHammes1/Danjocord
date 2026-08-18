@@ -26,3 +26,4 @@ registerHooks({
 });
 
 await import("./sound-policy.test.ts");
+await import("./lru.test.ts");

@@ -13,7 +13,7 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | M0–M6 | repo, chat, auth, voz, vídeo, Go Live, app Electron | ✅ |
 | M7 | fundação visual — §6 + 75–77 | ✅ |
 | M8 | som — §1 e §2 + 113 | ✅ |
-| M9 | soundboard + controles de voz — §3 e §4 | |
+| M9 | soundboard + controles de voz — §3 e §4 | ✅ |
 | M10 | convites + moderação — §5 + 114, 116 | |
 | M11 | chat completo — §7 | |
 
@@ -50,32 +50,32 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 20. ✅ `M` (investigado; ver docs/som.md) Investigar se os sons de UI vazam para o microfone (AEC e loopback do Go Live).
 21. ✅ `M` Painel de configurações de som: volume por categoria e chave geral.
 
-## 3. Soundboard (pad de sons)
+## 3. Soundboard (pad de sons) ✅ M9
 
-22. `P` Decidir e documentar a arquitetura. Três caminhos: (a) evento no gateway + playback local do asset embutido, (b) o cliente que aperta mixa no próprio producer, (c) injeção no SFU via PlainTransport. **Recomendação: (a)**.
-23. `P` Adicionar `VOICE_SOUNDBOARD` ao protocolo (schema Zod).
-24. `M` `POST` de tocar som com validação de presença no canal — sem isso qualquer sessão toca som onde nem está.
-25. `P` Cooldown e anti-spam server-side (não existe nenhum rate limit hoje).
-26. `M` Implementar o pad no rodapé de voz com playback local.
-27. `P` Respeitar deafen, volume próprio e "desativar soundboard" — com playback local o deafen atual **não silencia o pad**.
-28. `P` Mostrar quem tocou o som (reusa o anel de `VOICE_SPEAKING`).
-29. `P` Definir permissões: quem toca, quem sobe, quem apaga.
-30. `P` Decidir catálogo fixo × upload livre. **v1: catálogo fixo curado** — upload livre transforma o self-hosted em repositório de áudio com copyright.
-31. `G` Se for adiante: migration `003` + tabela `sounds`, upload validado, rota com cache imutável, `media-src` na CSP.
-32. `G` Spike didático: injeção no SFU via PlainTransport + ffmpeg — não é o caminho do pad, mas é o único que ensina como um SFU recebe mídia que não veio de navegador.
+22. ✅ `P` Decidir e documentar a arquitetura. Três caminhos: (a) evento no gateway + playback local do asset embutido, (b) o cliente que aperta mixa no próprio producer, (c) injeção no SFU via PlainTransport. **Recomendação: (a)**.
+23. ✅ `P` Adicionar `VOICE_SOUNDBOARD` ao protocolo (schema Zod).
+24. ✅ `M` `POST` de tocar som com validação de presença no canal — sem isso qualquer sessão toca som onde nem está.
+25. ✅ `P` Cooldown e anti-spam server-side (não existe nenhum rate limit hoje).
+26. ✅ `M` Implementar o pad no rodapé de voz com playback local.
+27. ✅ `P` Respeitar deafen, volume próprio e "desativar soundboard" — com playback local o deafen atual **não silencia o pad**.
+28. ✅ `P` Mostrar quem tocou o som (reusa o anel de `VOICE_SPEAKING`).
+29. ✅ `P` Definir permissões: quem toca, quem sobe, quem apaga.
+30. ✅ `P` Decidir catálogo fixo × upload livre. **Decidido pelo Leonardo: upload livre**, como no Discord — qualquer membro sobe e todos usam. Os 9 CC0 viraram *seed* no banco, não catálogo.
+31. ✅ `G` Se for adiante: migration `003` + tabela `sounds`, upload validado, rota com cache imutável, `media-src` na CSP.
+32. `G` (não feito — segue como estudo opcional) Spike didático: injeção no SFU via PlainTransport + ffmpeg — não é o caminho do pad, mas é o único que ensina como um SFU recebe mídia que não veio de navegador.
 
-## 4. Voz — mutar, volume, dispositivos
+## 4. Voz — mutar, volume, dispositivos ✅ M9
 
-33. `M` Mute **local** por usuário (só eu paro de ouvir fulano) — puro cliente.
-34. `G` **Server mute** de admin com enforcement no mediasoup (pausar o producer).
-35. `P` Tornar o deafen real — pausar os consumers em vez de só mutar os `<audio>`.
-36. `M` Volume por usuário com `GainNode` + slider.
-37. `P` Desconectar à força alguém do canal de voz.
-38. `G` Tela de configurações de dispositivo — `getUserMedia` sem `deviceId` e consumers sem `setSinkId`: **maior atrito real da voz hoje**.
-39. `M` Teste de microfone + controles de supressão de ruído/AGC (hoje fixos em `true`).
-40. `M` Indicador de qualidade da conexão via `getStats`.
-41. `P` Erro acionável quando entrar na voz falha — hoje `joinVoice()` engole a exceção num `console.warn` e nada acontece na tela.
-42. `P` Mostrar quem está falando nos tiles de vídeo e no rodapé.
+33. ✅ `M` Mute **local** por usuário (só eu paro de ouvir fulano) — puro cliente.
+34. ✅ `G` **Server mute** de admin com enforcement no mediasoup (pausar o producer).
+35. ✅ `P` Tornar o deafen real — pausar os consumers em vez de só mutar os `<audio>`.
+36. ✅ `M` Volume por usuário com `GainNode` + slider.
+37. ✅ `P` Desconectar à força alguém do canal de voz.
+38. ✅ `G` Tela de configurações de dispositivo — `getUserMedia` sem `deviceId` e consumers sem `setSinkId`: **maior atrito real da voz hoje**.
+39. ✅ `M` Teste de microfone + controles de supressão de ruído/AGC (hoje fixos em `true`).
+40. ✅ `M` Indicador de qualidade da conexão via `getStats`.
+41. ✅ `P` Erro acionável quando entrar na voz falha — hoje `joinVoice()` engole a exceção num `console.warn` e nada acontece na tela.
+42. ✅ `P` Mostrar quem está falando nos tiles de vídeo e no rodapé.
 
 ## 5. Convite por link e moderação
 
@@ -172,7 +172,7 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 119. `M` Nada é purgado nunca (`sessions` acumula todas as gerações de refresh).
 120. `P` Deploy mata a call sem aviso — o op 7 (Reconnect) existe no protocolo e no cliente, mas o servidor nunca o envia.
 121. `P` Regressão de relógio quebra o snowflake (`nextId()` só compara `now === lastMs`).
-122. `P` CI não roda os testes — só `build` e `typecheck`.
+122. ✅ `P` CI roda os testes (`pnpm test`: 105 do servidor + 23 do cliente) — entrou junto do M9, porque a validação de upload é onde um erro é furo de segurança.
 123. `M` `mediasoup-client` inteiro carrega antes da tela de login.
 124. `P` Runbook de operação (restart, restore, logs, rollback).
 

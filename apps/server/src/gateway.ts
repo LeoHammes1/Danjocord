@@ -8,6 +8,7 @@ import {
   Op,
   type DispatchEvent,
   type DispatchName,
+  type Sound,
   type User,
   type VoiceState,
 } from "@danjocord/protocol";
@@ -54,6 +55,8 @@ export class Gateway {
   onSessionGone?: (ctx: { userId: string; sessionId: string }) => void;
   /** Snapshot de quem está em voz, para o READY (atribuído pelo index.ts). */
   voiceStatesProvider?: () => VoiceState[];
+  /** Catálogo do soundboard para o READY (M9) — metadados, os bytes vêm por REST. */
+  soundsProvider?: () => Sound[];
 
   constructor(private readonly store: Store) {
     this.sweeper = setInterval(() => this.sweep(), 15_000);
@@ -181,6 +184,7 @@ export class Gateway {
           channels: this.store.listChannels(),
           members: this.store.listMembers(),
           voice_states: this.voiceStatesProvider?.() ?? [],
+          sounds: this.soundsProvider?.() ?? [],
         });
         if (!wasOnline) {
           for (const other of this.sessions.values()) {

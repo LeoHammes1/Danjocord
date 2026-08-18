@@ -12,6 +12,7 @@
     "build": "pnpm -r build",
     "dev": "pnpm --parallel -r dev",
     "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
     "smoke": "pnpm --filter @danjocord/server smoke"
   }
 }

@@ -2,23 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { CreateMessageBody, UpdateMessageBody } from "@danjocord/protocol";
 import type { Store } from "./store.js";
 import type { Gateway } from "./gateway.js";
-import { authenticate } from "./auth.js";
+import { authFromHeader } from "./auth.js";
+import { canonicalId as pathId } from "./db/snowflake.js";
 
 /**
  * Superfície REST mínima (doc §4: mutações entram por REST; o gateway só faz
  * o fan-out do Dispatch resultante).
  */
-
-/**
- * Valida E canoniza um id vindo de path/query: "01" vira "1". Sem isto, o id
- * cru do caminho ecoaria nos broadcasts e nenhum cliente casaria o data-id —
- * dessincronização silenciosa de todo mundo (achado de revisão do M2).
- * null = inválido (rota responde 404).
- */
-function pathId(raw: string | undefined): string | null {
-  if (raw === undefined || !/^\d{1,20}$/.test(raw)) return null;
-  return BigInt(raw).toString();
-}
 
 export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gateway): void {
   app.get("/healthz", async () => ({ ok: true }));
@@ -123,7 +113,3 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
   });
 }
 
-function authFromHeader(header: string | undefined, store: Store) {
-  if (!header?.startsWith("Bearer ")) return null;
-  return authenticate(store, header.slice("Bearer ".length));
-}

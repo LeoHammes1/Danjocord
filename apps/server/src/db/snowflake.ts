@@ -35,3 +35,14 @@ export function idToString(id: bigint): string {
 export function idFromString(id: string): bigint {
   return BigInt(id);
 }
+
+/**
+ * Valida E canoniza um id vindo de path/query: "01" vira "1". Sem isto, o id
+ * cru do caminho ecoaria nos broadcasts e nenhum cliente casaria o data-id —
+ * dessincronização silenciosa de todo mundo (achado de revisão do M2). null =
+ * inválido, e a rota responde 404 (nada de BigInt() explodindo em 500).
+ */
+export function canonicalId(raw: string | undefined): string | null {
+  if (raw === undefined || !/^\d{1,20}$/.test(raw)) return null;
+  return BigInt(raw).toString();
+}

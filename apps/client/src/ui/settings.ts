@@ -35,6 +35,7 @@ import {
   type SoundPrefs,
 } from "../sound/index.js";
 import { icon } from "./icons.js";
+import { soundboardSettingsSection } from "./soundboard.js";
 
 /**
  * Uma linha por categoria: sem isto, "Sistema" e "Notificações" viram
@@ -242,6 +243,11 @@ function build(): Dialog {
     // de desligar (para ter certeza de que era aquilo) é o uso normal do botão
     group.append(row(input, CATEGORY_LABEL[cat], DESCRIPTION[cat], testButton(CATEGORY_LABEL[cat], PREVIEW[cat])));
   }
+
+  // M9: o pad entra DENTRO do mesmo fieldset de propósito — a chave geral de
+  // som desliga o soundboard junto, e a política dele consulta a mesma pref.
+  // Controle desabilitado e comportamento têm que concordar.
+  group.append(soundboardSettingsSection());
 
   const locked = make(
     "p",
