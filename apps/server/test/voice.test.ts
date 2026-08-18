@@ -1,11 +1,12 @@
 /**
- * Testes do M3+M4 (voz e vídeo, doc §3.6/§3.4): a superfície de sinalização
- * do mediasoup no servidor funciona SEM cliente WebRTC real. O truque:
- * produce aceita rtpParameters mínimos forjados — opus para o áudio; VP8
- * simulcast com 3 ssrcs distintos para a webcam do M4 (o ortc do mediasoup
- * valida a ESTRUTURA, não o fluxo — nenhum pacote RTP existe aqui) e consume usa as
- * rtpCapabilities do próprio router — que o join devolve — como se fossem as
- * do Device do cliente. Tudo entra por Voice.handleRequest, exatamente como o
+ * Testes do M3+M4+M5 (voz, vídeo e screen share, doc §3.4–§3.6): a superfície
+ * de sinalização do mediasoup no servidor funciona SEM cliente WebRTC real. O
+ * truque: produce aceita rtpParameters mínimos forjados — opus para o áudio;
+ * VP8 simulcast com 3 ssrcs distintos para a webcam do M4; VP8 de stream
+ * ÚNICO para a tela do M5 (o ortc do mediasoup valida a ESTRUTURA, não o
+ * fluxo — nenhum pacote RTP existe aqui) e consume usa as rtpCapabilities do
+ * próprio router — que o join devolve — como se fossem as do Device do
+ * cliente. Tudo entra por Voice.handleRequest, exatamente como o
  * gateway delega o op 20; os broadcasts são capturados por um espião em
  * voice.broadcast (no wiring real, é o gateway.broadcast). O worker do
  * mediasoup é REAL (binário prebuilt roda na máquina), com close() no
@@ -66,8 +67,10 @@ interface VoiceStateWire {
   channel_id: string | null;
   self_mute: boolean;
   self_deaf: boolean;
-  /** câmera ligada (M4) — derivado no servidor: existe producer de vídeo vivo */
+  /** câmera ligada (M4) — derivado no servidor: existe producer source camera vivo */
   self_video: boolean;
+  /** transmitindo tela (M5, badge AO VIVO) — derivado: existe producer source screen vivo */
+  self_stream: boolean;
 }
 interface TransportWire {
   transport_id: string;
@@ -81,6 +84,8 @@ interface NewProducerWire {
   producer_id: string;
   /** "audio" | "video" (M4) — o cliente decide como consumir por aqui */
   kind: string;
+  /** "mic" | "camera" | "screen" | "screen_audio" (M5) — screen vira badge, não consumo automático */
+  source: string;
 }
 interface ProducerClosedWire {
   channel_id: string;
@@ -125,12 +130,14 @@ let ssrcSeq = 0;
  * rtpParameters mínimos que o produce aceita sem cliente real: um codec
  * casando com o mediaCodec do router (opus/48000/2, payloadType dinâmico 100)
  * e um encoding com ssrc único por chamada (o mediasoup rejeita ssrc repetido
- * no mesmo transport).
+ * no mesmo transport). O mid também é único por chamada: no M5 mic e
+ * screen_audio podem dividir o MESMO send transport, e o RtpListener do
+ * worker rejeita mid repetido no transport.
  */
 function opusRtpParameters(): unknown {
   ssrcSeq += 1;
   return {
-    mid: "0",
+    mid: `a${ssrcSeq}`,
     codecs: [
       { mimeType: "audio/opus", payloadType: 100, clockRate: 48000, channels: 2, parameters: {}, rtcpFeedback: [] },
     ],
@@ -151,6 +158,7 @@ async function produce(ctx: Ctx, transportId: string): Promise<{ producer_id: st
   return (await voice.handleRequest(ctx, "produce", {
     transport_id: transportId,
     kind: "audio",
+    source: "mic", // M5: source é obrigatório — o microfone do M3 é "mic"
     rtp_parameters: opusRtpParameters(),
   })) as { producer_id: string };
 }
@@ -180,7 +188,44 @@ async function produceVideo(ctx: Ctx, transportId: string): Promise<{ producer_i
   return (await voice.handleRequest(ctx, "produce", {
     transport_id: transportId,
     kind: "video",
+    source: "camera", // M5: a webcam do M4 é source "camera"
     rtp_parameters: vp8SimulcastRtpParameters(),
+  })) as { producer_id: string };
+}
+
+/**
+ * rtpParameters de VP8 de stream ÚNICO para a TELA (M5, doc §3.5): screen
+ * content não paga simulcast — 1 encoding, 1 ssrc. O mid é único por chamada
+ * pelo mesmo motivo dos demais forjadores (RtpListener rejeita repetição).
+ */
+function vp8ScreenRtpParameters(): unknown {
+  videoSsrcSeq += 1;
+  const base = 55_550_000 + videoSsrcSeq * 10;
+  return {
+    mid: `s${videoSsrcSeq}`,
+    codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000, parameters: {}, rtcpFeedback: [] }],
+    headerExtensions: [],
+    encodings: [{ ssrc: base + 1 }],
+    rtcp: { cname: `teste-tela-${videoSsrcSeq}` },
+  };
+}
+
+async function produceScreen(ctx: Ctx, transportId: string): Promise<{ producer_id: string }> {
+  return (await voice.handleRequest(ctx, "produce", {
+    transport_id: transportId,
+    kind: "video",
+    source: "screen",
+    rtp_parameters: vp8ScreenRtpParameters(),
+  })) as { producer_id: string };
+}
+
+/** Soundshare (M5): áudio de aba/sistema acompanhando a tela — kind audio, source screen_audio. */
+async function produceScreenAudio(ctx: Ctx, transportId: string): Promise<{ producer_id: string }> {
+  return (await voice.handleRequest(ctx, "produce", {
+    transport_id: transportId,
+    kind: "audio",
+    source: "screen_audio",
+    rtp_parameters: opusRtpParameters(),
   })) as { producer_id: string };
 }
 
@@ -192,7 +237,7 @@ async function produceVideo(ctx: Ctx, transportId: string): Promise<{ producer_i
  */
 interface VoiceInternals {
   rooms: Map<string, { observer: { addProducer(o: { producerId: string }): Promise<void> } }>;
-  sessions: Map<string, { consumers: Map<string, { paused: boolean }> }>;
+  sessions: Map<string, { consumers: Map<string, { paused: boolean; closed: boolean }> }>;
 }
 const internals = voice as unknown as VoiceInternals;
 
@@ -223,6 +268,7 @@ test("join devolve as rtp_capabilities do router (opus) e broadcasta VOICE_STATE
       self_mute: false,
       self_deaf: false,
       self_video: false,
+      self_stream: false,
     });
   } finally {
     await leaveQuietly(ctx);
@@ -274,7 +320,13 @@ test("produce devolve producer_id e broadcasta VOICE_NEW_PRODUCER", async () => 
     await settle();
     const news = findAll<NewProducerWire>("VOICE_NEW_PRODUCER");
     assert.equal(news.length, 1, "um produce = um VOICE_NEW_PRODUCER");
-    assert.deepEqual(news[0], { channel_id: "2", user_id: alice.id, producer_id: p.producer_id, kind: "audio" });
+    assert.deepEqual(news[0], {
+      channel_id: "2",
+      user_id: alice.id,
+      producer_id: p.producer_id,
+      kind: "audio",
+      source: "mic",
+    });
   } finally {
     await leaveQuietly(ctx);
   }
@@ -451,6 +503,7 @@ test("update_state broadcasta as flags (o mute REAL é client-side, pausando o t
       self_mute: true,
       self_deaf: false,
       self_video: false,
+      self_stream: false,
     });
 
     const mine = voice.voiceStates().find((s) => s.user_id === carol.id);
@@ -509,28 +562,44 @@ test("produce de vídeo no MESMO send transport → VOICE_NEW_PRODUCER kind vide
     await settle();
     const news = findAll<NewProducerWire>("VOICE_NEW_PRODUCER");
     assert.equal(news.length, 1, "um produce = um VOICE_NEW_PRODUCER");
-    assert.deepEqual(news[0], { channel_id: "2", user_id: alice.id, producer_id: video.producer_id, kind: "video" });
+    assert.deepEqual(news[0], {
+      channel_id: "2",
+      user_id: alice.id,
+      producer_id: video.producer_id,
+      kind: "video",
+      source: "camera",
+    });
 
     const mine = voice.voiceStates().find((s) => s.user_id === alice.id);
     assert.equal(mine?.self_video, true, "câmera ligada → self_video true no snapshot");
+    assert.equal(mine?.self_stream, false, "câmera NÃO é tela: self_stream segue false (M5)");
     assert.equal(mine?.channel_id, "2");
   } finally {
     await leaveQuietly(ctx);
   }
 });
 
-test("SEGUNDO produce de vídeo na mesma sessão → rejeita (1 webcam por sessão no M4)", async () => {
-  const ctx: Ctx = { userId: alice.id, sessionId: "s-video-teto" };
+test("SEGUNDO produce da mesma source SUBSTITUI o primeiro (restart, revisão M5 #3)", async () => {
+  const ctx: Ctx = { userId: alice.id, sessionId: "s-video-restart" };
   try {
     await join(ctx, "2");
     const t = await createTransport(ctx, "send");
-    await produceVideo(ctx, t.transport_id);
-    // o forjador gera ssrcs/mid novos a cada chamada: a rejeição aqui é o teto
-    // de 1 vídeo, não colisão de ssrc no transport
-    await assert.rejects(() => produceVideo(ctx, t.transport_id));
-    // o teto é DE VÍDEO: áudio na mesma sessão continua passando
+    const first = await produceVideo(ctx, t.transport_id);
+    reset();
+    // rejeitar deixava producer fantasma travando a source (e, na screen, o
+    // canal): agora o antigo cai com VOICE_PRODUCER_CLOSED e o novo assume
+    const second = await produceVideo(ctx, t.transport_id);
+    assert.notEqual(second.producer_id, first.producer_id, "restart emite producer NOVO");
+    const closed = findAll<ProducerClosedWire>("VOICE_PRODUCER_CLOSED");
+    assert.ok(
+      closed.some((c) => c.producer_id === first.producer_id),
+      "o producer antigo foi fechado com o CLOSED de praxe",
+    );
+    // uma câmera viva só (a nova): self_video segue true
+    assert.equal(voice.voiceStates().find((s) => s.user_id === alice.id)?.self_video, true);
+    // áudio na mesma sessão continua passando (sources independentes)
     const audio = await produce(ctx, t.transport_id);
-    assert.equal(typeof audio.producer_id, "string", "o teto de vídeo não pode barrar o áudio");
+    assert.equal(typeof audio.producer_id, "string");
   } finally {
     await leaveQuietly(ctx);
   }
@@ -556,8 +625,8 @@ test("produce de vídeo NÃO entra no audioLevelObserver (só áudio alimenta o 
     const t = await createTransport(ctx, "send");
     const audio = await produce(ctx, t.transport_id);
     const video = await produceVideo(ctx, t.transport_id);
-    assert.ok(added.includes(audio.producer_id), "áudio continua entrando no observer");
-    assert.ok(!added.includes(video.producer_id), "vídeo no audioLevelObserver é bug (guard por kind)");
+    assert.ok(added.includes(audio.producer_id), "mic continua entrando no observer");
+    assert.ok(!added.includes(video.producer_id), "vídeo no audioLevelObserver é bug (guard por source, M5)");
   } finally {
     await leaveQuietly(ctx);
   }
@@ -713,13 +782,13 @@ test("close_producer desliga a câmera SEM sair da voz (broadcasts + estoque do 
     // um terceiro entra depois: o estoque do join não pode oferecer o
     // producer fechado (consumi-lo daria erro no cliente)
     const joined = (await voice.handleRequest(c, "join", { channel_id: "2" })) as {
-      producers?: { producer_id: string; kind?: string }[];
+      producers?: { producer_id: string; kind?: string; source?: string }[];
     };
     const stock = joined.producers ?? [];
     assert.ok(!stock.some((p) => p.producer_id === videoProd.producer_id), "o vídeo fechado some do estoque");
     assert.ok(
-      stock.some((p) => p.producer_id === audioProd.producer_id && p.kind === "audio"),
-      "o áudio segue no estoque, com kind (o cliente decide como consumir por ele)",
+      stock.some((p) => p.producer_id === audioProd.producer_id && p.kind === "audio" && p.source === "mic"),
+      "o áudio segue no estoque, com kind e source (o cliente decide como consumir por eles)",
     );
   } finally {
     await leaveQuietly(a);
@@ -747,6 +816,350 @@ test("close_producer de producer ALHEIO → rejeita (e a câmera do dono segue l
   } finally {
     await leaveQuietly(a);
     await leaveQuietly(b);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// M5: screen share (Go Live, doc §3.5/§3.6) — produce source screen (stream
+// único) e screen_audio (soundshare), política de 1 transmissão por CANAL,
+// cascata tela→soundshare no close_producer e close_consumer (o viewer sob
+// demanda parou de assistir: close LIBERA; pause deixaria alocado).
+// ---------------------------------------------------------------------------
+
+test("produce screen → VOICE_NEW_PRODUCER source screen e self_stream true (self_video intocado)", async () => {
+  const ctx: Ctx = { userId: alice.id, sessionId: "s-tela" };
+  try {
+    await join(ctx, "2");
+    const t = await createTransport(ctx, "send");
+    reset();
+    const screen = await produceScreen(ctx, t.transport_id);
+    assert.equal(typeof screen.producer_id, "string");
+    await settle();
+    const news = findAll<NewProducerWire>("VOICE_NEW_PRODUCER");
+    assert.equal(news.length, 1, "um produce = um VOICE_NEW_PRODUCER");
+    assert.deepEqual(news[0], {
+      channel_id: "2",
+      user_id: alice.id,
+      producer_id: screen.producer_id,
+      kind: "video",
+      source: "screen",
+    });
+
+    // o badge AO VIVO da lista do canal vive deste VOICE_STATE_UPDATE
+    const last = findAll<VoiceStateWire>("VOICE_STATE_UPDATE").at(-1);
+    assert.ok(last, "produce de screen broadcasta VOICE_STATE_UPDATE");
+    assert.equal(last.user_id, alice.id);
+    assert.equal(last.channel_id, "2");
+    assert.equal(last.self_stream, true, "transmitindo → self_stream true");
+    assert.equal(last.self_video, false, "tela NÃO é câmera: self_video segue false");
+
+    const mine = voice.voiceStates().find((s) => s.user_id === alice.id);
+    assert.equal(mine?.self_stream, true, "voiceStates (snapshot do READY) reflete a transmissão");
+    assert.equal(mine?.self_video, false);
+
+    // segunda tela na MESMA sessão → SUBSTITUI (restart, revisão M5 #3): o
+    // fantasma de um produce cujo WS caiu não pode travar o palco do canal
+    reset();
+    const replay = await produceScreen(ctx, t.transport_id);
+    assert.notEqual(replay.producer_id, screen.producer_id, "restart emite producer novo");
+    assert.ok(
+      findAll<ProducerClosedWire>("VOICE_PRODUCER_CLOSED").some((c) => c.producer_id === screen.producer_id),
+      "a tela antiga caiu com o CLOSED de praxe",
+    );
+    assert.equal(voice.voiceStates().find((s) => s.user_id === alice.id)?.self_stream, true);
+  } finally {
+    await leaveQuietly(ctx);
+  }
+});
+
+test("corrida: DUAS sessões produzem screen no mesmo canal ao mesmo tempo → exatamente 1 vence", async () => {
+  const a: Ctx = { userId: alice.id, sessionId: "s-corrida-a" };
+  const b: Ctx = { userId: bob.id, sessionId: "s-corrida-b" };
+  try {
+    await join(a, "2");
+    await join(b, "2");
+    const ta = await createTransport(a, "send");
+    const tb = await createTransport(b, "send");
+    // mesmo tick: a fila de operações é POR SESSÃO — a política 1-por-canal
+    // atravessa sessões e depende da revalidação pós-await (revisão M5, q.1)
+    const results = await Promise.allSettled([produceScreen(a, ta.transport_id), produceScreen(b, tb.transport_id)]);
+    const wins = results.filter((r) => r.status === "fulfilled").length;
+    assert.equal(wins, 1, "exatamente uma transmissão vence a corrida");
+    const streaming = voice.voiceStates().filter((s) => s.self_stream).length;
+    assert.equal(streaming, 1, "o snapshot também vê um único palco ocupado");
+  } finally {
+    await leaveQuietly(a);
+    await leaveQuietly(b);
+  }
+});
+
+test("SEGUNDA sessão com screen no MESMO canal → erro 1-por-canal; canal diferente ok; encerrar libera", async () => {
+  const a: Ctx = { userId: alice.id, sessionId: "s-palco-a" };
+  const b: Ctx = { userId: bob.id, sessionId: "s-palco-b" };
+  const c: Ctx = { userId: carol.id, sessionId: "s-palco-c" };
+  try {
+    await join(a, "2");
+    const ta = await createTransport(a, "send");
+    const screenA = await produceScreen(a, ta.transport_id);
+
+    // política do doc §3.6: 1 transmissão por canal — a do A já ocupa o palco
+    await join(b, "2");
+    const tb = await createTransport(b, "send");
+    await assert.rejects(() => produceScreen(b, tb.transport_id), /já existe uma transmissão/);
+
+    // canal DIFERENTE tem palco próprio: a política é por canal, não global
+    await join(c, "3");
+    const tc = await createTransport(c, "send");
+    const screenC = await produceScreen(c, tc.transport_id);
+    assert.equal(typeof screenC.producer_id, "string", "a tela no canal vizinho passa");
+
+    // A encerra → o palco do canal 2 libera (a regra conta producers VIVOS)
+    await voice.handleRequest(a, "close_producer", { producer_id: screenA.producer_id });
+    const screenB = await produceScreen(b, tb.transport_id);
+    assert.equal(typeof screenB.producer_id, "string", "transmissão encerrada libera o canal");
+  } finally {
+    await leaveQuietly(a);
+    await leaveQuietly(b);
+    await leaveQuietly(c);
+  }
+});
+
+test("screen_audio sem screen vivo → rejeita (soundshare acompanha a tela)", async () => {
+  const ctx: Ctx = { userId: alice.id, sessionId: "s-soundshare-orfao" };
+  try {
+    await join(ctx, "2");
+    const t = await createTransport(ctx, "send");
+    await assert.rejects(() => produceScreenAudio(ctx, t.transport_id));
+    // a regra é SÓ do screen_audio: o mic da mesma sessão continua passando
+    const mic = await produce(ctx, t.transport_id);
+    assert.equal(typeof mic.producer_id, "string", "a recusa do soundshare órfão não barra o mic");
+  } finally {
+    await leaveQuietly(ctx);
+  }
+});
+
+test("screen_audio com screen vivo → ok, source no broadcast e FORA do audioLevelObserver", async () => {
+  const ctx: Ctx = { userId: alice.id, sessionId: "s-soundshare" };
+  try {
+    await join(ctx, "2");
+    // espião no observer da sala (mesmo padrão do teste de vídeo do M4): o
+    // guard do M5 é por SOURCE — screen_audio é kind audio, e entrar no
+    // observer deixaria o streamer "falando" para sempre na UI
+    const room = internals.rooms.get("2");
+    assert.ok(room, "sala do canal 2 deveria existir após o join");
+    const added: string[] = [];
+    const orig = room.observer.addProducer.bind(room.observer);
+    room.observer.addProducer = (o) => {
+      added.push(o.producerId);
+      return orig(o);
+    };
+
+    const t = await createTransport(ctx, "send");
+    const mic = await produce(ctx, t.transport_id);
+    const screen = await produceScreen(ctx, t.transport_id);
+    reset();
+    const sa = await produceScreenAudio(ctx, t.transport_id);
+    assert.equal(typeof sa.producer_id, "string");
+    await settle();
+    const news = findAll<NewProducerWire>("VOICE_NEW_PRODUCER");
+    assert.equal(news.length, 1, "um produce = um VOICE_NEW_PRODUCER");
+    assert.deepEqual(news[0], {
+      channel_id: "2",
+      user_id: alice.id,
+      producer_id: sa.producer_id,
+      kind: "audio",
+      source: "screen_audio",
+    });
+
+    assert.ok(added.includes(mic.producer_id), "mic segue entrando no observer");
+    assert.ok(
+      !added.includes(sa.producer_id),
+      "screen_audio no observer = streamer 'falando' para sempre (guard por source, não por kind)",
+    );
+    assert.ok(!added.includes(screen.producer_id), "vídeo continua fora do observer");
+
+    // segundo soundshare na MESMA sessão → SUBSTITUI (restart, revisão M5 #3)
+    reset();
+    const replay = await produceScreenAudio(ctx, t.transport_id);
+    assert.notEqual(replay.producer_id, sa.producer_id, "restart emite producer novo");
+    assert.ok(
+      findAll<ProducerClosedWire>("VOICE_PRODUCER_CLOSED").some((c) => c.producer_id === sa.producer_id),
+      "o soundshare antigo caiu com o CLOSED de praxe",
+    );
+  } finally {
+    await leaveQuietly(ctx);
+  }
+});
+
+test("close_producer do screen derruba o screen_audio junto (dois CLOSED + self_stream false)", async () => {
+  const a: Ctx = { userId: alice.id, sessionId: "s-fim-tx" };
+  const c: Ctx = { userId: carol.id, sessionId: "s-fim-tx-c" };
+  try {
+    await join(a, "2");
+    const t = await createTransport(a, "send");
+    const mic = await produce(a, t.transport_id);
+    const screen = await produceScreen(a, t.transport_id);
+    const sa = await produceScreenAudio(a, t.transport_id);
+
+    reset();
+    const r = await voice.handleRequest(a, "close_producer", { producer_id: screen.producer_id });
+    assert.deepEqual(r ?? {}, {}, "close_producer responde payload vazio");
+    await settle();
+    // defesa do servidor: soundshare órfão sem tela não faz sentido — fechar a
+    // tela fecha TAMBÉM o screen_audio da sessão, com o CLOSED de ambos (e de
+    // mais nada: o mic sobrevive)
+    const closed = findAll<ProducerClosedWire>("VOICE_PRODUCER_CLOSED");
+    assert.deepEqual(
+      closed.map((e) => e.producer_id).sort(),
+      [screen.producer_id, sa.producer_id].sort(),
+      "exatamente dois VOICE_PRODUCER_CLOSED: tela e soundshare",
+    );
+    assert.ok(closed.every((e) => e.channel_id === "2"));
+
+    const last = findAll<VoiceStateWire>("VOICE_STATE_UPDATE").at(-1);
+    assert.ok(last, "fim da transmissão broadcasta VOICE_STATE_UPDATE");
+    assert.equal(last.user_id, alice.id);
+    assert.equal(last.self_stream, false, "o badge AO VIVO apaga");
+    assert.equal(last.channel_id, "2", "encerrar a transmissão NÃO tira o usuário da voz");
+
+    // quem entra depois só vê o mic no estoque — tela e soundshare sumiram
+    const joined = (await voice.handleRequest(c, "join", { channel_id: "2" })) as {
+      producers?: { producer_id: string }[];
+    };
+    assert.deepEqual(
+      (joined.producers ?? []).map((p) => p.producer_id),
+      [mic.producer_id],
+      "tela e soundshare somem do estoque; o mic fica",
+    );
+  } finally {
+    await leaveQuietly(a);
+    await leaveQuietly(c);
+  }
+});
+
+test("close_consumer fecha e libera (alheio → rejeita; segundo close → 'desconhecido')", async () => {
+  const a: Ctx = { userId: alice.id, sessionId: "s-cc-a" };
+  const b: Ctx = { userId: bob.id, sessionId: "s-cc-b" };
+  try {
+    await join(a, "2");
+    const ta = await createTransport(a, "send");
+    const screen = await produceScreen(a, ta.transport_id);
+
+    const joinB = await join(b, "2");
+    const tb = await createTransport(b, "recv");
+    const c = (await voice.handleRequest(b, "consume", {
+      transport_id: tb.transport_id,
+      producer_id: screen.producer_id,
+      rtp_capabilities: joinB.rtp_capabilities,
+    })) as ConsumerWire;
+    const live = internals.sessions.get(b.sessionId)?.consumers.get(c.consumer_id);
+    assert.ok(live, "consumer deveria estar no mapa da sessão do B");
+
+    // alheio: lookup no mapa DA SESSÃO — o A não fecha o consumer do B
+    await assert.rejects(() => voice.handleRequest(a, "close_consumer", { consumer_id: c.consumer_id }));
+    assert.ok(internals.sessions.get(b.sessionId)?.consumers.has(c.consumer_id), "a tentativa alheia não fechou nada");
+
+    // "parar de assistir": close LIBERA o consumer no servidor — a economia
+    // real dos viewers sob demanda (pause deixaria o recurso alocado)
+    const r = await voice.handleRequest(b, "close_consumer", { consumer_id: c.consumer_id });
+    assert.deepEqual(r ?? {}, {}, "close_consumer responde payload vazio");
+    assert.equal(live.closed, true, "consumer.close() de verdade no worker, não só remoção do mapa");
+    assert.ok(!internals.sessions.get(b.sessionId)?.consumers.has(c.consumer_id), "o mapa da sessão esquece o consumer");
+
+    // segundo close do mesmo id: o mapa já não o conhece → erro claro
+    await assert.rejects(() => voice.handleRequest(b, "close_consumer", { consumer_id: c.consumer_id }), /desconhecido/);
+    // Zod na entrada: sem consumer_id nem chega ao lookup
+    await assert.rejects(() => voice.handleRequest(b, "close_consumer", {}));
+  } finally {
+    await leaveQuietly(a);
+    await leaveQuietly(b);
+  }
+});
+
+test("estoque do join carrega o source de TODOS os producers", async () => {
+  const a: Ctx = { userId: alice.id, sessionId: "s-estoque-a" };
+  const b: Ctx = { userId: bob.id, sessionId: "s-estoque-b" };
+  try {
+    await join(a, "2");
+    const t = await createTransport(a, "send");
+    // os 4 sources num só streamer (bate no teto de 4 producers por sessão)
+    const mic = await produce(a, t.transport_id);
+    const cam = await produceVideo(a, t.transport_id);
+    const screen = await produceScreen(a, t.transport_id);
+    const sa = await produceScreenAudio(a, t.transport_id);
+
+    const joined = (await voice.handleRequest(b, "join", { channel_id: "2" })) as {
+      producers?: { user_id: string; producer_id: string; kind?: string; source?: string }[];
+    };
+    const stock = new Map((joined.producers ?? []).map((p) => [p.producer_id, p]));
+    assert.equal(stock.size, 4, "os 4 producers do A chegam no estoque");
+    const expected: [string, string, string][] = [
+      [mic.producer_id, "audio", "mic"],
+      [cam.producer_id, "video", "camera"],
+      [screen.producer_id, "video", "screen"],
+      [sa.producer_id, "audio", "screen_audio"],
+    ];
+    for (const [id, kind, source] of expected) {
+      const entry = stock.get(id);
+      assert.equal(entry?.kind, kind, `estoque do ${source}: kind ${kind}`);
+      assert.equal(entry?.source, source, `estoque carrega source ${source} (o cliente decide o fluxo por ele)`);
+      assert.equal(entry?.user_id, alice.id, "o estoque anuncia o dono certo");
+    }
+  } finally {
+    await leaveQuietly(a);
+    await leaveQuietly(b);
+  }
+});
+
+test("source×kind incompatível ou source ausente → Zod rejeita antes do mediasoup", async () => {
+  const ctx: Ctx = { userId: alice.id, sessionId: "s-source-kind" };
+  try {
+    await join(ctx, "2");
+    const t = await createTransport(ctx, "send");
+    // screen é captura de VÍDEO — kind audio com ela é bug de cliente
+    await assert.rejects(() =>
+      voice.handleRequest(ctx, "produce", {
+        transport_id: t.transport_id,
+        kind: "audio",
+        source: "screen",
+        rtp_parameters: opusRtpParameters(),
+      }),
+    );
+    // e o espelho: mic é áudio — kind video idem
+    await assert.rejects(() =>
+      voice.handleRequest(ctx, "produce", {
+        transport_id: t.transport_id,
+        kind: "video",
+        source: "mic",
+        rtp_parameters: vp8SimulcastRtpParameters(),
+      }),
+    );
+    // source virou OBRIGATÓRIO no M5 — produce sem ele é payload inválido
+    await assert.rejects(
+      () =>
+        voice.handleRequest(ctx, "produce", {
+          transport_id: t.transport_id,
+          kind: "audio",
+          rtp_parameters: opusRtpParameters(),
+        }),
+      /inválid/,
+    );
+    // source fora do enum do protocolo
+    await assert.rejects(
+      () =>
+        voice.handleRequest(ctx, "produce", {
+          transport_id: t.transport_id,
+          kind: "video",
+          source: "desktop",
+          rtp_parameters: vp8ScreenRtpParameters(),
+        }),
+      /inválid/,
+    );
+    // a sessão sai ilesa das rejeições: um produce válido continua passando
+    const ok = await produce(ctx, t.transport_id);
+    assert.equal(typeof ok.producer_id, "string", "as rejeições de schema não sujam a sessão");
+  } finally {
+    await leaveQuietly(ctx);
   }
 });
 
@@ -816,6 +1229,7 @@ test("produce H264 aceito; assinante VP8-only fica CEGO para o tile mas não MUD
     const video = (await voice.handleRequest(a, "produce", {
       transport_id: ta.transport_id,
       kind: "video",
+      source: "camera", // a captura ≥1080p que prefere H.264 é a webcam (doc §3.5)
       rtp_parameters: h264SimulcastRtpParameters(),
     })) as { producer_id: string };
     assert.equal(typeof video.producer_id, "string", "o router aceita produce H264 simulcast");

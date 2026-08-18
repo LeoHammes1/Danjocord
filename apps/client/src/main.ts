@@ -49,6 +49,13 @@ const el = {
   videoPanel: document.getElementById("video-panel")!,
   videoGrid: document.getElementById("video-grid")!,
   videoCollapse: document.getElementById("video-collapse") as HTMLButtonElement,
+  // screen share (M5)
+  voiceStream: document.getElementById("voice-stream") as HTMLButtonElement,
+  streamPanel: document.getElementById("stream-panel")!,
+  streamTitle: document.getElementById("stream-title")!,
+  streamBox: document.getElementById("stream-box")!,
+  streamStop: document.getElementById("stream-stop") as HTMLButtonElement,
+  streamUnmute: document.getElementById("stream-unmute") as HTMLButtonElement,
 };
 
 interface State {
@@ -266,6 +273,33 @@ function voiceUserEl(v: VoiceState, speaking: boolean): HTMLElement {
   label.className = "voice-name";
   label.textContent = name;
   li.append(label);
+  // badge AO VIVO (M5): self_stream é DERIVADO no servidor (producer source
+  // screen vivo) — e o item vira "Assistir" para os OUTROS no mesmo canal
+  // (viewers sob demanda, doc §3.6: ninguém consome sem clicar)
+  if (v.self_stream) {
+    const badge = document.createElement("span");
+    badge.className = "live-badge";
+    badge.textContent = "AO VIVO";
+    li.append(badge);
+    const isMe = v.user_id === state.me?.id;
+    // NUNCA autoconsumo: o streamer não assiste a própria transmissão; e só
+    // quem está CONECTADO neste canal tem transports para consumir
+    if (!isMe && voice.connected && voice.channelId === v.channel_id) {
+      li.classList.add("watchable");
+      const watchingThis = voice.watchingUserId === v.user_id;
+      li.title = watchingThis ? "Assistindo — use “Parar de assistir”" : "Assistir transmissão";
+      if (!watchingThis) {
+        li.onclick = () => {
+          const producerId = voice.streamProducerIdOf(v.user_id);
+          if (producerId === null) return; // anúncio ainda em trânsito — clique de novo
+          void voice.watchStream(producerId, v.user_id).catch((err: unknown) => {
+            console.warn("voz: falha ao assistir a transmissão", err);
+            flashVoiceError("não foi possível assistir a esta transmissão"); // rev. M5 #2
+          });
+        };
+      }
+    }
+  }
   // surdo implica mudo — um só ícone de áudio; a câmera (M4) soma o dela
   const icons: { icon: string; label: string }[] = [];
   if (v.self_video) icons.push({ icon: "📷", label: "câmera ligada" });
@@ -667,13 +701,22 @@ function onDispatch(t: DispatchName, d: unknown): void {
     return;
   }
   if (t === "VOICE_NEW_PRODUCER") {
-    const p = d as { channel_id: string; user_id: string; producer_id: string; kind?: string };
+    const p = d as { channel_id: string; user_id: string; producer_id: string; kind?: string; source?: string };
     // o PRÓPRIO user_id não se consome (inclui outra aba do mesmo usuário — eco;
     // e a nossa câmera: o preview local é o track cru, nunca via servidor)
     if (p.user_id === state.me?.id) return;
     if (p.channel_id !== voice.channelId) return; // producer de outro canal não nos diz respeito
-    // M4: vídeo vira tile na grade; áudio segue o fluxo do M3
-    const task = p.kind === "video" ? voice.consumeVideo(p.user_id, p.producer_id) : voice.consume(p.producer_id);
+    // M5: a rota é por SOURCE. Tela/soundshare NÃO se consomem no anúncio —
+    // viram só estado no VoiceClient (o badge vem do self_stream; o clique em
+    // "Assistir" acha o producer por lá) — viewers sob demanda, doc §3.6
+    const source = p.source ?? (p.kind === "video" ? "camera" : "mic");
+    if (source === "screen" || source === "screen_audio") {
+      voice.registerStreamProducer(p.user_id, p.producer_id, source);
+      renderChannels(); // o item da lista pode virar clicável antes do VOICE_STATE_UPDATE chegar
+      return;
+    }
+    // mic → <audio> (M3); camera → tile na grade (M4)
+    const task = source === "camera" ? voice.consumeVideo(p.user_id, p.producer_id) : voice.consume(p.producer_id);
     void task.catch((err: unknown) => console.warn("voz: consume falhou", err));
     return;
   }
@@ -855,6 +898,7 @@ function renderVoiceUi(): void {
   renderChannels(); // as listas de participantes moram sob os canais de voz
   renderVoiceFooter();
   renderVideoGrid(); // câmera ligada/desligada e teardown mexem nos tiles (M4)
+  renderStreamPanel(); // nome do streamer/visibilidade do painel assistido (M5)
 }
 
 async function joinVoice(channelId: string): Promise<void> {
@@ -866,6 +910,23 @@ async function joinVoice(channelId: string): Promise<void> {
     // join já zerou o estado e escondeu o rodapé — só registra o motivo
     console.warn("voz: falha ao entrar no canal", err);
   }
+}
+
+/**
+ * Erro de voz VISÍVEL (revisão M5 #2): falhas de transmitir/assistir não podem
+ * morrer só no console — "cliquei e nada aconteceu" é o pior feedback. A
+ * mensagem pisca no status do rodapé de voz por ~4s e o render normal volta.
+ */
+let voiceErrorTimer: ReturnType<typeof setTimeout> | null = null;
+function flashVoiceError(msg: string): void {
+  el.voiceFooter.hidden = false;
+  el.voiceFooterStatus.textContent = msg;
+  el.voiceFooterStatus.classList.add("error");
+  if (voiceErrorTimer !== null) clearTimeout(voiceErrorTimer);
+  voiceErrorTimer = setTimeout(() => {
+    el.voiceFooterStatus.classList.remove("error");
+    renderVoiceFooter();
+  }, 4000);
 }
 
 function renderVoiceFooter(): void {
@@ -887,6 +948,10 @@ function renderVoiceFooter(): void {
   // câmera (M4): mesmo padrão .on dos vizinhos — ligada grita de propósito
   el.voiceCamera.title = voice.cameraOn ? "Desligar câmera" : "Ligar câmera";
   el.voiceCamera.classList.toggle("on", voice.cameraOn);
+  // transmitir (M5): idem — o badge AO VIVO ao lado do próprio nome vem do
+  // self_stream (VOICE_STATE_UPDATE), não deste botão
+  el.voiceStream.title = voice.streamOn ? "Parar transmissão" : "Transmitir tela";
+  el.voiceStream.classList.toggle("on", voice.streamOn);
 }
 
 el.voiceMute.addEventListener("click", () => void voice.toggleMute());
@@ -897,6 +962,16 @@ el.voiceCamera.addEventListener("click", () => {
   // visível (botão/preview) já foi zerado pelo próprio toggleCamera
   void voice.toggleCamera().catch((err: unknown) => console.warn("voz: falha ao alternar a câmera", err));
 });
+el.voiceStream.addEventListener("click", () => {
+  void voice.toggleStream().catch((err: unknown) => {
+    console.warn("voz: falha ao alternar a transmissão", err);
+    // seletor cancelado = escolha do usuário, sem alarde; o resto (palco
+    // ocupado, voz caindo) merece UI (revisão M5 #2)
+    if (err instanceof Error && err.name !== "NotAllowedError") {
+      flashVoiceError(err.message || "falha ao transmitir");
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Grade de vídeo (M4): tiles remotos entregues pelo VoiceClient (onVideoTile)
@@ -904,8 +979,12 @@ el.voiceCamera.addEventListener("click", () => {
 // Colapsar a grade pausa os consumers NO SERVIDOR — economia real (doc §8).
 // ---------------------------------------------------------------------------
 
-/** producer_id → tile remoto; o preview local fica fora (não tem producer nosso consumido) */
-const videoTiles = new Map<string, { userId: string; el: HTMLVideoElement }>();
+/**
+ * producer_id → tile remoto; o preview local fica fora (não tem producer
+ * nosso consumido). el null = tile-placeholder: o consume foi recusado por
+ * codec (rev. M4 #2) e não há <video> — mas o sintoma precisa aparecer.
+ */
+const videoTiles = new Map<string, { userId: string; el: HTMLVideoElement | null; reason?: string }>();
 let videoCollapsed = false;
 /** <video> do preview local + o track exibido (recriado quando a câmera religa) */
 let localPreview: HTMLVideoElement | null = null;
@@ -914,6 +993,7 @@ let localPreviewTrack: MediaStreamTrack | null = null;
 voice.onVideoTile = (userId, producerId, videoEl) => {
   if (videoEl === null) {
     videoTiles.delete(producerId);
+    tileLayer.delete(producerId); // a histerese não pode herdar camada de consumer morto
   } else {
     videoTiles.set(producerId, { userId, el: videoEl });
     // o consumer nasce pausado no servidor: com a grade expandida, acorda já;
@@ -924,6 +1004,23 @@ voice.onVideoTile = (userId, producerId, videoEl) => {
   renderVideoGrid();
 };
 
+// consume recusado por codec (rev. M4 #2): tile sem <video> — renderVideoGrid
+// mostra o placeholder; a remoção chega pelo onVideoTile null de sempre
+voice.onVideoTileFailed = (userId, producerId, reason) => {
+  videoTiles.set(producerId, { userId, el: null, reason });
+  renderVideoGrid();
+};
+
+/** última camada pedida por tile — a memória da histerese (rev. M4 #8) */
+const tileLayer = new Map<string, number>();
+
+/** altura → camada, com os limiares-base (270/540) escalados por factor */
+function layerForHeight(h: number, factor: number): number {
+  return h >= 540 * factor ? 2 : h >= 270 * factor ? 1 : 0;
+}
+
+let tileLayersScheduled = false;
+
 /**
  * Camada pelo TAMANHO RENDERIZADO do tile, não pela contagem (revisão M4 #1):
  * com captura 4K a camada 2 vale ~10 Mbps — um tile de 300 px puxando 2160p
@@ -932,27 +1029,53 @@ voice.onVideoTile = (userId, producerId, videoEl) => {
  * exibe: tiles grandes merecem camada alta; thumbnails, a baixa.
  */
 function updateTileLayers(): void {
-  if (videoTiles.size === 0) return;
+  if (videoTiles.size === 0 || tileLayersScheduled) return;
+  tileLayersScheduled = true;
   // pós-layout: offsetHeight só é real depois do renderVideoGrid assentar
   requestAnimationFrame(() => {
+    tileLayersScheduled = false;
     for (const [pid, tile] of videoTiles) {
+      if (tile.el === null) continue; // placeholder de codec — não há consumer
       const h = tile.el.offsetHeight;
       if (h === 0) continue; // grade colapsada — consumer já está pausado
-      const spatial = h >= 540 ? 2 : h >= 270 ? 1 : 0;
+      // histerese de ±15% (rev. M4 #8): um tile parado na fronteira (e cada
+      // reflow mexe pixels) flipava de camada a cada passada — e cada flip
+      // custa um keyframe novo do produtor. Subir exige cruzar o limiar com
+      // 15% de folga (factor 1.15); descer, ficar 15% abaixo dele (0.85);
+      // entre as duas bandas, a camada atual segura.
+      const current = tileLayer.get(pid);
+      const spatial =
+        current === undefined
+          ? layerForHeight(h, 1)
+          : Math.min(Math.max(current, layerForHeight(h, 1.15)), layerForHeight(h, 0.85));
+      tileLayer.set(pid, spatial);
       // o VoiceClient dedupa por consumer — repetir a mesma camada não gera tráfego
       void voice.setTileLayer(pid, spatial);
     }
   });
 }
 
-function videoTileEl(video: HTMLVideoElement, name: string): HTMLElement {
+// a grade é fluida (auto-fit): redimensionar a janela muda a altura dos tiles
+// sem passar por renderVideoGrid — reavalia as camadas a cada resize (o rAF
+// coalesce a rajada; a histerese segura o ping-pong na fronteira)
+window.addEventListener("resize", updateTileLayers);
+
+function videoTileEl(content: HTMLElement, name: string): HTMLElement {
   const tile = document.createElement("div");
   tile.className = "video-tile";
   const label = document.createElement("span");
   label.className = "video-tile-name";
   label.textContent = name;
-  tile.append(video, label);
+  tile.append(content, label);
   return tile;
+}
+
+/** miolo do tile quando NÃO há <video>: consume recusado por codec (rev. M4 #2) */
+function videoPlaceholderEl(reason?: string): HTMLElement {
+  const ph = document.createElement("div");
+  ph.className = "video-tile-placeholder";
+  ph.textContent = "sem vídeo — " + (reason ?? "indisponível");
+  return ph;
 }
 
 function renderVideoGrid(): void {
@@ -994,7 +1117,8 @@ function renderVideoGrid(): void {
   }
   for (const t of videoTiles.values()) {
     // mesmo fallback da lista de voz: membro desconhecido vira placeholder
-    tiles.push(videoTileEl(t.el, state.members.get(t.userId)?.username ?? `user-${t.userId.slice(-4)}`));
+    const name = state.members.get(t.userId)?.username ?? `user-${t.userId.slice(-4)}`;
+    tiles.push(videoTileEl(t.el ?? videoPlaceholderEl(t.reason), name));
   }
   el.videoGrid.replaceChildren(...tiles);
   // re-inserir um <video> no DOM pode pausá-lo em alguns navegadores; como
@@ -1011,6 +1135,67 @@ el.videoCollapse.addEventListener("click", () => {
   // vídeo zera de verdade quando a grade colapsa, não só some da tela
   for (const pid of videoTiles.keys()) void voice.setTileVisibility(pid, !videoCollapsed);
   renderVideoGrid();
+  // expandir devolve altura aos tiles — reavalia camadas (a janela pode ter
+  // sido redimensionada enquanto a grade esteve recolhida)
+  if (!videoCollapsed) updateTileLayers();
+});
+
+// ---------------------------------------------------------------------------
+// Painel de stream (M5): UMA transmissão assistida por vez, ACIMA da grade de
+// vídeo e maior que ela (60vh) — o estado de "assistindo" vive no VoiceClient;
+// aqui só se renderiza o que o onStreamView entrega (el ou null).
+// ---------------------------------------------------------------------------
+
+/** o <video> grande entregue pelo VoiceClient + o dono, para o título do painel */
+let streamView: { userId: string; el: HTMLVideoElement } | null = null;
+
+voice.onStreamView = (userId, videoEl) => {
+  if (videoEl === null) {
+    // o null de um stream antigo (troca A→B) não pode apagar o painel novo
+    if (streamView !== null && streamView.userId === userId) streamView = null;
+  } else {
+    streamView = { userId, el: videoEl };
+  }
+  renderStreamPanel();
+  renderChannels(); // o realce/title do item "Assistir" acompanha o assistindo
+};
+
+function renderStreamPanel(): void {
+  if (streamView === null) {
+    el.streamPanel.hidden = true;
+    el.streamBox.replaceChildren();
+    el.streamUnmute.hidden = true;
+    return;
+  }
+  el.streamPanel.hidden = false;
+  el.streamTitle.textContent = state.members.get(streamView.userId)?.username ?? `user-${streamView.userId.slice(-4)}`;
+  // só (re)insere quando o <video> ainda não está no DOM: re-inserir pausa o
+  // elemento em alguns navegadores e re-dispararia o fluxo de autoplay abaixo
+  if (streamView.el.parentElement !== el.streamBox) {
+    el.streamUnmute.hidden = true;
+    el.streamBox.replaceChildren(streamView.el);
+    const v = streamView.el;
+    // o <video> do stream NÃO é muted (o soundshare toca por ele — contrato
+    // M5): o play() costuma passar porque assistir nasceu de um clique; se o
+    // navegador barrar, toca MUDO (autoplay muted sempre pode) e oferece o
+    // botão de unmute — o gesto nele destrava o som
+    void v.play().catch((err: unknown) => {
+      console.warn("voz: play() do stream rejeitado — tocando mudo até o clique", err);
+      v.muted = true;
+      void v.play().catch(() => undefined);
+      if (streamView?.el === v) el.streamUnmute.hidden = false;
+    });
+  }
+}
+
+el.streamStop.addEventListener("click", () => voice.stopWatching());
+el.streamUnmute.addEventListener("click", () => {
+  el.streamUnmute.hidden = true;
+  if (streamView === null) return;
+  // o clique é o gesto que o autoplay exigia; deafen continua mandando (o
+  // un-deafen do rodapé é quem desfaz o silêncio nesse caso)
+  streamView.el.muted = voice.deafened;
+  void streamView.el.play().catch((err: unknown) => console.warn("voz: play() do stream rejeitado", err));
 });
 
 // ---------------------------------------------------------------------------

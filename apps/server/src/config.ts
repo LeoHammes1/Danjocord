@@ -49,11 +49,17 @@ export const config = {
   rtcAnnouncedIp: env.ANNOUNCED_IP ?? "127.0.0.1",
   /**
    * bitrate máximo de entrada por transport send: áudio Opus (~64k) + webcam
-   * em simulcast adaptativo de 3 camadas — com captura 4K o topo chega a
-   * ~10 Mbps (2160p@10M + 1080p@2,5M + 540p@800k) + folga de headroom.
-   * A política de camadas por tile (cliente) evita que o EGRESS multiplique.
+   * em simulcast adaptativo (4K: ~13,3 Mbps somando as 3 camadas) + Go Live
+   * de tela em até 4K (~12 Mbps, stream único com contentHint detail) + folga.
+   * A política de camadas por tile e os viewers sob demanda (cliente) LIMITAM
+   * mas não eliminam o egress: pior caso documentado (revisão M5 #4) — um Go
+   * Live 4K@12M com os 9 amigos assistindo = ~108 Mbps de uplink do nó, sem
+   * downgrade por assinante (stream único, sem simulcast; o BWE do streamer
+   * adapta ao caminho streamer→servidor, não aos viewers). Risco aceito para
+   * ≤10 usuários; se doer, os remédios são baixar o tier de 12M ou capar
+   * viewers simultâneos por producer.
    */
-  rtcMaxIncomingBitrate: Number(env.RTC_MAX_INCOMING_BITRATE ?? 15_000_000),
+  rtcMaxIncomingBitrate: Number(env.RTC_MAX_INCOMING_BITRATE ?? 30_000_000),
   /** intervalo do audioLevelObserver — orçamento de "quem fala" < 200 ms (doc §8) */
   rtcSpeakingIntervalMs: Number(env.RTC_SPEAKING_INTERVAL_MS ?? 150),
 

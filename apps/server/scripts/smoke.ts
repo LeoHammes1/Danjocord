@@ -6,11 +6,20 @@
  *
  * Ato de voz (M3+M4): depois do texto, um SEGUNDO socket (user dev de apoio)
  * entra em cena e a sinalização mediasoup roda fim-a-fim: ambos join →
- * A produce áudio → B recebe VOICE_NEW_PRODUCER e consome → A liga a
- * "câmera" (produce de VÍDEO VP8 simulcast forjado, 3 ssrcs) → B consome,
- * escolhe camada (set_preferred_layers), pausa e retoma o consumer → A
- * desliga a câmera (close_producer; self_video volta a false SEM sair da
- * voz) → A muta → A sai.
+ * A produce áudio (source mic) → B recebe VOICE_NEW_PRODUCER e consome → A
+ * liga a "câmera" (produce de VÍDEO VP8 simulcast forjado, 3 ssrcs, source
+ * camera) → B consome, escolhe camada (set_preferred_layers), pausa e retoma
+ * o consumer → A desliga a câmera (close_producer; self_video volta a false
+ * SEM sair da voz).
+ *
+ * Ato Go Live (M5): A transmite a "tela" (produce source screen — os params
+ * que o cliente real geraria do canvas fake: VP8 de stream ÚNICO, sem
+ * simulcast) → B recebe VOICE_NEW_PRODUCER source screen e o
+ * VOICE_STATE_UPDATE com self_stream true (badge AO VIVO) → B assiste
+ * (consume + resume, viewer sob demanda) → B para de assistir
+ * (close_consumer: LIBERA o consumer no servidor; pause deixaria alocado) →
+ * A encerra (close_producer) → B recebe VOICE_PRODUCER_CLOSED + self_stream
+ * false. Depois: A muta → A sai.
  * Sem mídia real — Node puro não tem WebRTC, então DTLS/RTP nunca fluem;
  * o smoke prova a SINALIZAÇÃO, os testes de unidade provam a API do worker.
  *
@@ -28,7 +37,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-// 30s: o ato de voz soma um segundo socket e os round-trips de áudio E vídeo
+// 30s: o ato de voz soma um segundo socket e os round-trips de áudio, vídeo
+// e Go Live (cada um é localhost — segundos de folga sobram)
 const timeout = setTimeout(() => fail("timeout de 30s"), 30_000);
 
 const steps: string[] = [];
@@ -164,8 +174,10 @@ interface VoiceStateWire {
   channel_id: string | null;
   self_mute: boolean;
   self_deaf: boolean;
-  /** câmera ligada (M4) — derivado no servidor: existe producer de vídeo vivo */
+  /** câmera ligada (M4) — derivado no servidor: existe producer source camera vivo */
   self_video: boolean;
+  /** transmitindo tela (M5, badge AO VIVO) — derivado: existe producer source screen vivo */
+  self_stream: boolean;
 }
 interface TransportWire {
   transport_id: string;
@@ -179,6 +191,8 @@ interface NewProducerWire {
   producer_id: string;
   /** "audio" | "video" (M4) — o cliente decide como consumir por aqui */
   kind: string;
+  /** "mic" | "camera" | "screen" | "screen_audio" (M5) — screen vira badge, não consumo automático */
+  source: string;
 }
 interface ProducerClosedWire {
   channel_id: string;
@@ -220,6 +234,22 @@ function vp8RtpParameters(): unknown {
     codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000, parameters: {}, rtcpFeedback: [] }],
     headerExtensions: [],
     encodings: [{ ssrc: 424_301 }, { ssrc: 424_302 }, { ssrc: 424_303 }],
+    rtcp: { cname: "smoke" },
+  };
+}
+
+/**
+ * rtpParameters da TELA (M5, doc §3.5): o que o cliente real geraria do
+ * canvas fake do Go Live — VP8 de stream ÚNICO (1 encoding; screen content
+ * não paga simulcast). mid "2": áudio e câmera já ocupam "0" e "1" no MESMO
+ * send transport.
+ */
+function vp8ScreenRtpParameters(): unknown {
+  return {
+    mid: "2",
+    codecs: [{ mimeType: "video/VP8", payloadType: 101, clockRate: 90000, parameters: {}, rtcpFeedback: [] }],
+    headerExtensions: [],
+    encodings: [{ ssrc: 424_401 }],
     rtcp: { cname: "smoke" },
   };
 }
@@ -341,6 +371,7 @@ async function voiceAct(): Promise<void> {
   const prod = (await voiceRequest(ws, "produce", {
     transport_id: ta.transport_id,
     kind: "audio",
+    source: "mic", // M5: source obrigatório — o microfone é "mic"
     rtp_parameters: opusRtpParameters(),
   })) as { producer_id: string };
   if (typeof prod.producer_id !== "string") fail("produce sem producer_id");
@@ -351,7 +382,8 @@ async function voiceAct(): Promise<void> {
   if (newProd.producer_id !== prod.producer_id || newProd.user_id !== meId || newProd.channel_id !== channel)
     fail("VOICE_NEW_PRODUCER com ids errados");
   if (newProd.kind !== "audio") fail(`VOICE_NEW_PRODUCER do mic com kind errado ("${newProd.kind}")`);
-  step("B recebeu VOICE_NEW_PRODUCER kind audio");
+  if (newProd.source !== "mic") fail(`VOICE_NEW_PRODUCER do mic com source errado ("${newProd.source}")`);
+  step("B recebeu VOICE_NEW_PRODUCER kind audio source mic");
   const tb = (await voiceRequest(b.sock, "create_transport", { direction: "recv" })) as TransportWire;
   const cons = (await voiceRequest(b.sock, "consume", {
     transport_id: tb.transport_id,
@@ -369,6 +401,7 @@ async function voiceAct(): Promise<void> {
   const vprod = (await voiceRequest(ws, "produce", {
     transport_id: ta.transport_id,
     kind: "video",
+    source: "camera", // M5: a webcam é source "camera"
     rtp_parameters: vp8RtpParameters(),
   })) as { producer_id: string };
   if (typeof vprod.producer_id !== "string") fail("produce de vídeo sem producer_id");
@@ -379,7 +412,20 @@ async function voiceAct(): Promise<void> {
   ).d as NewProducerWire;
   if (newVideo.producer_id !== vprod.producer_id || newVideo.user_id !== meId || newVideo.channel_id !== channel)
     fail("VOICE_NEW_PRODUCER de vídeo com ids errados");
-  step("B recebeu VOICE_NEW_PRODUCER kind video");
+  if (newVideo.source !== "camera") fail(`VOICE_NEW_PRODUCER da câmera com source errado ("${newVideo.source}")`);
+  step("B recebeu VOICE_NEW_PRODUCER kind video source camera");
+
+  // consumir o VOICE_STATE_UPDATE do self_video true aqui mantém o bus limpo:
+  // as esperas por "self_stream false" do Go Live não podem casar com este
+  // evento antigo (self_stream é false nele também)
+  const camOn = (
+    await b.bus.wait(
+      (e) =>
+        e.t === "VOICE_STATE_UPDATE" && (e.d as VoiceStateWire).user_id === meId && (e.d as VoiceStateWire).self_video,
+    )
+  ).d as VoiceStateWire;
+  if (camOn.channel_id !== channel) fail("VOICE_STATE_UPDATE do self_video true perdeu o canal");
+  step("B recebeu VOICE_STATE_UPDATE self_video true");
 
   // B consome o vídeo no MESMO recv transport do áudio
   const vcons = (await voiceRequest(b.sock, "consume", {
@@ -420,6 +466,72 @@ async function voiceAct(): Promise<void> {
   ).d as VoiceStateWire;
   if (camOff.channel_id !== channel) fail("VOICE_STATE_UPDATE do self_video false deveria manter o canal");
   step("B recebeu VOICE_STATE_UPDATE self_video false (A segue em voz)");
+
+  // ---- ato Go Live (M5): A transmite a tela; B assiste e para de assistir ----
+  const sprod = (await voiceRequest(ws, "produce", {
+    transport_id: ta.transport_id,
+    kind: "video",
+    source: "screen",
+    rtp_parameters: vp8ScreenRtpParameters(),
+  })) as { producer_id: string };
+  if (typeof sprod.producer_id !== "string") fail("produce da tela sem producer_id");
+  step("A produce screen (Go Live, VP8 stream único)");
+
+  // screen NÃO dispara consumo automático no cliente — só o badge; aqui o B
+  // confere o anúncio e o estado, e o "assistir" vem por decisão própria
+  const newScreen = (
+    await b.bus.wait((e) => e.t === "VOICE_NEW_PRODUCER" && (e.d as NewProducerWire).source === "screen")
+  ).d as NewProducerWire;
+  if (newScreen.producer_id !== sprod.producer_id || newScreen.user_id !== meId || newScreen.channel_id !== channel)
+    fail("VOICE_NEW_PRODUCER da tela com ids errados");
+  if (newScreen.kind !== "video") fail(`VOICE_NEW_PRODUCER da tela com kind errado ("${newScreen.kind}")`);
+  step("B recebeu VOICE_NEW_PRODUCER source screen");
+  const live = (
+    await b.bus.wait(
+      (e) =>
+        e.t === "VOICE_STATE_UPDATE" && (e.d as VoiceStateWire).user_id === meId && (e.d as VoiceStateWire).self_stream,
+    )
+  ).d as VoiceStateWire;
+  if (live.channel_id !== channel) fail("VOICE_STATE_UPDATE do self_stream true perdeu o canal");
+  step("B recebeu VOICE_STATE_UPDATE self_stream true (AO VIVO)");
+
+  // B "assiste": consume + resume no MESMO recv transport (viewer sob demanda)
+  const scons = (await voiceRequest(b.sock, "consume", {
+    transport_id: tb.transport_id,
+    producer_id: sprod.producer_id,
+    rtp_capabilities: joinB.rtp_capabilities,
+  })) as ConsumerWire;
+  if (scons.kind !== "video" || scons.producer_id !== sprod.producer_id || typeof scons.consumer_id !== "string")
+    fail("consume da tela com campos errados");
+  step("B consume tela (assistir)");
+  await voiceRequest(b.sock, "resume_consumer", { consumer_id: scons.consumer_id });
+  step("B resume_consumer da tela");
+
+  // B "para de assistir": close_consumer LIBERA o consumer no servidor — a
+  // economia real dos viewers sob demanda (pause deixaria o recurso alocado)
+  await voiceRequest(b.sock, "close_consumer", { consumer_id: scons.consumer_id });
+  step("B close_consumer (parar de assistir)");
+
+  // A encerra a transmissão SEM sair da voz: producer fecha, badge apaga
+  await voiceRequest(ws, "close_producer", { producer_id: sprod.producer_id });
+  step("A close_producer da tela (fim do Go Live)");
+  const sclosed = (
+    await b.bus.wait(
+      (e) => e.t === "VOICE_PRODUCER_CLOSED" && (e.d as ProducerClosedWire).producer_id === sprod.producer_id,
+    )
+  ).d as ProducerClosedWire;
+  if (sclosed.channel_id !== channel) fail("VOICE_PRODUCER_CLOSED da tela com canal errado");
+  step("B recebeu VOICE_PRODUCER_CLOSED da tela");
+  const offAir = (
+    await b.bus.wait(
+      (e) =>
+        e.t === "VOICE_STATE_UPDATE" &&
+        (e.d as VoiceStateWire).user_id === meId &&
+        !(e.d as VoiceStateWire).self_stream,
+    )
+  ).d as VoiceStateWire;
+  if (offAir.channel_id !== channel) fail("VOICE_STATE_UPDATE do self_stream false deveria manter o canal");
+  step("B recebeu VOICE_STATE_UPDATE self_stream false (A segue em voz)");
 
   // A muta (só flags — o mute de verdade é client-side, pausando o track)
   await voiceRequest(ws, "update_state", { self_mute: true, self_deaf: false });

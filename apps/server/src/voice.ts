@@ -1,5 +1,6 @@
 import { createWorker, type types } from "mediasoup";
 import {
+  VoiceCloseConsumerParams,
   VoiceCloseProducerParams,
   VoiceConnectTransportParams,
   VoiceConsumeParams,
@@ -13,6 +14,7 @@ import {
   VoiceUpdateStateParams,
   type DispatchEvent,
   type DispatchName,
+  type ProducerSource,
   type VoiceState,
 } from "@danjocord/protocol";
 import type { z } from "zod";
@@ -21,17 +23,22 @@ import type { Store } from "./store.js";
 
 // Tetos por sessão (revisão M3 #7): a guild tem ≤10 pessoas — números acima
 // disto são bug de cliente ou abuso, e o worker não deve pagar por eles.
+// PRODUCERS = 4 casa exato com as sources do M5: mic + camera + screen +
+// screen_audio, cada uma única por sessão.
 const MAX_TRANSPORTS_PER_SESSION = 4;
 const MAX_PRODUCERS_PER_SESSION = 4;
 const MAX_CONSUMERS_PER_SESSION = 64;
 
 /**
- * Servidor de voz (M3, doc §3.6; M4 soma vídeo/simulcast, doc §3.4):
- * mediasoup embutido no processo. Worker único → Router por canal de voz
- * (lazy) → WebRtcTransport send/recv por sessão → Producer/Consumer (áudio e,
- * no M4, a webcam pelo MESMO send transport). A sinalização entra pelo
- * gateway (op 20, delegada via handleRequest) e os eventos saem por broadcast
- * (op 0).
+ * Servidor de voz (M3, doc §3.6; M4 soma vídeo/simulcast, doc §3.4; M5 soma
+ * screen share/soundshare, doc §3.5): mediasoup embutido no processo. Worker
+ * único → Router por canal de voz (lazy) → WebRtcTransport send/recv por
+ * sessão → Producer/Consumer (áudio, webcam e tela pelo MESMO send
+ * transport). Cada producer carrega a `source` semântica (mic/camera/screen/
+ * screen_audio) no appData — as políticas do M5 (1 transmissão por canal,
+ * soundshare atrelado à tela, observer só de mic) decidem por ela. A
+ * sinalização entra pelo gateway (op 20, delegada via handleRequest) e os
+ * eventos saem por broadcast (op 0).
  *
  * Invariantes de cleanup (a alma do módulo): TODO caminho de saída — leave
  * explícito, join implícito por cima, sessão de gateway morta, transporte
@@ -105,12 +112,23 @@ interface VoiceSession {
 
 /**
  * Valida o `p` de um método com o schema do protocolo. O ZodError cru é um
- * JSON enorme — para o fio (op 21, campo error) uma frase curta basta.
+ * JSON enorme — para o fio (op 21, campo error) uma frase curta basta. Issues
+ * "custom" vêm dos superRefine do protocolo (ex.: kind×source do produce do
+ * M5) e já são frases curtas em pt-BR — essas viajam como estão, porque são
+ * mais úteis que a genérica.
  */
 function parseParams<T>(schema: z.ZodType<T>, method: string, p: unknown): T {
   const result = schema.safeParse(p);
-  if (!result.success) throw new Error(`parâmetros inválidos para "${method}"`);
+  if (!result.success) {
+    const custom = result.error.issues.find((issue) => issue.code === "custom");
+    throw new Error(custom?.message ?? `parâmetros inválidos para "${method}"`);
+  }
   return result.data;
+}
+
+/** source gravada no appData pelo produce — nunca vem de payload de cliente */
+function producerSource(producer: types.Producer): ProducerSource | undefined {
+  return (producer.appData as { source?: ProducerSource }).source;
 }
 
 export class Voice {
@@ -208,6 +226,8 @@ export class Voice {
         return this.resumeConsumer(ctx, parseParams(VoiceResumeConsumerParams, method, p));
       case "pause_consumer":
         return this.pauseConsumer(ctx, parseParams(VoicePauseConsumerParams, method, p));
+      case "close_consumer":
+        return this.closeConsumer(ctx, parseParams(VoiceCloseConsumerParams, method, p));
       case "set_preferred_layers":
         return this.setPreferredLayers(ctx, parseParams(VoiceSetPreferredLayersParams, method, p));
       case "restart_ice":
@@ -291,12 +311,17 @@ export class Voice {
 
     // producers já ativos vão na resposta: VOICE_NEW_PRODUCER só alcançou quem
     // estava conectado na hora do produce — o recém-chegado recebe o estoque
-    // aqui, no mesmo formato do evento (o cliente filtra o próprio user_id)
+    // aqui, no mesmo formato do evento (o cliente filtra o próprio user_id).
+    // O source (M5) viaja junto: telas do estoque NÃO são consumidas no join,
+    // só atualizam o estado — viewers assistem sob demanda (doc §3.6).
     const producers = [...room.producers.values()].map((producer) => ({
       channel_id: room.channelId,
       user_id: (producer.appData as { userId?: string }).userId ?? "",
       producer_id: producer.id,
       kind: producer.kind,
+      // todo producer nasce com source no appData (o produce exige) — o
+      // fallback casado com o kind é inalcançável, só acalma o type system
+      source: producerSource(producer) ?? (producer.kind === "audio" ? "mic" : "camera"),
     }));
     return { rtp_capabilities: room.router.rtpCapabilities, producers };
   }
@@ -357,14 +382,43 @@ export class Voice {
 
   private async produce(ctx: VoiceCtx, p: VoiceProduceParams): Promise<unknown> {
     const session = this.mustSession(ctx);
+    // REGRAS POR SOURCE (M5, doc §3.5/§3.6) — o pareamento kind×source já foi
+    // validado pelo schema do protocolo; aqui entram as políticas:
+    // cada source é única por sessão (mic e camera como no M3/M4; screen e
+    // screen_audio idem). Vem ANTES do teto genérico: uma sessão cheia
+    // repetindo source merece o erro específico, não o do limite.
+    const hasSource = (src: ProducerSource): boolean =>
+      [...session.producers.values()].some((pr) => producerSource(pr) === src);
+    // Semântica de RESTART (revisão M5 #3): produce de source que a sessão já
+    // tem FECHA o antigo e substitui, em vez de rejeitar. Rejeitar deixava um
+    // producer fantasma (WS caído entre o request e a resposta do produce)
+    // travando a source para sempre — e, no caso da screen, o PALCO DO CANAL
+    // inteiro (política 1-por-canal). Repor é sempre o que o dono quer; o
+    // fantasma morre com os VOICE_PRODUCER_CLOSED de praxe.
+    const existingSame = [...session.producers.values()].find((pr) => producerSource(pr) === p.source);
+    if (existingSame !== undefined) {
+      this.closeOneProducer(session, existingSame);
+      if (p.source === "screen") {
+        // a cascata do closeProducer: soundshare não sobrevive sem a tela
+        const soundshare = [...session.producers.values()].find((pr) => producerSource(pr) === "screen_audio");
+        if (soundshare !== undefined) this.closeOneProducer(session, soundshare);
+      }
+    }
+    // com as 4 sources únicas o teto é inalcançável — fica como defesa em
+    // profundidade contra drift futuro (revisão M3 #7)
     if (session.producers.size >= MAX_PRODUCERS_PER_SESSION) {
       throw new Error("limite de producers da sessão atingido");
     }
-    // REGRA M4: no máximo UM producer de vídeo por sessão (a webcam) — um
-    // segundo seria screen share, que tem regras próprias e não é deste
-    // milestone; o teto genérico acima não captura isso sozinho
-    if (p.kind === "video" && [...session.producers.values()].some((pr) => pr.kind === "video")) {
-      throw new Error("sessão já tem um producer de vídeo");
+    // política do doc §3.6: UMA transmissão de tela por CANAL — qualquer
+    // outra sessão da sala com screen viva barra esta (a própria sessão já
+    // foi barrada acima, então tudo que a sala tem aqui é alheio)
+    if (p.source === "screen" && this.roomHasScreen(session.room)) {
+      throw new Error("já existe uma transmissão neste canal");
+    }
+    // soundshare acompanha a tela (doc §3.5): screen_audio sem screen viva na
+    // MESMA sessão seria um producer órfão sem sentido
+    if (p.source === "screen_audio" && !hasSource("screen")) {
+      throw new Error("compartilhar áudio exige uma transmissão de tela ativa");
     }
     const transport = session.transports.get(p.transport_id);
     if (!transport) throw new Error("transport desconhecido");
@@ -374,9 +428,10 @@ export class Voice {
     const producer = await transport.produce({
       kind: p.kind,
       rtpParameters: p.rtp_parameters as types.RtpParameters,
-      // appData.userId é o elo producer→usuário: o audioLevelObserver e o
-      // VOICE_NEW_PRODUCER mapeiam por aqui (nunca confiar em payload p/ isso)
-      appData: { userId: session.userId },
+      // appData.{userId,source} é o elo producer→usuário/política: observer,
+      // VOICE_NEW_PRODUCER e as regras do M5 mapeiam por aqui (nunca confiar
+      // em payload de cliente para isso)
+      appData: { userId: session.userId, source: p.source },
     });
     // registro SÓ depois do observer aceitar (revisão M3 #8): registrar antes
     // deixaria, num addProducer falho, um producer vivo, invisível e sem
@@ -386,9 +441,19 @@ export class Voice {
       if (this.sessions.get(ctx.sessionId) !== session) {
         throw new Error("sessão saiu da voz durante a operação");
       }
-      // GUARD (contrato M4): o audioLevelObserver mede nível de ÁUDIO — SÓ
-      // producers de áudio entram nele; adicionar vídeo seria bug
-      if (producer.kind === "audio") {
+      // revalidação pós-await (padrão M3): a fila serializa ESTA sessão, mas
+      // OUTRA sessão pode ter começado uma transmissão durante o
+      // transport.produce — sem re-checar, o canal ficaria com duas telas.
+      // (screen_audio não precisa do espelho: a screen da própria sessão só
+      // some por caminhos serializados na mesma fila ou pelo doLeave, que a
+      // checagem de identidade acima já cobre.)
+      if (p.source === "screen" && this.roomHasScreen(session.room)) {
+        throw new Error("já existe uma transmissão neste canal");
+      }
+      // GUARD (contrato M4→M5): o audioLevelObserver alimenta o "quem fala" —
+      // SÓ source "mic" entra nele; screen_audio no observer deixaria o
+      // streamer "falando" para sempre enquanto a mídia da tela tocar
+      if (p.source === "mic") {
         await session.room.observer.addProducer({ producerId: producer.id });
         if (this.sessions.get(ctx.sessionId) !== session) {
           throw new Error("sessão saiu da voz durante a operação");
@@ -401,33 +466,76 @@ export class Voice {
     session.producers.set(producer.id, producer);
     session.room.producers.set(producer.id, producer);
     // broadcast simples para todos (inclusive o dono): o cliente filtra o
-    // próprio user_id — ninguém consome a si mesmo; kind diz COMO consumir
+    // próprio user_id — ninguém consome a si mesmo; kind diz COMO consumir e
+    // source diz SE consumir (screen/screen_audio são sob demanda, M5)
     this.broadcast("VOICE_NEW_PRODUCER", {
       channel_id: session.room.channelId,
       user_id: session.userId,
       producer_id: producer.id,
       kind: producer.kind,
+      source: p.source,
     });
-    // câmera ligou → self_video (derivado de "producer de vídeo vivo") mudou;
-    // o indicador na lista de participantes vive do VOICE_STATE_UPDATE
-    if (producer.kind === "video") {
+    // câmera ligou → self_video mudou; tela ligou → self_stream (badge AO
+    // VIVO) mudou — ambos derivados de "producer da source vivo"; a lista de
+    // participantes vive do VOICE_STATE_UPDATE
+    if (p.source === "camera" || p.source === "screen") {
       this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
     }
     return { producer_id: producer.id };
   }
 
+  /** Alguma sessão da sala transmite tela AGORA? (política 1-por-canal, doc §3.6) */
+  private roomHasScreen(room: VoiceRoom): boolean {
+    for (const pr of room.producers.values()) {
+      if (producerSource(pr) === "screen" && !pr.closed) return true;
+    }
+    return false;
+  }
+
   /**
-   * M4: fecha UM producer sem sair da voz (o caso é desligar a câmera). O
-   * close() cascateia nos consumers remotos (o worker os mata; o handler de
-   * 'producerclose' de cada sessão limpa o mapa) e o VOICE_PRODUCER_CLOSED
-   * avisa os clientes — o mesmo par de efeitos do doLeave, mas cirúrgico.
-   * Síncrono de ponta a ponta: sem await, sem janela para revalidar.
+   * M4: fecha UM producer sem sair da voz (desligar a câmera; M5 soma parar a
+   * transmissão de tela). O close() cascateia nos consumers remotos (o worker
+   * os mata; o handler de 'producerclose' de cada sessão limpa o mapa) e o
+   * VOICE_PRODUCER_CLOSED avisa os clientes — o mesmo par de efeitos do
+   * doLeave, mas cirúrgico. M5: fechar a screen fecha TAMBÉM o screen_audio
+   * da mesma sessão, se existir (defesa: soundshare órfão sem tela não faz
+   * sentido), com o VOICE_PRODUCER_CLOSED de ambos e o VOICE_STATE_UPDATE de
+   * self_stream=false. Síncrono de ponta a ponta: sem await, sem janela para
+   * revalidar.
    */
   private closeProducer(ctx: VoiceCtx, p: VoiceCloseProducerParams): unknown {
     const session = this.mustSession(ctx);
     // lookup no mapa DA SESSÃO: producer alheio responde erro, não fecha nada
     const producer = session.producers.get(p.producer_id);
     if (!producer) throw new Error("producer desconhecido");
+    const source = producerSource(producer);
+    this.closeOneProducer(session, producer);
+    if (source === "screen") {
+      // o cliente normal fecha só a tela e conta com esta cascata; um cliente
+      // que fechar os dois recebe "producer desconhecido" no segundo — inócuo
+      const soundshare = [...session.producers.values()].find((pr) => producerSource(pr) === "screen_audio");
+      if (soundshare !== undefined) this.closeOneProducer(session, soundshare);
+    }
+    if (source === "camera" || source === "screen") {
+      // câmera desligou → self_video false; tela parou → self_stream false —
+      // a lista de participantes atualiza por aqui, não pelo PRODUCER_CLOSED
+      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
+    } else if (source === "mic") {
+      // espelho do doLeave: fechou o mic enquanto "falava" → corrige o
+      // conjunto já, sem esperar o tick do observer (screen_audio nunca entra
+      // no observer, então fechá-lo não mexe no speaking)
+      const stillHasMic = [...session.producers.values()].some((pr) => producerSource(pr) === "mic");
+      if (!stillHasMic && session.room.speaking.has(session.userId)) {
+        const next = new Set(session.room.speaking);
+        next.delete(session.userId);
+        this.setSpeaking(session.room, next);
+      }
+    }
+    return {};
+  }
+
+  /** Fecha um producer e broadcasta o VOICE_PRODUCER_CLOSED dele (miolo do closeProducer). */
+  private closeOneProducer(session: VoiceSession, producer: types.Producer): void {
     session.producers.delete(producer.id);
     session.room.producers.delete(producer.id);
     producer.close();
@@ -435,21 +543,6 @@ export class Voice {
       channel_id: session.room.channelId,
       producer_id: producer.id,
     });
-    if (producer.kind === "video") {
-      // câmera desligou → self_video (derivado) voltou a false; a lista de
-      // participantes atualiza por aqui, não pelo VOICE_PRODUCER_CLOSED
-      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
-    } else {
-      // espelho do doLeave: fechou o último producer de áudio enquanto
-      // "falava" → corrige o conjunto já, sem esperar o tick do observer
-      const stillHasAudio = [...session.producers.values()].some((pr) => pr.kind === "audio");
-      if (!stillHasAudio && session.room.speaking.has(session.userId)) {
-        const next = new Set(session.room.speaking);
-        next.delete(session.userId);
-        this.setSpeaking(session.room, next);
-      }
-    }
-    return {};
   }
 
   private async consume(ctx: VoiceCtx, p: VoiceConsumeParams): Promise<unknown> {
@@ -512,6 +605,23 @@ export class Voice {
     const consumer = session.consumers.get(p.consumer_id);
     if (!consumer) throw new Error("consumer desconhecido");
     await consumer.pause();
+    return {};
+  }
+
+  /**
+   * M5 (doc §3.6): o viewer PAROU de assistir uma transmissão — libera o
+   * consumer no servidor de vez. Diferente do pause (que deixa o consumer
+   * alocado para religar barato), o close devolve os recursos: é a economia
+   * real do modelo "viewers sob demanda". Lookup no mapa DA SESSÃO (alheio =
+   * erro), como todos os métodos de consumer. Síncrono de ponta a ponta
+   * (padrão M3): sem await, nada a revalidar.
+   */
+  private closeConsumer(ctx: VoiceCtx, p: VoiceCloseConsumerParams): unknown {
+    const session = this.mustSession(ctx);
+    const consumer = session.consumers.get(p.consumer_id);
+    if (!consumer) throw new Error("consumer desconhecido");
+    session.consumers.delete(consumer.id);
+    consumer.close();
     return {};
   }
 
@@ -687,6 +797,7 @@ export class Voice {
       self_mute: session.selfMute,
       self_deaf: session.selfDeaf,
       self_video: false, // os producers (câmera inclusa) já caíram todos acima
+      self_stream: false, // idem para a tela (M5) — a cascata fechou tudo
     });
 
     // canal esvaziou → o router fecha (observer e transports caem em cascata);
@@ -704,14 +815,17 @@ export class Voice {
   }
 
   private toVoiceState(session: VoiceSession): VoiceState {
+    const producers = [...session.producers.values()];
     return {
       user_id: session.userId,
       channel_id: session.room.channelId,
       self_mute: session.selfMute,
       self_deaf: session.selfDeaf,
-      // DERIVADO, nunca declarado (contrato M4): câmera ligada = existe
-      // producer de vídeo vivo — o flag não consegue mentir sobre a mídia
-      self_video: [...session.producers.values()].some((pr) => pr.kind === "video" && !pr.closed),
+      // DERIVADOS, nunca declarados (contrato M4→M5): câmera ligada = producer
+      // source "camera" vivo; transmitindo (badge AO VIVO) = source "screen"
+      // vivo — os flags não conseguem mentir sobre a mídia
+      self_video: producers.some((pr) => producerSource(pr) === "camera" && !pr.closed),
+      self_stream: producers.some((pr) => producerSource(pr) === "screen" && !pr.closed),
     };
   }
 }

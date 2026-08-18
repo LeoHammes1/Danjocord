@@ -82,9 +82,10 @@
         height: 100vh;
         display: grid;
         grid-template-columns: 220px 1fr;
-        /* a linha "video" (M4) colapsa a zero quando o painel está [hidden] */
-        grid-template-rows: 48px auto 1fr auto auto;
-        grid-template-areas: "side head" "side video" "side msgs" "side typing" "side form";
+        /* as linhas "stream" (M5) e "video" (M4) colapsam a zero quando os
+           painéis estão [hidden]; o stream fica ACIMA da grade de vídeo */
+        grid-template-rows: 48px auto auto 1fr auto auto;
+        grid-template-areas: "side head" "side stream" "side video" "side msgs" "side typing" "side form";
       }
       header {
         grid-area: head;
@@ -182,6 +183,22 @@
       .voice-user.speaking .voice-name { color: var(--ink); }
       .voice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .voice-flags { margin-left: auto; flex: none; font-size: 0.7rem; }
+      /* pill "AO VIVO" (M5): vermelho de transmissão de propósito — não é o
+         accent da UI, é o código universal de "ao vivo" */
+      .live-badge {
+        flex: none;
+        background: #d13438;
+        color: #fff;
+        font-size: 0.55rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        border-radius: 999px;
+        padding: 0.06rem 0.35rem;
+      }
+      /* item clicável = dá para assistir a transmissão deste usuário (M5) */
+      .voice-user.watchable { cursor: pointer; border-radius: 6px; }
+      .voice-user.watchable:hover { background: var(--surface-2); }
+      .voice-user.watchable:hover .voice-name { color: var(--ink); }
       #voice-footer {
         margin-top: auto; /* empurra para o fundo quando a sidebar sobra... */
         position: sticky; /* ...e cola no fundo quando a sidebar rola */
@@ -196,6 +213,7 @@
       }
       .voice-footer-info { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
       #voice-footer-status { font-size: 0.78rem; font-weight: 600; color: var(--ok); }
+      #voice-footer-status.error { color: var(--accent); }
       #voice-footer.connecting #voice-footer-status { color: var(--muted); }
       #voice-footer-channel {
         font-size: 0.75rem;
@@ -220,6 +238,52 @@
       .voice-footer-actions button.on { background: var(--accent); border-color: var(--accent); color: #14181e; }
       #voice-leave { font-size: 0.78rem; }
       #voice-leave:hover { color: var(--accent); border-color: var(--accent); }
+
+      /* --- stream (M5): painel da transmissão ASSISTIDA, acima da grade ---
+         maior que a grade (60vh vs 40vh) de propósito: tela é para ser LIDA */
+      #stream-panel {
+        grid-area: stream;
+        background: var(--surface);
+        border-bottom: 1px solid var(--line);
+        padding: 0.5rem 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .stream-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+      .stream-panel-head h2 {
+        margin: 0;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .stream-panel-actions { display: flex; gap: 0.4rem; flex: none; }
+      .stream-panel-actions button {
+        background: none;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 0.75rem;
+        padding: 0.1rem 0.5rem;
+        cursor: pointer;
+      }
+      .stream-panel-actions button:hover { color: var(--ink); border-color: var(--muted); }
+      /* "Ativar som" só existe quando o autoplay sem mute foi barrado — chama
+         a atenção porque sem o clique o stream fica mudo */
+      #stream-unmute { color: var(--accent); border-color: var(--accent); }
+      #stream-box {
+        background: #000;
+        border-radius: 8px;
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+      }
+      /* contain (e não cover, como nos tiles): texto de tela cortado é inútil */
+      #stream-box video { display: block; width: 100%; max-height: 60vh; object-fit: contain; }
 
       /* --- vídeo (M4): grade de tiles acima da área de mensagens --- */
       #video-panel {
@@ -266,6 +330,18 @@
         overflow: hidden;
       }
       .video-tile video { width: 100%; height: 100%; object-fit: cover; display: block; }
+      /* tile sem <video>: consume recusado por codec incompatível (M4) */
+      .video-tile-placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 0.6rem;
+        text-align: center;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
       .video-tile-name {
         position: absolute;
         left: 0.4rem;
@@ -403,6 +479,7 @@
           </div>
           <div class="voice-footer-actions">
             <button id="voice-camera" type="button" title="Ligar câmera">📷</button>
+            <button id="voice-stream" type="button" title="Transmitir tela">🖥️</button>
             <button id="voice-mute" type="button" title="Mutar">🎙️</button>
             <button id="voice-deafen" type="button" title="Ensurdecer">🎧</button>
             <button id="voice-leave" type="button" title="Desconectar">Sair</button>
@@ -418,6 +495,18 @@
           <button id="logout">Sair</button>
         </div>
       </header>
+      <!-- painel de stream (M5): a transmissão ASSISTIDA (uma por vez), acima da grade -->
+      <div id="stream-panel" hidden>
+        <div class="stream-panel-head">
+          <h2>Transmissão de <span id="stream-title"></span></h2>
+          <div class="stream-panel-actions">
+            <!-- só aparece quando o autoplay sem mute foi barrado pelo navegador -->
+            <button id="stream-unmute" type="button" hidden>Ativar som</button>
+            <button id="stream-stop" type="button">Parar de assistir</button>
+          </div>
+        </div>
+        <div id="stream-box"></div>
+      </div>
       <!-- grade de vídeo (M4): só aparece em voz com ≥1 tile (preview local conta) -->
       <div id="video-panel" hidden>
         <div class="video-panel-head">

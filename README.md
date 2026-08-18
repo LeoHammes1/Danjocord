@@ -103,6 +103,8 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
 - [x] **M4 — Vídeo**: webcam até 4K com simulcast adaptativo de 3 camadas
   (VP8 default; H.264 preferido ≥1080p pelo encode de hardware), camada por
   tamanho de tile, grade com preview local, colapso pausa consumers no servidor
-- [ ] **M5 — Go Live** (screen share)
+- [x] **M5 — Go Live**: screen share até 4K (`contentHint='detail'`, H.264 ≥1080p),
+  1 transmissão por canal, viewers sob demanda (`close_consumer` devolve a banda),
+  soundshare, badge AO VIVO, semântica de restart no produce
 - [ ] **M6 — App Electron**
 - [ ] **M7 — Estudo avançado**

@@ -43,10 +43,19 @@ import type {
  * só acorda quando a UI declara o tile visível (setTileVisibility) — grade
  * colapsada = pause_consumer no servidor, economia real de banda (doc §8).
  *
+ * Screen share (M5, doc §3.5/§3.6): toggleStream captura a tela (até 4K@30,
+ * contentHint "detail" — nitidez de texto vence fps) e produz source "screen"
+ * SEM simulcast (+ "screen_audio" se o navegador entregou o som da aba);
+ * viewers são SOB DEMANDA: ninguém consome a tela ao ser anunciada —
+ * watchStream consome quando o usuário clica em "Assistir" (UM stream por
+ * vez) e stopWatching devolve a banda com close_consumer (o servidor LIBERA
+ * o consumer; pause só o deixaria alocado).
+ *
  * Métodos no fio (m do op 20), casando com os schemas Voice*Params do
  * protocolo: "join", "create_transport", "connect_transport", "produce",
  * "consume", "resume_consumer", "restart_ice", "update_state", "leave",
- * "close_producer", "pause_consumer", "set_preferred_layers".
+ * "close_producer", "pause_consumer", "set_preferred_layers",
+ * "close_consumer".
  */
 
 /** Assinatura do GatewayClient.request — o main.ts injeta um delegador. */
@@ -73,11 +82,18 @@ function simulcastEncodingsFor(height: number): { maxBitrate: number; scaleResol
   ];
 }
 
+/**
+ * Origem do producer no fio (M5) — espelha o ProducerSource do protocolo. O
+ * kind virou detalhe de transporte: a ROTA de consumo é decidida pelo source
+ * (mic → <audio>; camera → tile; screen/screen_audio → viewers sob demanda).
+ */
+type ProducerSourceWire = "mic" | "camera" | "screen" | "screen_audio";
+
 /** Respostas do servidor (blobs do mediasoup viajam como unknown, doc §3.6). */
 interface JoinResponse {
   rtp_capabilities: unknown;
   /** producers que JÁ existiam no canal — o recém-chegado consome todos */
-  producers?: { user_id: string; producer_id: string; kind?: string }[];
+  producers?: { user_id: string; producer_id: string; kind?: string; source?: string }[];
 }
 interface CreateTransportResponse {
   transport_id: string;
@@ -101,6 +117,20 @@ export class VoiceClient {
    * <video> mudo montado pela UI (ninguém consome a si mesmo).
    */
   onVideoTile?: (userId: string, producerId: string, el: HTMLVideoElement | null) => void;
+  /**
+   * UI recebe um tile-placeholder quando o consume de vídeo falhou DE VEZ —
+   * hoje só rtp_capabilities incompatíveis (assinante sem o codec do
+   * produtor, ex. build Chromium sem H.264; rev. M4 #2). A remoção sai pelo
+   * onVideoTile normal (el null) quando o producer fechar ou a voz cair.
+   */
+  onVideoTileFailed?: (userId: string, producerId: string, reason: string) => void;
+  /**
+   * UI recebe (el) ou remove (null) o <video> GRANDE do stream assistido (M5)
+   * — atribuído pelo main.ts. UM por vez: um el novo nunca chega sem o null
+   * do anterior antes. O estado de "assistindo" vive AQUI; o main.ts só
+   * renderiza o painel com o que este callback entrega.
+   */
+  onStreamView?: (userId: string, el: HTMLVideoElement | null) => void;
 
   private channel: string | null = null;
   private phase: "idle" | "connecting" | "connected" = "idle";
@@ -128,6 +158,38 @@ export class VoiceClient {
   /** trava de reentrância: clique duplo no 📷 durante o prompt de permissão */
   private cameraStarting = false;
 
+  // --- transmissão de tela (M5, doc §3.5) ---
+  /** producer da tela (source "screen") — stream único, SEM simulcast */
+  private streamProducer: Producer | null = null;
+  /** producer do soundshare (source "screen_audio") — só existe com a tela viva */
+  private streamAudioProducer: Producer | null = null;
+  private screenTrack: MediaStreamTrack | null = null;
+  private screenAudioTrack: MediaStreamTrack | null = null;
+  /** gancho de teste (mesmo FAKE_AUDIO): cancela o requestAnimationFrame da "tela" */
+  private fakeScreen: { stop: () => void } | null = null;
+  /** trava de reentrância: clique duplo no 🖥️ durante o seletor de tela */
+  private streamStarting = false;
+
+  // --- assistir stream (M5, viewers sob demanda — doc §3.6) ---
+  /**
+   * producer_id remoto → dono e origem (screen/screen_audio), alimentado
+   * pelos eventos (VOICE_NEW_PRODUCER via registerStreamProducer) e pelo
+   * estoque do join. NADA aqui é consumido ao chegar — é o índice que o
+   * clique em "Assistir" usa para achar o producer certo.
+   */
+  private readonly remoteStreams = new Map<string, { userId: string; source: "screen" | "screen_audio" }>();
+  /** stream assistido (UM por vez): <video> grande + consumers (tela e soundshare) */
+  private watching: {
+    userId: string;
+    screenProducerId: string;
+    video: HTMLVideoElement;
+    stream: MediaStream;
+    /** producer_id → consumer — o soundshare entra aqui quando consumido */
+    consumers: Map<string, Consumer>;
+  } | null = null;
+  /** trava de reentrância: clique duplo em "Assistir" durante a sinalização */
+  private watchStarting = false;
+
   /** producer_id → consumer + <audio> (fora do DOM; guardado para cleanup/deafen) */
   private readonly consumers = new Map<string, { consumer: Consumer; audio: HTMLAudioElement }>();
   /** producer_id → consumer de VÍDEO + <video> entregue à UI + estado do tile (M4) */
@@ -135,10 +197,12 @@ export class VoiceClient {
     string,
     { consumer: Consumer; video: HTMLVideoElement; userId: string; desiredLayer: number | null; visible: boolean }
   >();
+  /** producer_id → user_id de vídeos que NÃO dá para consumir (codec) — a UI mostra placeholder (rev. M4 #2) */
+  private readonly failedVideoTiles = new Map<string, string>();
   /** consumes em voo — dedup entre o lote do join e um VOICE_NEW_PRODUCER cruzado */
   private readonly consuming = new Set<string>();
-  /** VOICE_NEW_PRODUCER chegado durante o join — drenado quando conectar (rev. M3 #4); o M4 carrega kind e user_id junto */
-  private pendingProducers: { producerId: string; userId: string; kind: "audio" | "video" }[] = [];
+  /** VOICE_NEW_PRODUCER chegado durante o join — drenado quando conectar (rev. M3 #4); o M5 carrega source e user_id junto */
+  private pendingProducers: { producerId: string; userId: string; source: ProducerSourceWire }[] = [];
 
   /**
    * Geração da sessão de mídia: todo await no join/consume captura o valor e
@@ -168,6 +232,22 @@ export class VoiceClient {
   /** track local da câmera — a UI monta o preview com ele (nunca passa pelo servidor) */
   get cameraTrack(): MediaStreamTrack | null {
     return this.camTrack;
+  }
+  /** transmitindo a tela (M5) — o botão 🖥️ acende por aqui; o badge AO VIVO vem do self_stream */
+  get streamOn(): boolean {
+    return this.streamProducer !== null;
+  }
+  /** user_id do stream que estamos assistindo (M5) — null = nenhum */
+  get watchingUserId(): string | null {
+    return this.watching?.userId ?? null;
+  }
+
+  /** producer de TELA anunciado de um usuário — o clique em "Assistir" da UI acha o id por aqui. */
+  streamProducerIdOf(userId: string): string | null {
+    for (const [producerId, info] of this.remoteStreams) {
+      if (info.userId === userId && info.source === "screen") return producerId;
+    }
+    return null;
   }
 
   /**
@@ -220,11 +300,20 @@ export class VoiceClient {
       const producer = await send.produce({
         track,
         codecOptions: { opusDtx: true, opusFec: true },
+        appData: { source: "mic" }, // M5: origem no fio (o handler de "produce" repassa)
       });
       if (epoch !== this.epoch) {
         producer.close();
         return;
       }
+      // microfone desplugado / permissão revogada pela UI do navegador —
+      // paridade com o trackended da câmera (rev. M4 #4): sem isto a sessão
+      // de voz fica "viva" e muda até um leave manual. A recuperação tenta o
+      // default uma vez antes de desistir (recoverMic).
+      producer.on("trackended", () => {
+        if (this.producer !== producer) return;
+        void this.recoverMic(producer);
+      });
       this.producer = producer;
       // mute/deafen sobrevivem à troca de canal (como no Discord)
       this.applyMute();
@@ -234,18 +323,28 @@ export class VoiceClient {
       // o servidor assume join com flags zerados — só avisa se entramos "sujos"
       if (this.selfMute || this.selfDeaf) void this.pushState();
 
-      // quem já estava no canal antes de nós: consome todos (os novos chegam
-      // depois via VOICE_NEW_PRODUCER, tratado no main.ts) — vídeo vai para o
-      // fluxo de tiles (M4), áudio segue no fluxo de <audio> do M3
+      // quem já estava no canal antes de nós: mic/camera consomem já; TELA e
+      // soundshare NÃO — viram só estado em remoteStreams (viewers sob
+      // demanda, doc §3.6: quem não clicou em "Assistir" não gasta banda)
       for (const p of joined.producers ?? []) {
-        const task = p.kind === "video" ? this.consumeVideo(p.user_id, p.producer_id) : this.consume(p.producer_id);
+        const source = (p.source ?? (p.kind === "video" ? "camera" : "mic")) as ProducerSourceWire;
+        if (source === "screen" || source === "screen_audio") {
+          this.remoteStreams.set(p.producer_id, { userId: p.user_id, source });
+          continue;
+        }
+        const task = source === "camera" ? this.consumeVideo(p.user_id, p.producer_id) : this.consume(p.producer_id);
         void task.catch((err: unknown) => console.warn("voz: consume inicial falhou", err));
       }
       // e quem produziu DURANTE o nosso join (a janela inclui o prompt de
-      // microfone, que dura segundos) ficou na fila — drena agora (rev. M3 #4)
+      // microfone, que dura segundos) ficou na fila — drena agora (rev. M3 #4);
+      // tela na fila segue a mesma política do estoque: só atualiza o estado
       for (const pend of this.pendingProducers.splice(0)) {
+        if (pend.source === "screen" || pend.source === "screen_audio") {
+          this.remoteStreams.set(pend.producerId, { userId: pend.userId, source: pend.source });
+          continue;
+        }
         const task =
-          pend.kind === "video" ? this.consumeVideo(pend.userId, pend.producerId) : this.consume(pend.producerId);
+          pend.source === "camera" ? this.consumeVideo(pend.userId, pend.producerId) : this.consume(pend.producerId);
         void task.catch((err: unknown) => console.warn("voz: consume pendente falhou", err));
       }
     } catch (err) {
@@ -320,7 +419,7 @@ export class VoiceClient {
       // producer nascido durante o nosso join: descartar seria mudez permanente
       // até um re-join (revisão M3 #4) — guarda e o fim do join drena
       if (!this.pendingProducers.some((p) => p.producerId === producerId)) {
-        this.pendingProducers.push({ producerId, userId: "", kind: "audio" });
+        this.pendingProducers.push({ producerId, userId: "", source: "mic" });
       }
       return;
     }
@@ -381,9 +480,9 @@ export class VoiceClient {
    */
   async consumeVideo(userId: string, producerId: string): Promise<void> {
     if (this.phase === "connecting") {
-      // mesma fila do áudio (rev. M3 #4): o fim do join drena com o kind certo
+      // mesma fila do áudio (rev. M3 #4): o fim do join drena com o source certo
       if (!this.pendingProducers.some((p) => p.producerId === producerId)) {
-        this.pendingProducers.push({ producerId, userId, kind: "video" });
+        this.pendingProducers.push({ producerId, userId, source: "camera" });
       }
       return;
     }
@@ -391,15 +490,31 @@ export class VoiceClient {
     const recv = this.recvTransport;
     if (device === null || recv === null) return; // não estamos em voz
     // dedup: o lote do join e um VOICE_NEW_PRODUCER podem trazer o mesmo id
-    if (this.videoConsumers.has(producerId) || this.consuming.has(producerId)) return;
+    if (this.videoConsumers.has(producerId) || this.consuming.has(producerId) || this.failedVideoTiles.has(producerId))
+      return;
     this.consuming.add(producerId);
     const epoch = this.epoch;
     try {
-      const r = (await this.request("consume", {
-        transport_id: recv.id,
-        producer_id: producerId,
-        rtp_capabilities: device.rtpCapabilities,
-      })) as ConsumeResponse;
+      let r: ConsumeResponse;
+      try {
+        r = (await this.request("consume", {
+          transport_id: recv.id,
+          producer_id: producerId,
+          rtp_capabilities: device.rtpCapabilities,
+        })) as ConsumeResponse;
+      } catch (err) {
+        // canConsume=false no servidor: assinante sem o codec do produtor —
+        // permanente, nenhum retry resolve. Sem isto o sintoma era invisível
+        // (📷 aceso na lista, tile nenhum): a UI ganha um placeholder no
+        // lugar do <video> (rev. M4 #2)
+        if (epoch === this.epoch && err instanceof Error && err.message.includes("rtp_capabilities")) {
+          console.warn("voz: vídeo sem codec em comum com o produtor", producerId);
+          this.failedVideoTiles.set(producerId, userId);
+          this.onVideoTileFailed?.(userId, producerId, "codec incompatível");
+          return;
+        }
+        throw err;
+      }
       if (epoch !== this.epoch) return;
 
       const consumer = await recv.consume({
@@ -540,6 +655,7 @@ export class VoiceClient {
           // rampa inicial de 500 kbps: sem isso o BWE começa conservador e a
           // primeira camada útil demora segundos para destravar (doc §3.4)
           codecOptions: { videoGoogleStartBitrate: 500 },
+          appData: { source: "camera" }, // M5: origem no fio (o handler de "produce" repassa)
         });
       } catch (err) {
         // produce recusado (2º producer de vídeo, transport caindo): a câmera
@@ -569,6 +685,348 @@ export class VoiceClient {
   }
 
   /**
+   * Liga/desliga a transmissão de tela (M5, doc §3.5). Ligar = getDisplayMedia
+   * (até 4K@30) → contentHint "detail" no track de vídeo (nitidez de texto
+   * vence fps) → produce source "screen" SEM simulcast — o viewer assiste num
+   * painel grande, então camadas só pagariam encode extra de screen content —
+   * com maxBitrate por tier da captura REAL; se o navegador entregou áudio
+   * (aba/sistema), ele vira um produce source "screen_audio". Desligar =
+   * close_producer da TELA — o servidor derruba o soundshare junto (contrato
+   * M5) — e tracks.stop() local.
+   */
+  async toggleStream(): Promise<void> {
+    if (this.streamProducer !== null) {
+      const producerId = this.streamProducer.id;
+      // local primeiro (tela E soundshare): a UI reage já; o servidor fecha o
+      // par inteiro a partir do close_producer da tela
+      this.stopStreamLocal();
+      this.onChange?.();
+      try {
+        await this.request("close_producer", { producer_id: producerId });
+      } catch (err) {
+        // melhor esforço, como a câmera: o fantasma cai na cascata do doLeave
+        console.warn("voz: close_producer da tela falhou", err);
+      }
+      return;
+    }
+    if (this.phase !== "connected" || this.sendTransport === null) return; // transmitir só com a voz de pé
+    if (this.streamStarting) return; // clique duplo durante o seletor de tela
+    const send = this.sendTransport;
+    this.streamStarting = true;
+    const epoch = this.epoch;
+    try {
+      const capture = await this.captureScreen();
+      // padrão local-var do M3 #5: recurso stale fecha ANTES de qualquer
+      // atribuição — leave/re-join no meio do seletor não vaza track
+      if (epoch !== this.epoch) {
+        capture.video.stop();
+        capture.audio?.stop();
+        if (this.fakeScreen !== null) {
+          // o canvas fake é sempre NOSSO aqui (streamStarting trava reentrância)
+          this.fakeScreen.stop();
+          this.fakeScreen = null;
+        }
+        return;
+      }
+      // atribuídos antes do produce DE PROPÓSITO (padrão da câmera): se o
+      // teardown intercalar com os awaits, ele já sabe parar estes tracks
+      this.screenTrack = capture.video;
+      this.screenAudioTrack = capture.audio;
+      // tier de bitrate pela captura REAL — min(w,h): portrait não
+      // superclassifica; tela 4K de texto precisa de bitrate alto para o
+      // "detail" não virar borrão (contrato M5)
+      const settings = capture.video.getSettings();
+      const dim = Math.min(settings.width ?? 1280, settings.height ?? 720);
+      const maxBitrate =
+        dim >= 2000 ? 12_000_000
+        : dim >= 1300 ? 8_000_000
+        : dim >= 1000 ? 5_000_000
+        : 2_500_000;
+      // mesmo critério de codec da câmera (revisão M5 #1): ≥1080p prefere
+      // H.264 — encode por hardware é o que torna tela 4K viável; VP8 4K em
+      // software derrete CPU e, com contentHint detail, o sacrifício sai todo
+      // em fps. Caps de ENVIO (um device que só decodifica H.264 cai no VP8).
+      const h264 =
+        dim >= 1000
+          ? this.device?.sendRtpCapabilities.codecs?.find((c) => c.mimeType.toLowerCase() === "video/h264")
+          : undefined;
+      let producer: Producer;
+      try {
+        producer = await send.produce({
+          track: capture.video,
+          // stream ÚNICO, sem simulcast (contrato M5): o viewer assiste em
+          // painel grande — camadas não pagam o custo de encode de screen content
+          encodings: [{ maxBitrate }],
+          ...(h264 !== undefined && { codec: h264 }),
+          appData: { source: "screen" },
+        });
+      } catch (err) {
+        // produce recusado (já existe transmissão neste canal — política
+        // §3.6 —, transport caindo): a captura não fica acesa no vácuo
+        if (epoch === this.epoch) this.stopStreamLocal();
+        throw err;
+      }
+      if (epoch !== this.epoch) {
+        producer.close(); // o teardown já parou os tracks; sobra só o producer órfão
+        return;
+      }
+      // botão "Parar compartilhamento" do NAVEGADOR (mesmo padrão do
+      // trackended da câmera, rev. M4 #4): sem isto o badge AO VIVO ficaria
+      // fantasma para todos — o caminho é o mesmo do desligar manual
+      producer.on("trackended", () => {
+        if (this.streamProducer !== producer) return;
+        const producerId = producer.id;
+        this.stopStreamLocal();
+        this.onChange?.();
+        void this.request("close_producer", { producer_id: producerId }).catch(() => undefined);
+      });
+      this.streamProducer = producer;
+      this.onChange?.();
+
+      // soundshare: só quando o usuário marcou "compartilhar áudio" no
+      // seletor (aba/sistema) — o navegador decide se entrega o track
+      if (this.screenAudioTrack !== null) {
+        try {
+          const audioProducer = await send.produce({
+            track: this.screenAudioTrack,
+            // SEM DTX de propósito: áudio de mídia é contínuo — DTX cortaria
+            // o ataque de cada som depois de silêncio (o mic usa DTX; §3.5)
+            appData: { source: "screen_audio" },
+          });
+          if (epoch !== this.epoch) {
+            audioProducer.close(); // o teardown já parou o track; a cascata do leave limpa o servidor
+            return;
+          }
+          if (this.streamProducer !== producer) {
+            // a tela caiu durante o produce do áudio (trackended): soundshare
+            // órfão sem tela não faz sentido — fecha e sinaliza
+            audioProducer.close();
+            void this.request("close_producer", { producer_id: audioProducer.id }).catch(() => undefined);
+            return;
+          }
+          this.streamAudioProducer = audioProducer;
+        } catch (err) {
+          // soundshare recusado mas a TELA vive: transmite mudo, só avisa
+          console.warn("voz: produce do soundshare falhou — transmitindo sem áudio", err);
+          this.screenAudioTrack?.stop();
+          this.screenAudioTrack = null;
+        }
+      }
+    } finally {
+      this.streamStarting = false;
+    }
+  }
+
+  /**
+   * Registra um producer de tela/soundshare REMOTO (VOICE_NEW_PRODUCER com
+   * source screen/screen_audio — o main.ts NÃO consome esses, só delega o
+   * anúncio para cá). Se o soundshare do usuário que JÁ assistimos chegar
+   * atrasado (viewer clicou entre o anúncio da tela e o do áudio), pluga o
+   * som no stream aberto.
+   */
+  registerStreamProducer(userId: string, producerId: string, source: "screen" | "screen_audio"): void {
+    if (this.phase === "connecting") {
+      // mesma fila do join (rev. M3 #4): o drain só atualiza o estado
+      if (!this.pendingProducers.some((p) => p.producerId === producerId)) {
+        this.pendingProducers.push({ producerId, userId, source });
+      }
+      return;
+    }
+    if (this.phase !== "connected") return; // fora de voz o anúncio não interessa
+    this.remoteStreams.set(producerId, { userId, source });
+    if (source === "screen_audio" && this.watching !== null && this.watching.userId === userId) {
+      void this.consumeStreamAudio(producerId).catch((err: unknown) =>
+        console.warn("voz: consume do soundshare falhou", err),
+      );
+    }
+  }
+
+  /**
+   * Assiste a transmissão de um usuário (M5): consome o vídeo source "screen"
+   * (consume + resume — o consumer de stream não usa pause: parar de assistir
+   * é CLOSE, a economia real) e o soundshare do MESMO usuário se anunciado,
+   * entregando UM <video> grande à UI via onStreamView. UM stream por vez:
+   * assistir outro derruba o atual primeiro (close_consumer).
+   */
+  async watchStream(producerId: string, userId: string): Promise<void> {
+    if (this.watching?.screenProducerId === producerId) return; // já assistindo este
+    const device = this.device;
+    const recv = this.recvTransport;
+    if (this.phase !== "connected" || device === null || recv === null) return;
+    if (this.watchStarting) return; // clique duplo durante a sinalização
+    this.stopWatching(); // UM por vez: o atual sai (close_consumer + painel) antes do novo
+    this.watchStarting = true;
+    const epoch = this.epoch;
+    try {
+      const r = (await this.request("consume", {
+        transport_id: recv.id,
+        producer_id: producerId,
+        rtp_capabilities: device.rtpCapabilities,
+      })) as ConsumeResponse;
+      if (epoch !== this.epoch) return; // leave no meio: a cascata do servidor limpa
+      const consumer = await recv.consume({
+        id: r.consumer_id,
+        producerId: r.producer_id,
+        kind: r.kind as "audio" | "video",
+        rtpParameters: r.rtp_parameters as RtpParameters,
+      });
+      if (epoch !== this.epoch) {
+        consumer.close();
+        return;
+      }
+      const stream = new MediaStream([consumer.track]);
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.setAttribute("playsinline", ""); // Safari antigo lê o atributo, não a propriedade
+      // NÃO muted (contrato M5): o soundshare toca por ESTE <video>. Autoplay
+      // sem mute pode ser barrado sem gesto recente — a UI trata o play()
+      // rejeitado (warn + botão de unmute). Deafen silencia o stream também.
+      video.muted = this.selfDeaf;
+      video.srcObject = stream;
+      const watching = {
+        userId,
+        screenProducerId: producerId,
+        video,
+        stream,
+        consumers: new Map<string, Consumer>([[producerId, consumer]]),
+      };
+      this.watching = watching;
+      try {
+        await this.request("resume_consumer", { consumer_id: consumer.id });
+      } catch (err) {
+        // consumer pausado para sempre = painel preto — desfaz tudo e propaga
+        if (this.watching === watching) this.clearWatch(true);
+        throw err;
+      }
+      if (this.watching !== watching) return; // teardown/producer fechado durante o resume
+      this.onStreamView?.(userId, video);
+      // soundshare do mesmo usuário, se anunciado — melhor esforço: a tela
+      // sem áudio ainda vale, o erro só é logado
+      const audioProducerId = this.streamAudioProducerIdOf(userId);
+      if (audioProducerId !== null) {
+        void this.consumeStreamAudio(audioProducerId).catch((err: unknown) =>
+          console.warn("voz: consume do soundshare falhou", err),
+        );
+      }
+    } finally {
+      this.watchStarting = false;
+    }
+  }
+
+  /**
+   * Para de assistir (M5): fecha os consumers do stream localmente E no
+   * servidor via close_consumer — é AQUI que a banda do viewer zera de
+   * verdade (pause deixaria o consumer alocado; close libera, contrato M5).
+   */
+  stopWatching(): void {
+    this.clearWatch(true);
+  }
+
+  /** soundshare anunciado de um usuário (par do streamProducerIdOf, privado). */
+  private streamAudioProducerIdOf(userId: string): string | null {
+    for (const [producerId, info] of this.remoteStreams) {
+      if (info.userId === userId && info.source === "screen_audio") return producerId;
+    }
+    return null;
+  }
+
+  /**
+   * Consome o soundshare para DENTRO do stream assistido: o track de áudio
+   * entra no MESMO MediaStream do <video> grande (sem retocar o srcObject).
+   */
+  private async consumeStreamAudio(producerId: string): Promise<void> {
+    const device = this.device;
+    const recv = this.recvTransport;
+    const target = this.watching;
+    if (device === null || recv === null || target === null) return;
+    // dedup (watchStream × anúncio atrasado podem pedir o mesmo id)
+    if (target.consumers.has(producerId) || this.consuming.has(producerId)) return;
+    this.consuming.add(producerId);
+    const epoch = this.epoch;
+    try {
+      const r = (await this.request("consume", {
+        transport_id: recv.id,
+        producer_id: producerId,
+        rtp_capabilities: device.rtpCapabilities,
+      })) as ConsumeResponse;
+      if (epoch !== this.epoch) return; // leave: a cascata do servidor limpa
+      if (this.watching !== target) {
+        // trocou/parou de assistir durante o consume: a sessão segue VIVA, o
+        // consumer recém-criado não cai sozinho — revalidação pós-await com
+        // close do recurso (padrão M3), aqui via close_consumer
+        void this.request("close_consumer", { consumer_id: r.consumer_id }).catch(() => undefined);
+        return;
+      }
+      const consumer = await recv.consume({
+        id: r.consumer_id,
+        producerId: r.producer_id,
+        kind: r.kind as "audio" | "video",
+        rtpParameters: r.rtp_parameters as RtpParameters,
+      });
+      if (epoch !== this.epoch) {
+        consumer.close();
+        return;
+      }
+      if (this.watching !== target) {
+        consumer.close();
+        void this.request("close_consumer", { consumer_id: consumer.id }).catch(() => undefined);
+        return;
+      }
+      target.consumers.set(producerId, consumer);
+      target.stream.addTrack(consumer.track);
+      try {
+        await this.request("resume_consumer", { consumer_id: consumer.id });
+      } catch (err) {
+        // som pausado para sempre não serve — remove só o áudio; a tela segue
+        target.consumers.delete(producerId);
+        consumer.close();
+        void this.request("close_consumer", { consumer_id: consumer.id }).catch(() => undefined);
+        throw err;
+      }
+    } finally {
+      this.consuming.delete(producerId);
+    }
+  }
+
+  /**
+   * Derruba o stream assistido. signal=true → close_consumer no servidor
+   * (parar de assistir com a sessão viva); false → só local (teardown/producer
+   * fechado: o servidor já fechou — ou vai fechar — os consumers sozinho).
+   */
+  private clearWatch(signal: boolean): void {
+    const w = this.watching;
+    if (w === null) return;
+    // o campo esvazia ANTES dos callbacks (mesmo padrão do teardown de tiles):
+    // nenhum re-render disparado pelo onStreamView enxerga entrada morta
+    this.watching = null;
+    for (const consumer of w.consumers.values()) {
+      consumer.close();
+      if (signal) void this.request("close_consumer", { consumer_id: consumer.id }).catch(() => undefined);
+    }
+    w.consumers.clear();
+    w.video.pause();
+    w.video.srcObject = null;
+    this.onStreamView?.(w.userId, null);
+  }
+
+  /** Desliga a transmissão SÓ localmente: producers, tracks e canvas fake — sem sinalizar. */
+  private stopStreamLocal(): void {
+    this.streamProducer?.close();
+    this.streamProducer = null;
+    this.streamAudioProducer?.close();
+    this.streamAudioProducer = null;
+    this.screenTrack?.stop(); // apaga o indicador de "compartilhando tela" do navegador
+    this.screenTrack = null;
+    this.screenAudioTrack?.stop();
+    this.screenAudioTrack = null;
+    if (this.fakeScreen !== null) {
+      this.fakeScreen.stop();
+      this.fakeScreen = null;
+    }
+  }
+
+  /**
    * VOICE_PRODUCER_CLOSED: normalmente é um consumer nosso que morreu; mas se
    * o id é do NOSSO producer de áudio, o servidor nos tirou da voz (outra
    * sessão deste usuário entrou, transporte dado como morto) — derruba tudo
@@ -586,6 +1044,41 @@ export class VoiceClient {
       this.stopCameraLocal();
       this.onChange?.();
       return;
+    }
+    // NOSSA tela fechada pelo servidor (close server-side com a transmissão
+    // ainda acesa): tela e soundshare caem JUNTOS — soundshare órfão sem tela
+    // não faz sentido (espelho local da defesa do servidor, contrato M5)
+    if (this.streamProducer !== null && this.streamProducer.id === producerId) {
+      this.stopStreamLocal();
+      this.onChange?.();
+      return;
+    }
+    // só o NOSSO soundshare (o servidor fecha o par tela+áudio — o evento da
+    // tela cuida do resto; este ramo é o eco do áudio chegando primeiro)
+    if (this.streamAudioProducer !== null && this.streamAudioProducer.id === producerId) {
+      this.streamAudioProducer.close();
+      this.streamAudioProducer = null;
+      this.screenAudioTrack?.stop();
+      this.screenAudioTrack = null;
+      return;
+    }
+    // stream REMOTO fechado: sai do índice do "Assistir"; se era o que
+    // estávamos assistindo, o painel cai NA HORA (onStreamView null) — sem
+    // close_consumer: o worker já matou os consumers pela cascata do producer
+    this.remoteStreams.delete(producerId);
+    const w = this.watching;
+    if (w !== null) {
+      if (w.screenProducerId === producerId) {
+        this.clearWatch(false);
+        return;
+      }
+      const audioConsumer = w.consumers.get(producerId);
+      if (audioConsumer !== undefined) {
+        // só o soundshare acabou: o som para, a tela continua no painel
+        w.consumers.delete(producerId);
+        audioConsumer.close();
+        return;
+      }
     }
     this.closeConsumer(producerId);
   }
@@ -614,6 +1107,8 @@ export class VoiceClient {
     // deafen local = silenciar os <audio> — os consumers continuam vivos (o
     // servidor nem sabe; un-deafen volta a ouvir sem re-sinalizar nada)
     for (const { audio } of this.consumers.values()) audio.muted = this.selfDeaf;
+    // o soundshare toca pelo <video> do stream assistido — silencia junto (M5)
+    if (this.watching !== null) this.watching.video.muted = this.selfDeaf;
     this.onChange?.();
     await this.pushState();
   }
@@ -640,9 +1135,13 @@ export class VoiceClient {
     });
 
     if (direction === "send") {
-      // produce local → registra no servidor e recebe o id definitivo de volta
-      transport.on("produce", ({ kind, rtpParameters }, callback, errback) => {
-        this.request("produce", { transport_id: transport.id, kind, rtp_parameters: rtpParameters }).then(
+      // produce local → registra no servidor e recebe o id definitivo de volta.
+      // M5: o source viaja no payload (obrigatório no protocolo) — vem do
+      // appData que cada produce local declara; o servidor valida kind×source
+      // e aplica as políticas por origem (1 tela por canal etc., doc §3.6)
+      transport.on("produce", ({ kind, rtpParameters, appData }, callback, errback) => {
+        const source = (appData as { source?: ProducerSourceWire }).source;
+        this.request("produce", { transport_id: transport.id, kind, source, rtp_parameters: rtpParameters }).then(
           (resp) => callback({ id: (resp as { producer_id: string }).producer_id }),
           (err: unknown) => errback(err instanceof Error ? err : new Error(String(err))),
         );
@@ -671,6 +1170,41 @@ export class VoiceClient {
       console.warn("voz: restart de ICE falhou — saindo da voz", err);
       if (epoch === this.epoch) this.leaveLocal();
     }
+  }
+
+  /**
+   * Track do microfone morreu (headset desplugado, permissão revogada).
+   * Recaptura o dispositivo default UMA vez — cobre "troquei de fone" sem
+   * derrubar a chamada; se nem isso der (permissão revogada, nenhum mic
+   * restante), sai da voz: sessão sem microfone é um fantasma mudo no canal.
+   */
+  private async recoverMic(producer: Producer): Promise<void> {
+    const epoch = this.epoch;
+    let track: MediaStreamTrack;
+    try {
+      track = await this.captureAudio();
+    } catch (err) {
+      console.warn("voz: microfone perdido e a recaptura falhou — saindo da voz", err);
+      if (epoch === this.epoch) void this.leave();
+      return;
+    }
+    if (epoch !== this.epoch || this.producer !== producer) {
+      track.stop(); // a voz caiu/trocou de canal durante a recaptura
+      return;
+    }
+    // atribuído ANTES do replaceTrack (mesmo padrão do camTrack no
+    // toggleCamera): se um teardown intercalar com o await, ele já sabe
+    // parar o track novo
+    this.micTrack?.stop();
+    this.micTrack = track;
+    try {
+      await producer.replaceTrack({ track });
+    } catch (err) {
+      console.warn("voz: replaceTrack do microfone falhou — saindo da voz", err);
+      if (epoch === this.epoch) void this.leave();
+      return;
+    }
+    this.applyMute(); // o track novo nasce enabled — reimpõe mute/deafen
   }
 
   private async captureAudio(): Promise<MediaStreamTrack> {
@@ -744,6 +1278,60 @@ export class VoiceClient {
     return track;
   }
 
+  private async captureScreen(): Promise<{ video: MediaStreamTrack; audio: MediaStreamTrack | null }> {
+    // gancho de TESTE: o mesmo ?fakeaudio=1 troca o getDisplayMedia por uma
+    // "tela" canvas 1280x720 — texto GRANDE (prova o contentHint "detail" no
+    // viewer) e um contador em movimento (frame congelado fica óbvio) — via
+    // captureStream(15), sem seletor. SEM áudio: verificação silenciosa, nada
+    // de oscilador novo (contrato M5).
+    if (FAKE_AUDIO) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext("2d");
+      if (ctx === null) throw new Error("voz: canvas 2d indisponível para a tela fake");
+      const anim = { raf: 0, count: 0 };
+      const draw = (): void => {
+        anim.count += 1;
+        ctx.fillStyle = "#10141a";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.font = "120px monospace";
+        ctx.fillText("TELA FAKE", canvas.width / 2, 260);
+        // o contador desliza em senoide: qualquer stutter/congelamento salta aos olhos
+        const x = canvas.width / 2 + Math.sin(anim.count / 20) * 380;
+        ctx.font = "80px monospace";
+        ctx.fillText(String(anim.count), x, 500);
+        anim.raf = requestAnimationFrame(draw);
+      };
+      draw();
+      const track = canvas.captureStream(15).getVideoTracks()[0];
+      if (track === undefined) {
+        cancelAnimationFrame(anim.raf); // sem track ninguém pararia o loop
+        throw new Error("voz: tela fake sem track");
+      }
+      track.contentHint = "detail"; // mesmo hint da captura real
+      this.fakeScreen = { stop: () => cancelAnimationFrame(anim.raf) };
+      return { video: track, audio: null };
+    }
+    // resolução ALTA / fps moderado (doc §3.5): tela é texto e UI — nitidez
+    // importa mais que fluidez. audio: true pede o som da aba/sistema; o
+    // navegador só entrega se o usuário marcar no seletor (senão: tela muda).
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30 } },
+      audio: true,
+    });
+    const video = stream.getVideoTracks()[0];
+    if (video === undefined) throw new Error("voz: getDisplayMedia sem track de vídeo");
+    // contentHint "detail": sob pressão de banda o encoder preserva nitidez
+    // (texto legível) e sacrifica fps — o oposto do "motion" da câmera (§3.5)
+    video.contentHint = "detail";
+    const audio = stream.getAudioTracks()[0] ?? null;
+    return { video, audio };
+  }
+
   /** Desliga a câmera SÓ localmente: producer, track e canvas fake — sem sinalizar. */
   private stopCameraLocal(): void {
     this.videoProducer?.close();
@@ -786,7 +1374,16 @@ export class VoiceClient {
     // tile de vídeo (M4): fecha o consumer, solta o stream e avisa a UI para
     // tirar o tile da grade (el null é o contrato de remoção do onVideoTile)
     const tile = this.videoConsumers.get(producerId);
-    if (tile === undefined) return;
+    if (tile === undefined) {
+      // placeholder de codec incompatível (rev. M4 #2): não há consumer, mas
+      // a UI tem um tile — a remoção sai pelo mesmo contrato (el null)
+      const failedUser = this.failedVideoTiles.get(producerId);
+      if (failedUser !== undefined) {
+        this.failedVideoTiles.delete(producerId);
+        this.onVideoTile?.(failedUser, producerId, null);
+      }
+      return;
+    }
     this.videoConsumers.delete(producerId);
     tile.consumer.close();
     tile.video.srcObject = null;
@@ -811,10 +1408,19 @@ export class VoiceClient {
       tile.video.srcObject = null;
       this.onVideoTile?.(tile.userId, producerId, null);
     }
+    // placeholders de codec incompatível saem pelo mesmo contrato (el null)
+    const failed = [...this.failedVideoTiles.entries()];
+    this.failedVideoTiles.clear();
+    for (const [producerId, userId] of failed) this.onVideoTile?.(userId, producerId, null);
+    // stream assistido (M5): SEM sinalizar (estamos saindo — a cascata do
+    // servidor fecha os consumers); o onStreamView null derruba o painel
+    this.clearWatch(false);
+    this.remoteStreams.clear(); // o índice do "Assistir" é por canal — zera junto
     this.consuming.clear();
     this.producer?.close();
     this.producer = null;
     this.stopCameraLocal(); // câmera cai junto: producer de vídeo, track e canvas fake
+    this.stopStreamLocal(); // transmissão idem: producers (tela+som), tracks e canvas fake
     this.sendTransport?.close();
     this.sendTransport = null;
     this.recvTransport?.close();

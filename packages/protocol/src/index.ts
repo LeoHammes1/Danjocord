@@ -78,12 +78,23 @@ export const Message = z.object({
 export type Message = z.infer<typeof Message>;
 
 /**
+ * M5 (doc §3.5/§3.6): origem SEMÂNTICA de um producer. O `kind` diz o que a
+ * mídia é (audio/video); o `source` diz de onde vem e quais políticas valem —
+ * só "mic" alimenta o audioLevelObserver do speaking; "screen" é 1 por sessão
+ * E 1 por canal; "screen_audio" (soundshare) só existe acompanhando a tela.
+ * Pareamento obrigatório: mic/screen_audio = audio; camera/screen = video.
+ */
+export const ProducerSource = z.enum(["mic", "camera", "screen", "screen_audio"]);
+export type ProducerSource = z.infer<typeof ProducerSource>;
+
+/**
  * Estado de voz de um usuário (M3, doc §3.6). channel_id null = fora de voz
  * (é assim que um leave viaja no VOICE_STATE_UPDATE). Os flags são
  * declarativos: o mute REAL acontece no cliente (track.enabled) — o servidor
- * só espalha a intenção para a UI dos outros. Exceção: self_video (M4) é
- * DERIVADO no servidor (existe producer de vídeo vivo na sessão) — nunca vem
- * de payload de cliente, então o flag não consegue mentir sobre a mídia.
+ * só espalha a intenção para a UI dos outros. Exceção: self_video (M4) e
+ * self_stream (M5) são DERIVADOS no servidor (existe producer da source viva
+ * na sessão) — nunca vêm de payload de cliente, então os flags não conseguem
+ * mentir sobre a mídia.
  */
 export const VoiceState = z.object({
   user_id: z.string(),
@@ -92,6 +103,8 @@ export const VoiceState = z.object({
   self_deaf: z.boolean(),
   /** M4: câmera ligada (indicador na lista de participantes) — derivado, ver acima */
   self_video: z.boolean(),
+  /** M5: transmitindo a tela (badge "AO VIVO" na lista) — derivado, ver acima */
+  self_stream: z.boolean(),
 });
 export type VoiceState = z.infer<typeof VoiceState>;
 
@@ -145,16 +158,20 @@ export const TypingStartData = z.object({
 export type TypingStartData = z.infer<typeof TypingStartData>;
 
 /**
- * Producer novo num canal de voz (M3; M4 soma vídeo): quem está no canal
- * consome sob demanda. Vai para TODO mundo (broadcast simples); o dono do
- * producer se reconhece pelo user_id e não consome a si mesmo. `kind` diz ao
- * cliente COMO consumir: áudio → <audio> fora do DOM; vídeo → tile na grade.
+ * Producer novo num canal de voz (M3; M4 soma vídeo; M5 soma screen share):
+ * quem está no canal consome sob demanda. Vai para TODO mundo (broadcast
+ * simples); o dono do producer se reconhece pelo user_id e não consome a si
+ * mesmo. `kind` diz ao cliente COMO consumir: áudio → <audio> fora do DOM;
+ * vídeo → tile na grade. `source` (M5) diz SE consumir: "screen" e
+ * "screen_audio" NÃO são consumidos no anúncio — viewers assistem sob demanda
+ * (watchStream), quem não clicou não gasta banda (doc §3.6).
  */
 export const VoiceNewProducerData = z.object({
   channel_id: z.string(),
   user_id: z.string(),
   producer_id: z.string(),
   kind: z.enum(["audio", "video"]),
+  source: ProducerSource,
 });
 export type VoiceNewProducerData = z.infer<typeof VoiceNewProducerData>;
 
@@ -260,20 +277,36 @@ export type VoiceConnectTransportParams = z.infer<typeof VoiceConnectTransportPa
 
 /**
  * m: "produce" → { producer_id }. M4: kind "video" entra pelo MESMO send
- * transport (webcam com simulcast de 3 camadas, doc §3.4) — no máximo UM
- * producer de vídeo por sessão neste milestone (o segundo é erro).
+ * transport (webcam com simulcast de 3 camadas, doc §3.4). M5: `source` é
+ * OBRIGATÓRIO e o schema valida o pareamento kind×source (mic/screen_audio =
+ * audio; camera/screen = video). Regras por source no servidor: cada source é
+ * única por sessão; "screen" também é única por CANAL (doc §3.6);
+ * "screen_audio" exige a tela da mesma sessão viva.
  */
-export const VoiceProduceParams = z.object({
-  transport_id: z.string(),
-  kind: z.enum(["audio", "video"]),
-  rtp_parameters: z.unknown(),
-});
+export const VoiceProduceParams = z
+  .object({
+    transport_id: z.string(),
+    kind: z.enum(["audio", "video"]),
+    source: ProducerSource,
+    rtp_parameters: z.unknown(),
+  })
+  .superRefine((v, ctx) => {
+    // pareamento kind×source no SCHEMA: combinação impossível nem chega ao
+    // mediasoup — e a mensagem curta viaja no campo error do op 21
+    const expected = v.source === "mic" || v.source === "screen_audio" ? "audio" : "video";
+    if (v.kind !== expected) {
+      ctx.addIssue({ code: "custom", message: `source "${v.source}" exige kind "${expected}"` });
+    }
+  });
 export type VoiceProduceParams = z.infer<typeof VoiceProduceParams>;
 
 /**
  * m: "close_producer" → {} (M4: desligar a câmera SEM sair da voz). O servidor
- * broadcasta VOICE_PRODUCER_CLOSED; se o producer era de vídeo, também um
- * VOICE_STATE_UPDATE com self_video=false. producer_id alheio → erro.
+ * broadcasta VOICE_PRODUCER_CLOSED; se o producer era "camera", também um
+ * VOICE_STATE_UPDATE com self_video=false. M5: fechar um producer "screen"
+ * fecha TAMBÉM o "screen_audio" da mesma sessão, se existir (soundshare órfão
+ * sem tela não faz sentido) — sai o VOICE_PRODUCER_CLOSED de ambos e um
+ * VOICE_STATE_UPDATE com self_stream=false. producer_id alheio → erro.
  */
 export const VoiceCloseProducerParams = z.object({ producer_id: z.string() });
 export type VoiceCloseProducerParams = z.infer<typeof VoiceCloseProducerParams>;
@@ -297,6 +330,16 @@ export type VoiceResumeConsumerParams = z.infer<typeof VoiceResumeConsumerParams
  */
 export const VoicePauseConsumerParams = z.object({ consumer_id: z.string() });
 export type VoicePauseConsumerParams = z.infer<typeof VoicePauseConsumerParams>;
+
+/**
+ * m: "close_consumer" → {} (M5): o viewer PAROU de assistir uma transmissão —
+ * libera o consumer no servidor de vez. Diferente do pause (que deixa o
+ * consumer alocado para religar barato), o close devolve os recursos: é a
+ * economia real do modelo "viewers sob demanda" do doc §3.6. consumer_id
+ * alheio → erro.
+ */
+export const VoiceCloseConsumerParams = z.object({ consumer_id: z.string() });
+export type VoiceCloseConsumerParams = z.infer<typeof VoiceCloseConsumerParams>;
 
 /**
  * m: "set_preferred_layers" → {} (M4, doc §3.4): camada de simulcast que ESTE
