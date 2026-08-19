@@ -22,6 +22,16 @@ services:
       DANJOCORD_DEV_AUTH: "1"
       DB_PATH: /app/apps/server/data/danjocord.db
       ANNOUNCED_IP: "127.0.0.1" # browser no host alcança o worker pela porta mapeada
+      # OAuth do Discord (M1). Os valores vêm do .env da raiz, que o compose lê
+      # sozinho e o git ignora — o secret nunca entra no repo. Ausentes, o
+      # /auth/discord/start responde 503 e só o login de dev funciona; é por
+      # isso que o `:-` está aqui, para o compose subir sem o .env.
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      # PUBLIC_BASE_URL e APP_URL ficam nos defaults do config.ts de propósito
+      # (http://localhost:8080 e http://localhost:5173): em dev o vite serve o
+      # cliente numa origem e o backend responde noutra. Fixá-los aqui só
+      # criaria uma segunda fonte da verdade para o redirect_uri.
     volumes:
       - danjocord-data:/app/apps/server/data
     develop:

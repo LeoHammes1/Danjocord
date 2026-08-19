@@ -96,12 +96,13 @@ spec:
             # DESCARTADO de propósito: "o primeiro que logar vira dono" — o
             # Ingress é público e quem passasse na frente levaria o servidor.
             #
-            # Preencha com o SEU id do Discord (Configurações → Avançado →
-            # Modo desenvolvedor → clique com o botão direito no seu nome →
-            # Copiar ID) e aplique ANTES do primeiro login. Sem ele e com a
-            # allowlist vazia, o servidor loga um aviso explicando isto no boot.
-            # - name: DANJOCORD_OWNER_DISCORD_ID
-            #   value: "000000000000000000"
+            # Vale ANTES do primeiro login. Sem ele e com a allowlist vazia, o
+            # servidor loga um aviso explicando isto no boot.
+            #
+            # Não é segredo (é um id público do Discord), então fica no manifest
+            # e não no Secret — quem lê o deploy precisa saber de quem é a guild.
+            - name: DANJOCORD_OWNER_DISCORD_ID
+              value: "215666123834654720"     # Leonardo
           ports:
             - containerPort: 8080           # HTTP + WS → via Traefik
             - containerPort: 40000          # mídia SRTP (M3) — direto no nó

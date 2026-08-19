@@ -273,6 +273,26 @@ deixam de ser opcionais.
   reuso, na tabela `sessions`. A auth de desenvolvimento continua existindo:
   token `dev.<username>` e `POST /auth/dev` (só com `DANJOCORD_DEV_AUTH=1`,
   default fora de produção — NUNCA ligar em produção).
+- **Credenciais de dev ficam no `.env` da raiz** (gitignored). O `config.ts` o
+  carrega com `process.loadEnvFile` porque só o `docker compose` lê esse arquivo
+  sozinho — sem isso, `pnpm dev` dava 503 em `/auth/discord/start` com o `.env`
+  preenchido do lado, sintoma que não aponta para nada. `loadEnvFile` **não
+  sobrescreve** o que já existe em `process.env`: shell, container e Secret do
+  k8s vencem o arquivo, e é isso que mantém os testes imunes a ele.
+- **O `redirect_uri` do OAuth tem uma fonte só**: `PUBLIC_BASE_URL +
+  "/auth/discord/callback"`, calculado **uma vez no boot** (`oauth.ts`), nunca
+  derivado do header `Host`. Trocar de ambiente é trocar `PUBLIC_BASE_URL` e
+  cadastrar a URL correspondente no Developer Portal — dev
+  (`http://localhost:8080`), staging (`https://danjocord.local.leohammes.dev`)
+  e produção (`https://danjocord.leohammes.dev`). O `APP_URL` é **outra coisa**:
+  é para onde o navegador volta com o one-time code; na imagem de produção
+  (`NODE_ENV=production`) ele cai em `PUBLIC_BASE_URL`, então num ambiente que
+  define um e esquece o outro o login "termina" numa URL vazia.
+- **Nada de `127.0.0.1` vai ao Developer Portal.** O loopback do desktop (M6) é
+  um segundo 302, do NOSSO callback, depois de o OAuth já ter acabado — o
+  Discord nunca vê a porta (`test/oauth-loopback.test.ts` crava isso). Porta
+  aleatória nem seria cadastrável: o Discord casa redirect URI por igualdade
+  exata, sem curinga.
 - Migrations: arquivos `NNN_nome.sql` em `apps/server/migrations`, aplicados
   em ordem no boot. Nunca editar migration aplicada; criar a próxima.
 - Estado efêmero (presença, voice states, ring buffers) vive **em memória** —

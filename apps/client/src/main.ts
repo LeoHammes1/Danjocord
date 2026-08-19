@@ -618,12 +618,12 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
 // ---------------------------------------------------------------------------
 
 /**
- * GatewayClient não conhece close codes nem troca de token (e pertence a outro
- * pacote de trabalho — não pode ser alterado agora). Esta subclasse observa o
- * close 4004 (AuthenticationFailed: access vencido no Identify) por fora; o
- * cast para alcançar o ws privado é o preço de não tocar gateway.ts. Como o
- * token de uma instância é fixo, renovar = descartar a instância e criar outra
- * — o flag `stopped` corta o auto-reconnect interno da instância descartada.
+ * O token de uma instância é fixo, então renovar = descartar a instância e
+ * criar outra; o flag `stopped` corta o auto-reconnect interno da descartada.
+ *
+ * O close code chega pelo evento `closed` do GatewayEvents. Antes ele era lido
+ * alcançando o campo `ws` PRIVADO do GatewayClient por um cast — remendo que só
+ * enxergava o 4004 e deixava o 4016 virar laço infinito de reconexão.
  */
 class AuthGateway extends GatewayClient {
   private stopped = false;
@@ -631,15 +631,6 @@ class AuthGateway extends GatewayClient {
   override connect(): void {
     if (this.stopped) return; // o scheduleReconnect interno chama connect(); aqui o ciclo morre
     super.connect();
-    const ws = (this as unknown as { ws?: WebSocket | null }).ws;
-    if (ws === undefined) {
-      // o campo privado sumiu numa refatoração do gateway.ts — falhar alto é
-      // melhor que reconectar para sempre com token morto sem enxergar o 4004
-      throw new Error("AuthGateway: GatewayClient.ws mudou — atualizar o observador do close 4004");
-    }
-    ws?.addEventListener("close", (ev) => {
-      if (ev.code === CloseCode.AuthenticationFailed) void onGatewayAuthFailed(this);
-    });
   }
 
   stop(): void {
@@ -958,6 +949,13 @@ function startGateway(): void {
     dispatch: (t, d) => {
       if (gw === currentGateway) onDispatch(t, d);
     },
+    // o close code separa casos que pedem ações OPOSTAS; o resto (queda de
+    // rede, 1006, servidor reiniciando) fica com o backoff do GatewayClient
+    closed: (code) => {
+      if (gw !== currentGateway) return;
+      if (code === CloseCode.AuthenticationFailed) void onGatewayAuthFailed(gw);
+      else if (code === CloseCode.NotAMember) void onNoLongerMember();
+    },
   });
   currentGateway = gw;
   gw.connect();
@@ -994,7 +992,7 @@ async function onGatewayRetry(): Promise<void> {
   if (currentGateway !== null) startGateway();
 }
 
-async function doLogout(): Promise<void> {
+async function doLogout(motivo?: string): Promise<void> {
   // avisa o "leave" de voz ANTES de derrubar o gateway — senão o fantasma
   // fica no canal para os outros até a sessão expirar no servidor (~2 min)
   await voice.leave();
@@ -1002,7 +1000,21 @@ async function doLogout(): Promise<void> {
   currentGateway = null;
   await logout();
   resetState();
-  showLogin();
+  showLogin(motivo);
+}
+
+/**
+ * Close 4016 (M10 item 114): a sessão perdeu o direito de existir DEPOIS do
+ * Identify — kick, ban, cargo revogado ou allowlist mexida por fora pelo CLI.
+ *
+ * Precisa de caminho próprio porque é o oposto do 4004: ali o token está velho
+ * e renovar resolve; aqui NENHUM token resolve, e o servidor repete o mesmo
+ * close a cada tentativa. Sem isto o cliente reconectava para sempre e ficava
+ * presa a faixa "Sem conexão — tentando reconectar…", que descreve um problema
+ * de rede e esconde o de verdade: você não está mais no servidor.
+ */
+async function onNoLongerMember(): Promise<void> {
+  await doLogout("Você não faz mais parte deste servidor.");
 }
 
 // ---------------------------------------------------------------------------

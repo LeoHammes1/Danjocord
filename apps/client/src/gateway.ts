@@ -1,4 +1,11 @@
-import { Op, ServerMessage, type DispatchEvent, type DispatchName, type PresenceStatus } from "@danjocord/protocol";
+import {
+  CloseCode,
+  Op,
+  ServerMessage,
+  type DispatchEvent,
+  type DispatchName,
+  type PresenceStatus,
+} from "@danjocord/protocol";
 
 export type GatewayStatus = "connecting" | "online" | "resuming" | "offline";
 
@@ -7,6 +14,14 @@ type DispatchPayload<T extends DispatchName> = Extract<DispatchEvent, { t: T }>[
 interface GatewayEvents {
   status: (status: GatewayStatus) => void;
   dispatch: <T extends DispatchName>(t: T, d: DispatchPayload<T>) => void;
+  /**
+   * Close code do socket, cru. Existe porque "offline" não distingue os casos
+   * que exigem ações OPOSTAS: 4004 quer renovar o token e reconectar, 4016 quer
+   * parar de tentar e voltar ao login, e uma queda de rede quer só o backoff.
+   * Antes disto o main.ts alcançava o `ws` privado por um cast para enxergar o
+   * 4004 — e o 4016, que nem era observado, virava laço infinito.
+   */
+  closed: (code: number, reason: string) => void;
 }
 
 /**
@@ -41,17 +56,38 @@ export class GatewayClient {
     this.ws = new WebSocket(this.url);
 
     this.ws.addEventListener("message", (ev) => {
-      const msg = ServerMessage.parse(JSON.parse(String(ev.data)));
+      // Frame que não casa com o schema NÃO pode derrubar o handler (roadmap
+      // 115). Sem este try/catch a exceção subia do listener e a mensagem
+      // sumia em silêncio — e quando a engolida era um HeartbeatAck, o
+      // `ackPending` ficava presa e o PRÓPRIO cliente fechava o socket um
+      // batimento depois com 4900. O sintoma era "conexão instável"; a causa
+      // era schema. Ignorar o frame também é o que dá compatibilidade para
+      // frente: servidor novo com evento que este cliente ainda não conhece
+      // deixa de derrubar a sessão inteira.
+      let msg: ReturnType<typeof ServerMessage.parse>;
+      try {
+        msg = ServerMessage.parse(JSON.parse(String(ev.data)));
+      } catch (err) {
+        console.warn("gateway: frame ignorado, não casa com o schema", err);
+        return;
+      }
       this.onMessage(msg);
     });
 
-    this.ws.addEventListener("close", () => {
+    this.ws.addEventListener("close", (ev) => {
       this.stopHeartbeat();
       // requests de voz em voo morrem com o socket: rejeitar já é melhor que
       // deixar cada um esperar o próprio timeout de 10s (contrato do M3)
       this.rejectPending(new Error("gateway desconectado"));
       this.events.status("offline");
-      if (!this.closedByUser) this.scheduleReconnect();
+      this.events.closed(ev.code, ev.reason);
+      if (this.closedByUser) return;
+      // 4016 (NotAMember, M10 item 114): kick, ban, cargo revogado ou allowlist
+      // mexida por fora. O servidor vai repetir o MESMO close a cada tentativa,
+      // então reconectar produz um laço infinito preso em "Sem conexão —
+      // tentando reconectar…". Quem decide o destino é o dono de `closed`.
+      if (ev.code === CloseCode.NotAMember) return;
+      this.scheduleReconnect();
     });
   }
 

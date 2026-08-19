@@ -1,5 +1,11 @@
 .git
 .github
+# credenciais locais (DISCORD_CLIENT_SECRET). Hoje a imagem já não as pega
+# porque o Dockerfile copia caminhos específicos em vez de `COPY . .` — esta
+# linha é para que continue verdade quando alguém mudar isso.
+.env
+.env.*
+certs
 node_modules
 **/node_modules
 **/dist

@@ -1,3 +1,20 @@
+// .env da raiz do monorepo, quando existe. Só o `docker compose` lê esse
+// arquivo sozinho; `pnpm dev` (tsx, fora do Docker) não — e o sintoma é um 503
+// em /auth/discord/start com o .env preenchido ali do lado, o que não sugere
+// nada. Vale para credenciais de dev; produção passa tudo por env de verdade.
+//
+// `loadEnvFile` NÃO sobrescreve o que já está em process.env: shell, container
+// e Secret do k8s vencem o arquivo, que só preenche lacunas. É o que mantém os
+// testes (que setam process.env antes de importar isto) imunes ao arquivo.
+//
+// O caminho sobe três níveis a partir DESTE módulo, e não do cwd, para valer
+// igual em src/ e em dist/ — os dois ficam um nível abaixo de apps/server.
+try {
+  process.loadEnvFile(new URL("../../../.env", import.meta.url));
+} catch {
+  // sem .env é o caso normal (produção, CI, clone recém-feito)
+}
+
 const env = process.env;
 
 export const config = {
