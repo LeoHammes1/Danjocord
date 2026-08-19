@@ -1,4 +1,4 @@
-import type { Channel, Message, Sound, User } from "@danjocord/protocol";
+import type { Channel, Message, Role, Sound, User } from "@danjocord/protocol";
 import type { Db } from "./db/index.js";
 import { idFromString, idToString, nextId } from "./db/snowflake.js";
 
@@ -12,7 +12,13 @@ interface UserRow {
   discord_id: string | null;
   username: string;
   avatar_url: string | null;
-  is_admin: bigint;
+  /** M10: cargo (migration 004) — substituiu o booleano is_admin do M2 */
+  role: Role;
+  /** M10 (item 55): identidade da guild — o upsert do OAuth NUNCA toca nestas duas */
+  nickname: string | null;
+  avatar_override: string | null;
+  /** M10 (item 53): timeout de chat em epoch ms; null = livre */
+  muted_until: bigint | null;
   created_at: bigint;
 }
 
@@ -67,11 +73,25 @@ export class Store {
 
   constructor(private readonly db: Db) {}
 
+  /**
+   * Linha → entidade do fio. O `avatar_url` sai RESOLVIDO (override da guild na
+   * frente do que veio do Discord) porque só existe um lugar na UI que mostra
+   * avatar; o `nickname` viaja cru ao lado do `username` porque a UI quer os
+   * dois (apelido na lista, nome do Discord no card do membro) — quem resolve
+   * o nome exibido é o `displayName()` do protocolo, num lugar só.
+   */
   userToWire(row: UserRow): User {
-    const user: User = { id: idToString(row.id), username: row.username, avatar_url: row.avatar_url };
-    // omitido quando 0: ausente = false no fio, e o caso comum não carrega o campo
-    if (row.is_admin !== 0n) user.is_admin = true;
-    return user;
+    return {
+      id: idToString(row.id),
+      username: row.username,
+      nickname: row.nickname,
+      avatar_url: row.avatar_override ?? row.avatar_url,
+      role: row.role,
+      // resolvido aqui: timeout vencido vira null no fio, e nenhum cliente
+      // precisa comparar relógio com o servidor para saber se ainda vale
+      muted_until:
+        row.muted_until !== null && Number(row.muted_until) > Date.now() ? Number(row.muted_until) : null,
+    };
   }
 
   getUserById(id: bigint): User | null {
@@ -89,7 +109,10 @@ export class Store {
     this.db
       .prepare("INSERT INTO users (id, discord_id, username, avatar_url, created_at) VALUES (?, NULL, ?, NULL, ?)")
       .run(id, username, Date.now());
-    const user: User = { id: idToString(id), username, avatar_url: null };
+    // relê em vez de montar o objeto na mão: os defaults do esquema (role)
+    // saem de UM lugar só — senão, no dia em que um default mudar, o fio mente
+    const user = this.getUserById(id);
+    if (!user) throw new Error("store: usuário dev recém-criado sumiu");
     this.onUserCreated?.(user);
     return user;
   }
@@ -105,6 +128,10 @@ export class Store {
       | UserRow
       | undefined;
     if (existing) {
+      // ATENÇÃO (M10, item 55): este UPDATE roda a CADA login. `nickname`,
+      // `avatar_override` e `role` estão fora dele DE PROPÓSITO — se o apelido
+      // morasse em `username`, o próximo login do Discord o apagaria sem que
+      // ninguém percebesse. Não acrescente coluna da guild a esta linha.
       this.db.prepare("UPDATE users SET username = ?, avatar_url = ? WHERE id = ?").run(username, avatarUrl, existing.id);
       return { user: this.userToWire({ ...existing, username, avatar_url: avatarUrl }), created: false };
     }
@@ -112,21 +139,123 @@ export class Store {
     this.db
       .prepare("INSERT INTO users (id, discord_id, username, avatar_url, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(id, discordId, username, avatarUrl, Date.now());
-    const user: User = { id: idToString(id), username, avatar_url: avatarUrl };
+    const user = this.getUserById(id);
+    if (!user) throw new Error("store: usuário recém-criado sumiu");
     this.onUserCreated?.(user);
     return { user, created: true };
   }
 
-  isAdmin(userId: string): boolean {
-    const row = this.db.prepare("SELECT is_admin FROM users WHERE id = ?").get(idFromString(userId)) as
-      | { is_admin: bigint }
+  /** Cargo de um usuário; null = não existe. Fonte única de permissão (M10). */
+  getRole(userId: string): Role | null {
+    const row = this.db.prepare("SELECT role FROM users WHERE id = ?").get(idFromString(userId)) as
+      | { role: Role }
       | undefined;
-    return row !== undefined && row.is_admin !== 0n;
+    return row?.role ?? null;
   }
 
+  /** admin OU owner. Mantém o nome do M2 — é o que voice.ts e as rotas chamam. */
+  isAdmin(userId: string): boolean {
+    const role = this.getRole(userId);
+    return role === "admin" || role === "owner";
+  }
+
+  /**
+   * Membros da guild AGORA (M10, item 52). Até o M9 isto devolvia TODOS os
+   * users da tabela — inclusive quem já tinha sido expulso, que seguia na lista
+   * de todo mundo para sempre. A linha em `users` não some (mensagens antigas
+   * apontam para ela); quem decide pertencimento é a allowlist.
+   *
+   * Usuário de desenvolvimento (discord_id NULL) não passa por allowlist e
+   * entra sempre — em produção ele não existe (devAuth desligado).
+   */
   listMembers(): User[] {
-    const rows = this.db.prepare("SELECT * FROM users ORDER BY username").all() as UserRow[];
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM users WHERE discord_id IS NULL" +
+          " OR discord_id IN (SELECT discord_id FROM allowlist) ORDER BY username",
+      )
+      .all() as UserRow[];
     return rows.map((r) => this.userToWire(r));
+  }
+
+  /**
+   * O usuário ainda pertence à guild? É a pergunta que o gateway refaz a cada
+   * heartbeat (roadmap 114) — por isso são queries diretas, sem join caro.
+   * Banido perde na hora mesmo que a allowlist ainda não tenha sido limpa:
+   * ban tem prioridade sobre tudo, sempre.
+   */
+  isMember(userId: string): boolean {
+    const row = this.db.prepare("SELECT discord_id FROM users WHERE id = ?").get(idFromString(userId)) as
+      | { discord_id: string | null }
+      | undefined;
+    if (row === undefined) return false;
+    if (row.discord_id === null) return true; // usuário dev: fora do fluxo de allowlist
+    if (this.db.prepare("SELECT 1 FROM bans WHERE discord_id = ?").get(row.discord_id) !== undefined) return false;
+    return this.db.prepare("SELECT 1 FROM allowlist WHERE discord_id = ?").get(row.discord_id) !== undefined;
+  }
+
+  /** discord_id do usuário (null = usuário dev, ou id desconhecido). */
+  discordIdOf(userId: string): string | null {
+    const row = this.db.prepare("SELECT discord_id FROM users WHERE id = ?").get(idFromString(userId)) as
+      | { discord_id: string | null }
+      | undefined;
+    return row?.discord_id ?? null;
+  }
+
+  getUserByDiscordId(discordId: string): User | null {
+    const row = this.db.prepare("SELECT * FROM users WHERE discord_id = ?").get(discordId) as UserRow | undefined;
+    return row ? this.userToWire(row) : null;
+  }
+
+  /** Existe algum owner? Guarda a invariante "a guild nunca fica sem dono". */
+  hasOwner(): boolean {
+    return this.db.prepare("SELECT 1 FROM users WHERE role = 'owner'").get() !== undefined;
+  }
+
+  /** Troca o cargo. QUEM pode trocar é decisão das rotas (moderation.ts). */
+  setRole(userId: string, role: Role): User | null {
+    this.db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, idFromString(userId));
+    return this.getUserById(idFromString(userId));
+  }
+
+  /**
+   * Identidade da guild (item 55). `undefined` = não mexe; `null` = limpa e
+   * volta ao que veio do Discord — os dois casos PRECISAM ser distinguíveis,
+   * senão não existe como remover um apelido depois de pôr um.
+   */
+  updateGuildIdentity(
+    userId: string,
+    patch: { nickname?: string | null; avatarOverride?: string | null },
+  ): User | null {
+    const id = idFromString(userId);
+    if (patch.nickname !== undefined) {
+      this.db.prepare("UPDATE users SET nickname = ? WHERE id = ?").run(patch.nickname, id);
+    }
+    if (patch.avatarOverride !== undefined) {
+      this.db.prepare("UPDATE users SET avatar_override = ? WHERE id = ?").run(patch.avatarOverride, id);
+    }
+    return this.getUserById(id);
+  }
+
+  /**
+   * Timeout de chat (item 53). Ao contrário dos flags de voz, vai ao BANCO: um
+   * silêncio de 24 h que evapora no deploy da noite não é punição nenhuma.
+   * `until = null` libera.
+   */
+  setMutedUntil(userId: string, until: number | null): void {
+    this.db.prepare("UPDATE users SET muted_until = ? WHERE id = ?").run(until, idFromString(userId));
+  }
+
+  /** Quando o silêncio acaba (epoch ms), ou null se não há timeout ATIVO. */
+  mutedUntil(userId: string, now: number = Date.now()): number | null {
+    const row = this.db.prepare("SELECT muted_until FROM users WHERE id = ?").get(idFromString(userId)) as
+      | { muted_until: bigint | null }
+      | undefined;
+    if (row?.muted_until == null) return null;
+    const until = Number(row.muted_until);
+    // expira SOZINHO: não existe job de limpeza — é a leitura que decide, então
+    // um timeout vencido durante um restart simplesmente deixa de valer
+    return until > now ? until : null;
   }
 
   listChannels(): Channel[] {

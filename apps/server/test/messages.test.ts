@@ -157,18 +157,19 @@ test("DELETE de mensagem alheia sem admin → 403", async () => {
 test("DELETE de mensagem alheia COM admin → 204 (moderação)", async () => {
   const msg = await createMessage("bob", "1", "vai ser moderada");
 
-  // is_admin não tem rota própria neste milestone — vira admin por SQL direto,
-  // como o dono faria via sqlite3 no pod (migration 002)
+  // o cargo vira admin direto no Store, como o CLI (scripts/admin.ts) faria no
+  // pod. M10: era `is_admin = 1` até a migration 004 trocar o booleano por
+  // `users.role` — a coluna antiga não existe mais.
   const root = store.findOrCreateDevUser("root");
-  db.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").run(idFromString(root.id));
+  store.setRole(root.id, "admin");
   assert.equal(store.isAdmin(root.id), true);
 
-  // no fio, is_admin: true aparece; usuário comum não carrega true
+  // no fio viaja o cargo; quem não moderou nada continua "member"
   const rootWire = store.getUserById(idFromString(root.id));
   assert.ok(rootWire);
-  assert.equal(rootWire.is_admin, true);
+  assert.equal(rootWire.role, "admin");
   const bob = store.findOrCreateDevUser("bob");
-  assert.ok(bob.is_admin !== true, "não-admin nunca vem com is_admin: true");
+  assert.equal(bob.role, "member", "usuário comum nunca vem com cargo de moderação");
 
   const res = await app.inject({
     method: "DELETE",

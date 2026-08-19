@@ -256,10 +256,15 @@ function registerIpc(): void {
     secretSetMany(pairs);
   });
 
-  ipcMain.handle("oauth:login", (ev) => {
+  ipcMain.handle("oauth:login", (ev, inviteCode: unknown) => {
     assertMainSender(ev);
-    console.log("[oauth] login solicitado pelo renderer");
-    return oauthLogin(serverUrl);
+    // o código vem do renderer, então é validado aqui como todo o resto que
+    // atravessa a ponte: alfanumérico curto, o mesmo formato que o servidor gera
+    if (inviteCode != null && (typeof inviteCode !== "string" || !/^[A-Za-z0-9]{4,32}$/.test(inviteCode))) {
+      throw new Error("oauth:login — código de convite inválido");
+    }
+    console.log("[oauth] login solicitado pelo renderer", inviteCode != null ? "(com convite)" : "");
+    return oauthLogin(serverUrl, inviteCode ?? null);
   });
 
   ipcMain.handle("ptt:set-key", (ev, keycode: unknown) => {

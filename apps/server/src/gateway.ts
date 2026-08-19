@@ -8,6 +8,8 @@ import {
   Op,
   type DispatchEvent,
   type DispatchName,
+  type PresenceStatus,
+  type PresenceUpdateData,
   type Sound,
   type User,
   type VoiceState,
@@ -33,7 +35,21 @@ interface GatewaySession {
   ws: WebSocket | null;
   lastHeartbeatAt: number;
   disconnectedAt: number | null;
+  /**
+   * M10 (item 56): status DECLARADO por esta sessão (op 3). Nasce "online" no
+   * Identify. Vive só aqui — presença é efêmera e nunca toca o banco, como
+   * voice states e ring buffers.
+   */
+  status: PresenceStatus;
 }
+
+/**
+ * Prioridade de status quando o MESMO usuário tem várias sessões (desktop +
+ * navegador, aba antiga ainda no Resume): vence o mais "presente". Sem uma
+ * ordem, quem abrisse uma segunda aba e a deixasse ausente apareceria ausente
+ * enquanto digita na primeira.
+ */
+const STATUS_RANK: Record<PresenceStatus, number> = { online: 3, idle: 2, dnd: 1, offline: 0 };
 
 interface ConnState {
   session: GatewaySession | null;
@@ -106,6 +122,60 @@ export class Gateway {
     return ids;
   }
 
+  /**
+   * Status efetivo de um usuário: o mais "presente" entre as sessões dele com
+   * socket vivo. Sem socket vivo (ou tendo declarado invisível em todas) =
+   * "offline" — do ponto de vista de quem olha, é a mesma coisa.
+   */
+  presenceOf(userId: string): PresenceStatus {
+    let best: PresenceStatus = "offline";
+    for (const s of this.sessions.values()) {
+      if (!s.ws || s.user.id !== userId) continue;
+      if (STATUS_RANK[s.status] > STATUS_RANK[best]) best = s.status;
+    }
+    return best;
+  }
+
+  /** Snapshot para o READY: só quem NÃO está offline (a ausência é o offline). */
+  presences(): PresenceUpdateData[] {
+    const out: PresenceUpdateData[] = [];
+    for (const userId of this.onlineUserIds()) {
+      const status = this.presenceOf(userId);
+      if (status !== "offline") out.push({ user_id: userId, status });
+    }
+    return out;
+  }
+
+  /**
+   * Derruba TODAS as sessões de gateway de um usuário — o lado ATIVO do furo do
+   * kickado (roadmap 114). O gateway valida o token uma vez, no Identify, e
+   * nunca mais: sem isto, quem foi expulso continuaria lendo o chat e ouvindo a
+   * voz até resolver fechar a aba.
+   *
+   * A sessão sai do mapa ANTES do close: assim o `onSessionGone` tira o alvo da
+   * voz na hora, e um Resume com o mesmo session_id não encontra nada para
+   * retomar. Devolve quantas caíram (o chamador loga).
+   */
+  closeUserSessions(userId: string, reason: string, code: number = CloseCode.NotAMember): number {
+    let closed = 0;
+    for (const session of [...this.sessions.values()]) {
+      if (session.user.id !== userId) continue;
+      this.dropSession(session, reason, code);
+      closed += 1;
+    }
+    return closed;
+  }
+
+  /** Fim de linha de uma sessão: fora do mapa, fora da voz, socket fechado. */
+  private dropSession(session: GatewaySession, reason: string, code: number): void {
+    if (this.sessions.get(session.id) !== session) return;
+    this.sessions.delete(session.id);
+    this.onSessionGone?.({ userId: session.user.id, sessionId: session.id });
+    session.ws?.close(code, reason);
+    session.ws = null;
+    this.broadcastPresence(session.user.id);
+  }
+
   // -------------------------------------------------------------------------
 
   private onConnection(ws: WebSocket): void {
@@ -138,7 +208,7 @@ export class Gateway {
       if (session && session.ws === ws) {
         session.ws = null;
         session.disconnectedAt = Date.now();
-        this.broadcastPresenceIfOffline(session.user.id);
+        this.broadcastPresence(session.user.id);
       }
     });
   }
@@ -147,8 +217,36 @@ export class Gateway {
     switch (msg.op) {
       case Op.Heartbeat: {
         const session = state.session;
-        if (session) session.lastHeartbeatAt = Date.now();
+        if (session) {
+          // REVALIDAÇÃO PASSIVA (roadmap 114, o segundo lado do furo). O token
+          // foi conferido uma única vez, no Identify; sem esta linha, uma
+          // mudança feita FORA deste processo — `scripts/allowlist.ts remove`,
+          // um ban aplicado por outro pod, o banco editado à mão — não
+          // alcançaria a sessão aberta, e o expulso seguiria lendo o chat e
+          // ouvindo a voz. O caminho ativo (closeUserSessions) cobre o kick
+          // pela UI; este cobre todo o resto, a ~1 query por 41 s por sessão.
+          //
+          // NÃO revalidamos o JWT aqui de propósito: ele expira em 15 min e a
+          // conexão dura horas — reautenticar no heartbeat derrubaria toda
+          // chamada longa. O que se revalida é PERTENCIMENTO, que é o que muda.
+          if (!this.store.isMember(session.user.id)) {
+            this.dropSession(session, "não é mais membro da guild", CloseCode.NotAMember);
+            return;
+          }
+          session.lastHeartbeatAt = Date.now();
+        }
         this.send(ws, { op: Op.HeartbeatAck });
+        return;
+      }
+
+      case Op.PresenceUpdate: {
+        const session = state.session;
+        if (!session) {
+          ws.close(CloseCode.NotAuthenticated);
+          return;
+        }
+        session.status = msg.d.status;
+        this.broadcastPresence(session.user.id);
         return;
       }
 
@@ -162,6 +260,13 @@ export class Gateway {
           ws.close(CloseCode.AuthenticationFailed, "token inválido");
           return;
         }
+        // M10: quem já não pertence à guild não entra nem com token válido —
+        // o JWT de 15 min sobrevive ao kick, e sem esta linha o expulso
+        // reconectaria e continuaria dentro até o token vencer
+        if (!this.store.isMember(user.id)) {
+          ws.close(CloseCode.NotAMember, "não é membro da guild");
+          return;
+        }
         if (state.identifyTimer) clearTimeout(state.identifyTimer);
 
         const session: GatewaySession = {
@@ -173,24 +278,25 @@ export class Gateway {
           ws,
           lastHeartbeatAt: Date.now(),
           disconnectedAt: null,
+          status: "online", // op 3 muda depois; conectar já é estar online
         };
+
+        // presença ANTES de a sessão entrar no mapa: é a comparação com o
+        // depois que decide se algo mudou (abrir a segunda aba não reanuncia)
+        const before = this.presenceOf(user.id);
         this.sessions.set(session.id, session);
         state.session = session;
 
-        const wasOnline = this.onlineUserIdsExcept(session).has(user.id);
         this.dispatch(session, "READY", {
           session_id: session.id,
           user,
           channels: this.store.listChannels(),
           members: this.store.listMembers(),
           voice_states: this.voiceStatesProvider?.() ?? [],
+          presences: this.presences(),
           sounds: this.soundsProvider?.() ?? [],
         });
-        if (!wasOnline) {
-          for (const other of this.sessions.values()) {
-            if (other !== session) this.dispatch(other, "PRESENCE_UPDATE", { user_id: user.id, online: true });
-          }
-        }
+        if (this.presenceOf(user.id) !== before) this.broadcastPresence(user.id, session);
         return;
       }
 
@@ -203,6 +309,15 @@ export class Gateway {
         // token revalidado: session_id sozinho não é credencial (doc §4)
         if (!session || session.token !== msg.d.token) {
           this.send(ws, { op: Op.InvalidSession, d: { resumable: false } });
+          return;
+        }
+        // mesma revalidação do Identify: o Resume é uma segunda porta de
+        // entrada, e uma porta que não checa é uma porta aberta
+        if (!this.store.isMember(session.user.id)) {
+          this.dropSession(session, "não é mais membro da guild", CloseCode.NotAMember);
+          // dropSession fecha o socket ANTIGO da sessão; este aqui é o socket
+          // NOVO que pediu o Resume e ainda não foi adotado por ela
+          ws.close(CloseCode.NotAMember, "não é mais membro da guild");
           return;
         }
         const oldest = session.ring[0];
@@ -225,6 +340,9 @@ export class Gateway {
           if (evt.s > msg.d.seq) ws.send(evt.raw);
         }
         this.dispatch(session, "RESUMED", {});
+        // a queda já anunciou offline (ws = null); voltar tem que reanunciar,
+        // senão quem retomou a sessão fica fantasma na lista dos outros
+        this.broadcastPresence(session.user.id);
         return;
       }
 
@@ -263,22 +381,22 @@ export class Gateway {
       } else if (session.disconnectedAt !== null && now - session.disconnectedAt > config.resumeWindowMs) {
         this.sessions.delete(session.id);
         this.onSessionGone?.({ userId: session.user.id, sessionId: session.id });
-        this.broadcastPresenceIfOffline(session.user.id);
+        this.broadcastPresence(session.user.id);
       }
     }
   }
 
-  private broadcastPresenceIfOffline(userId: string): void {
-    if (this.onlineUserIds().has(userId)) return;
+  /**
+   * Anuncia o status EFETIVO do usuário (recalculado das sessões vivas), nunca
+   * o que uma sessão declarou isoladamente: com duas abas abertas, fechar uma
+   * não pode dizer "offline" enquanto a outra continua conectada.
+   * `except` pula uma sessão que já recebeu o estado por outro caminho (o READY).
+   */
+  private broadcastPresence(userId: string, except?: GatewaySession): void {
+    const status = this.presenceOf(userId);
     for (const session of this.sessions.values()) {
-      this.dispatch(session, "PRESENCE_UPDATE", { user_id: userId, online: false });
+      if (session !== except) this.dispatch(session, "PRESENCE_UPDATE", { user_id: userId, status });
     }
-  }
-
-  private onlineUserIdsExcept(except: GatewaySession): Set<string> {
-    const ids = new Set<string>();
-    for (const s of this.sessions.values()) if (s !== except && s.ws) ids.add(s.user.id);
-    return ids;
   }
 
   private send(ws: WebSocket, payload: unknown): void {

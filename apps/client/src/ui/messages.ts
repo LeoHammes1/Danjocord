@@ -26,6 +26,7 @@
  * O módulo não fala com a rede: PATCH e DELETE entram como callbacks
  * (MessageActions), porque o `api()` com renovação de token vive no main.ts.
  */
+import { isStaff } from "@danjocord/protocol";
 import { typingLabel } from "../typing.js";
 import { avatarColor, avatarEl } from "./avatar.js";
 import { icon, type IconName } from "./icons.js";
@@ -308,7 +309,9 @@ function appendActions(
 ): void {
   const own = msg.author_id === ctx.state.me?.id;
   // apagar: autor OU admin; editar: só o autor (espelha as regras do servidor)
-  const canDelete = own || ctx.state.me?.is_admin === true;
+  // M10: o booleano virou cargo — `isStaff` mora no protocolo para cliente e
+  // servidor decidirem pela MESMA regra (a de verdade é a do servidor)
+  const canDelete = own || (ctx.state.me !== null && isStaff(ctx.state.me));
   if (!own && !canDelete) return;
   const bar = document.createElement("div");
   bar.className = "msg-actions";

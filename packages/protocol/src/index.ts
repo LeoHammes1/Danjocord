@@ -14,6 +14,16 @@ export const Op = {
   Heartbeat: 1,
   /** cliente→servidor: autenticação com token de sessão */
   Identify: 2,
+  /**
+   * cliente→servidor: declarar o status de presença (M10, item 56).
+   *
+   * É opcode e não REST — e o número 3 é o mesmo do Discord — porque presença é
+   * estado EFÊMERO da conexão: mora na sessão de gateway, morre com ela e nunca
+   * toca o banco (convenção do repo). Uma rota REST teria que alcançar a sessão
+   * de WebSocket do chamador por fora, e ainda ficaria sem resposta para "e se
+   * a conexão cair?" — aqui o socket fechar já é a resposta (volta a offline).
+   */
+  PresenceUpdate: 3,
   /** cliente→servidor: retomar sessão após queda, com replay dos eventos perdidos */
   Resume: 6,
   /** servidor→cliente: pedido para reconectar (deploy, rebalanceamento) */
@@ -40,6 +50,14 @@ export const CloseCode = {
   AlreadyAuthenticated: 4005,
   InvalidSeq: 4007,
   SessionTimeout: 4009,
+  /**
+   * M10 (item 114): a sessão perdeu o direito de existir DEPOIS do Identify —
+   * kick, ban, cargo revogado ou allowlist mexida por fora (CLI). Precisa ser
+   * um código próprio: 4004 é "seu token não presta" (o cliente pode tentar
+   * outro), este é "você não é mais membro" — não adianta reconectar, e o
+   * cliente deve parar de tentar e voltar para a tela de login.
+   */
+  NotAMember: 4016,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -47,14 +65,137 @@ export const CloseCode = {
 // não cabem com segurança em number de JS)
 // ---------------------------------------------------------------------------
 
+/**
+ * Cargo na guild (M10, item 51) — substitui o booleano `is_admin` do M2.
+ * A ordem da união é a hierarquia: owner > admin > member (ver `roleRank`).
+ */
+export const Role = z.enum(["owner", "admin", "member"]);
+export type Role = z.infer<typeof Role>;
+
+/**
+ * Peso do cargo para comparação. Existe para que "admin não mexe em admin" e
+ * "ninguém toca no owner" sejam UMA comparação de números em vez de uma cadeia
+ * de ifs repetida em cada rota — regra espalhada é regra que diverge.
+ */
+export function roleRank(role: Role): number {
+  return role === "owner" ? 2 : role === "admin" ? 1 : 0;
+}
+
 export const User = z.object({
   id: z.string(),
+  /** nome vindo do Discord — reescrito a cada login, nunca editável aqui */
   username: z.string(),
+  /**
+   * M10 (item 55): apelido PRÓPRIO da guild. Mora em coluna separada porque o
+   * upsert do OAuth reescreve `username` a cada login e apagaria qualquer coisa
+   * gravada lá. null = sem apelido; o nome exibido sai de `displayName()`.
+   */
+  nickname: z.string().nullable(),
+  /** já RESOLVIDO pelo servidor: avatar_override da guild, ou o do Discord */
   avatar_url: z.string().nullable(),
-  /** ausente = false; só o servidor popula (nunca vem de payload de cliente) */
-  is_admin: z.boolean().optional(),
+  /** M10: só o servidor popula — nunca vem de payload de cliente */
+  role: Role,
+  /**
+   * M10 (item 53): fim do timeout de chat, em epoch ms; null = livre. Viaja
+   * junto do membro (e não numa rota à parte) porque é o que permite a UI
+   * desabilitar o composer e marcar o silenciado na lista sem perguntar nada —
+   * o servidor manda um MEMBER_UPDATE quando põe ou tira. Já vem RESOLVIDO:
+   * timeout vencido chega como null, ninguém precisa comparar relógio.
+   */
+  muted_until: z.number().int().nullable(),
 });
 export type User = z.infer<typeof User>;
+
+/**
+ * Nome exibido, resolvido em UM lugar (item 55). Cliente e servidor importam
+ * daqui; se cada tela decidisse sozinha, metade da UI mostraria o apelido e a
+ * outra metade o nome do Discord.
+ */
+export function displayName(user: Pick<User, "username" | "nickname">): string {
+  return user.nickname ?? user.username;
+}
+
+/** Açúcar de permissão: admin e owner moderam; member não. */
+export function isStaff(user: Pick<User, "role">): boolean {
+  return user.role !== "member";
+}
+
+/**
+ * Convite por link (M10, itens 43–45). O `code` É a credencial — vem de
+ * `crypto.randomBytes` no servidor, num alfabeto sem caracteres ambíguos
+ * (sem 0/O e 1/l/I), porque ele é ditado em voz alta e digitado à mão.
+ *
+ * Só admin+ vê esta forma completa. Quem ainda não entrou vê `InvitePreview`.
+ */
+export const Invite = z.object({
+  code: z.string(),
+  created_by: z.string(),
+  created_at: z.number().int(),
+  /** null = não expira */
+  expires_at: z.number().int().nullable(),
+  /** null = usos ilimitados */
+  max_uses: z.number().int().nullable(),
+  uses: z.number().int(),
+  revoked_at: z.number().int().nullable(),
+});
+export type Invite = z.infer<typeof Invite>;
+
+/**
+ * O que o `GET /api/invites/:code` PÚBLICO devolve — a landing mostra isto
+ * antes de qualquer login. Deliberadamente pobre: nome da guild e quem
+ * convidou, e nada mais. Contagem de usos, validade, lista de membros ou id de
+ * quem quer que seja transformariam um código vazado num raio-x do servidor.
+ */
+export const InvitePreview = z.object({
+  valid: z.literal(true),
+  guild_name: z.string(),
+  inviter_name: z.string(),
+});
+export type InvitePreview = z.infer<typeof InvitePreview>;
+
+/** Banimento (M10, item 50) — indexado pelo id do DISCORD, ver a migration 004. */
+export const Ban = z.object({
+  discord_id: z.string(),
+  banned_by: z.string().nullable(),
+  reason: z.string().nullable(),
+  created_at: z.number().int(),
+});
+export type Ban = z.infer<typeof Ban>;
+
+/**
+ * Ações que entram no log de moderação (M10, item 57). É uma união fechada de
+ * propósito: `action` vira filtro e rótulo na UI, e string livre viraria
+ * quatro grafias da mesma coisa em seis meses.
+ */
+export const ModAction = z.enum([
+  "kick",
+  "ban",
+  "unban",
+  "timeout",
+  "timeout_clear",
+  "role_change",
+  "invite_create",
+  "invite_revoke",
+  "invite_use",
+  "server_mute",
+  "server_unmute",
+  "voice_disconnect",
+  "owner_bootstrap",
+]);
+export type ModAction = z.infer<typeof ModAction>;
+
+export const ModLogEntry = z.object({
+  id: z.string(),
+  /** null = o próprio sistema agiu (bootstrap do primeiro dono) */
+  actor_id: z.string().nullable(),
+  action: ModAction,
+  target_user_id: z.string().nullable(),
+  target_discord_id: z.string().nullable(),
+  /** texto curto e livre: motivo, minutos do timeout, cargo novo… */
+  detail: z.string().nullable(),
+  created_at: z.number().int(),
+});
+export type ModLogEntry = z.infer<typeof ModLogEntry>;
 
 export const Channel = z.object({
   id: z.string(),
@@ -158,6 +299,40 @@ export const ResumeData = z.object({
   seq: z.number().int().nonnegative(),
 });
 
+/**
+ * Status de presença (M10, item 56) — substitui o booleano `online`.
+ *
+ * "offline" acumula dois casos que a UI trata igual e o servidor distingue:
+ * sem conexão nenhuma, ou conectado tendo DECLARADO invisível. Não existe um
+ * quinto valor "invisible" no fio de propósito: se ele viajasse, bastaria ler o
+ * evento para saber quem está escondido — que é exatamente o que invisível
+ * promete não contar.
+ */
+export const PresenceStatus = z.enum(["online", "idle", "dnd", "offline"]);
+export type PresenceStatus = z.infer<typeof PresenceStatus>;
+
+export const PresenceUpdateData = z.object({
+  user_id: z.string(),
+  status: PresenceStatus,
+});
+export type PresenceUpdateData = z.infer<typeof PresenceUpdateData>;
+
+/** `d` do op 3 (cliente→servidor): o status que ESTA sessão declara. */
+export const PresenceUpdateParams = z.object({
+  status: PresenceStatus,
+});
+export type PresenceUpdateParams = z.infer<typeof PresenceUpdateParams>;
+
+/**
+ * Membro que saiu da guild (M10, item 52): kick, ban, ou remoção pelo CLI.
+ * Sem este evento um kick não some da lista de ninguém até o próximo F5 —
+ * e a lista continuaria mostrando alguém que não pode mais entrar.
+ */
+export const MemberRemoveData = z.object({
+  user_id: z.string(),
+});
+export type MemberRemoveData = z.infer<typeof MemberRemoveData>;
+
 export const ReadyData = z.object({
   session_id: z.string(),
   user: User,
@@ -166,16 +341,17 @@ export const ReadyData = z.object({
   members: z.array(User),
   /** snapshot de quem está em voz agora (M3) — só entradas com channel_id preenchido */
   voice_states: z.array(VoiceState),
+  /**
+   * M10 (item 56): quem está online AGORA e com que status. Antes disto o
+   * READY não trazia presença nenhuma: quem entrava só descobria que os amigos
+   * estavam online quando um deles reconectava — todo mundo aparecia offline
+   * numa guild cheia. Só entradas != "offline" viajam (a ausência é o offline).
+   */
+  presences: z.array(PresenceUpdateData),
   /** catálogo do soundboard (M9): metadados; os bytes vêm por REST sob demanda */
   sounds: z.array(Sound),
 });
 export type ReadyData = z.infer<typeof ReadyData>;
-
-export const PresenceUpdateData = z.object({
-  user_id: z.string(),
-  online: z.boolean(),
-});
-export type PresenceUpdateData = z.infer<typeof PresenceUpdateData>;
 
 export const MessageDeleteData = z.object({
   id: z.string(),
@@ -258,6 +434,10 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("TYPING_START"), d: TypingStartData }),
   // usuário NOVO criado (dev ou OAuth) — re-login de usuário conhecido não dispara
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_ADD"), d: User }),
+  // M10 (item 52): cargo, apelido ou avatar da guild mudaram — d é o User inteiro
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_UPDATE"), d: User }),
+  // M10 (item 52): saiu da guild (kick/ban/CLI) — some da lista de todo mundo na hora
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_REMOVE"), d: MemberRemoveData }),
   // voz (M3): join (channel_id preenchido), leave (null) e mudança de mute/deaf
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_STATE_UPDATE"), d: VoiceState }),
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("VOICE_NEW_PRODUCER"), d: VoiceNewProducerData }),
@@ -293,6 +473,7 @@ export type ServerMessage = z.infer<typeof ServerMessage>;
 export const ClientMessage = z.union([
   z.object({ op: z.literal(Op.Heartbeat), d: z.number().int().nullable() }),
   z.object({ op: z.literal(Op.Identify), d: IdentifyData }),
+  z.object({ op: z.literal(Op.PresenceUpdate), d: PresenceUpdateParams }),
   z.object({ op: z.literal(Op.Resume), d: ResumeData }),
   z.object({
     op: z.literal(Op.VoiceRequest),
@@ -515,3 +696,65 @@ export const PlaySoundBody = z.object({
   sound_id: z.string(),
 });
 export type PlaySoundBody = z.infer<typeof PlaySoundBody>;
+
+// --- convites e moderação (M10, §5 do roadmap) ---
+
+/**
+ * `POST /api/invites` (admin+). Os dois campos são opcionais e cada omissão
+ * significa "sem limite" — link que nunca expira e serve para sempre é o caso
+ * do grupo fechado de amigos, e é o default de propósito.
+ *
+ * Os TETOS existem para que um link vazado tenha validade finita por acidente,
+ * não por disciplina: 30 dias e 100 usos são folgados para 10 pessoas e ainda
+ * assim fecham a porta sozinhos.
+ */
+export const CreateInviteBody = z.object({
+  /** segundos até expirar; ausente = nunca (teto de 30 dias) */
+  expires_in_s: z.number().int().positive().max(30 * 86_400).optional(),
+  /** usos permitidos; ausente = ilimitado */
+  max_uses: z.number().int().positive().max(100).optional(),
+});
+export type CreateInviteBody = z.infer<typeof CreateInviteBody>;
+
+/**
+ * Motivo opcional de kick/ban. Vai para o `mod_log` e é o que responde "por que
+ * fui expulso?" seis meses depois — mas continua opcional: exigir justificativa
+ * escrita entre amigos só faria todo mundo digitar "x".
+ */
+export const ModerationReasonBody = z.object({
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+export type ModerationReasonBody = z.infer<typeof ModerationReasonBody>;
+
+/**
+ * `POST /api/members/:id/timeout` — silêncio no TEXTO por N minutos.
+ * `minutes: 0` limpa o timeout (é como o cliente "desmuta" sem uma rota a mais).
+ * Teto de 7 dias: acima disso a ferramenta certa é kick ou ban, não um silêncio
+ * que ninguém lembra de tirar.
+ */
+export const TimeoutBody = z.object({
+  minutes: z.number().int().min(0).max(7 * 24 * 60),
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+export type TimeoutBody = z.infer<typeof TimeoutBody>;
+
+/**
+ * `PATCH /api/members/:id/role`. "owner" NÃO entra na união: a transferência de
+ * dono é operação de outra natureza (mexe em duas linhas e não pode falhar pela
+ * metade) e fica fora do M10 — o servidor recusa, e o schema já explica por quê.
+ */
+export const UpdateRoleBody = z.object({
+  role: z.enum(["admin", "member"]),
+});
+export type UpdateRoleBody = z.infer<typeof UpdateRoleBody>;
+
+/**
+ * `PATCH /api/users/@me` — identidade própria da guild (item 55). Campo ausente
+ * = não mexe; `null` explícito = limpar e voltar ao que vem do Discord. Os dois
+ * casos precisam ser distinguíveis, senão não existe como REMOVER um apelido.
+ */
+export const UpdateMeBody = z.object({
+  nickname: z.string().trim().min(1).max(32).nullable().optional(),
+  avatar_override: z.string().url().max(512).nullable().optional(),
+});
+export type UpdateMeBody = z.infer<typeof UpdateMeBody>;

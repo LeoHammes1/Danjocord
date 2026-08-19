@@ -1,4 +1,4 @@
-import { Op, ServerMessage, type DispatchEvent, type DispatchName } from "@danjocord/protocol";
+import { Op, ServerMessage, type DispatchEvent, type DispatchName, type PresenceStatus } from "@danjocord/protocol";
 
 export type GatewayStatus = "connecting" | "online" | "resuming" | "offline";
 
@@ -166,6 +166,15 @@ export class GatewayClient {
     const delay = base * (0.5 + Math.random() / 2); // jitter
     this.reconnectAttempts += 1;
     setTimeout(() => this.connect(), delay);
+  }
+
+  /**
+   * op 3 (M10, item 56): declara o status DESTA sessão. Sem socket aberto o
+   * send descarta — e está certo: o status vive na sessão, e a próxima começa
+   * em "online" até o cliente redeclarar (syncPresence no READY).
+   */
+  presence(status: PresenceStatus): void {
+    this.send({ op: Op.PresenceUpdate, d: { status } });
   }
 
   private send(payload: unknown): void {

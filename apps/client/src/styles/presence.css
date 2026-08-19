@@ -1,0 +1,166 @@
+/* Dono: agente de PRESENÇA E APELIDO (ui/presence.ts).
+
+   Duas coisas moram aqui: os itens de status que a sidebar pendura no menu do
+   usuário, e o diálogo de apelido. As CORES e as FORMAS das bolinhas não estão
+   aqui — elas moram no members.css junto com a bolinha do avatar, porque são a
+   mesma peça (`.av-dot`). Aqui só se reposiciona aquela peça para viver numa
+   linha de menu em vez de num canto de avatar; duplicar as quatro cores seria
+   garantir que o menu e a lista de membros divergissem na primeira troca.
+
+   CONTRASTE (a mesma armadilha que o voice-settings.css documenta): o menu do
+   usuário é --bg-elevated, e sobre ele o --text-muted dá 4.05:1 — abaixo do AA
+   de 4.5:1. Por isso nenhum texto daqui é --text-muted: o secundário é
+   --text-normal e a hierarquia sai do tamanho e do peso. Pelo mesmo motivo o
+   erro do diálogo é uma pilha de fundo TINGIDO com texto em --text-strong, e
+   não texto em --danger (3.0:1 sobre o painel). */
+
+/* =========================================================================
+   1. MENU DE STATUS (dentro do .user-menu do sidebar.css)
+   ========================================================================= */
+
+/* O menu do M7 tinha 160px e dois itens de uma linha só; as opções de status
+   têm uma frase embaixo, e sem esta largura mínima "Marcado automaticamente
+   após 10 min sem uso" viraria quatro linhas. */
+.menu-group {
+  min-width: 232px;
+}
+
+.menu-label {
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: var(--sp-1) 0;
+  background: var(--line);
+}
+
+/* A bolinha do avatar (members.css) reaproveitada fora de um avatar: lá ela é
+   absoluta no canto de um `.av`, aqui é um item de linha. Só a posição e o
+   tamanho mudam — cor e forma continuam vindo de lá. */
+.status-item {
+  align-items: flex-start;
+}
+.status-item .av-dot {
+  --dot: 10px;
+  position: static;
+  flex: none;
+  /* alinha a bolinha com a PRIMEIRA linha do texto, não com o bloco inteiro */
+  margin-top: 5px;
+}
+
+.status-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.status-name {
+  color: var(--text-strong);
+  font-weight: var(--fw-medium);
+}
+
+.status-hint {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+}
+
+/* O check nasce sempre e ocupa o lugar dele mesmo escondido: sem isto, marcar
+   outro status faria a linha inteira dançar para o lado. */
+.status-check {
+  flex: none;
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+  color: var(--text-strong);
+}
+.status-item[aria-checked="false"] .status-check {
+  visibility: hidden;
+}
+
+/* =========================================================================
+   2. DIÁLOGO DE APELIDO (casca em ui/dialog.ts)
+   ========================================================================= */
+
+/* O painel padrão tem 560px porque os diálogos do M9 são cheios de seções;
+   este é UM campo, e naquela largura o input pareceria um erro de layout. */
+#nickname-dialog .dialog-panel {
+  width: min(420px, 100%);
+}
+
+.nick-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.nick-label {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.nick-input {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-strong);
+}
+.nick-input::placeholder {
+  color: var(--text-normal);
+}
+.nick-input:disabled {
+  opacity: 0.5;
+}
+
+.nick-hint {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.nick-error {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  /* tingido, não texto vermelho: ver o bloco de CONTRASTE no topo */
+  background: color-mix(in srgb, var(--danger) 20%, var(--bg-chat));
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+}
+
+.nick-btn {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-normal);
+  font-weight: var(--fw-medium);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.nick-btn:hover:not(:disabled) {
+  background: var(--bg-sidebar);
+  color: var(--text-strong);
+}
+.nick-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nick-btn-primary {
+  background: var(--brand);
+  color: var(--text-strong);
+}
+.nick-btn-primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+  color: var(--text-strong);
+}

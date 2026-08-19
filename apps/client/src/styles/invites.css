@@ -1,0 +1,387 @@
+/* Convites (M10): o painel de administração (ui/invites.ts) e a landing que
+   um estranho vê antes de qualquer login (ui/invite-landing.ts).
+
+   Os dois moram no mesmo arquivo porque são a mesma feature vista dos dois
+   lados, e porque nenhum dos dois é grande. O prefixo separa: `.inv-` para o
+   painel, `.inv-landing-` para a landing.
+
+   Como todo arquivo daqui, nenhuma cor literal — só `var(--…)` de tokens.css.
+   A casca do diálogo (`.dialog-*`) vem do voice-settings.css; aqui só entra o
+   MIOLO, que é o que muda de um diálogo para o outro. */
+
+/* --------------------------------------------------------------------------
+   Painel de convites (dentro do .dialog-panel)
+   -------------------------------------------------------------------------- */
+
+.inv-intro {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  margin-bottom: var(--sp-4);
+}
+
+.inv-section + .inv-section {
+  margin-top: var(--sp-5);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-4);
+}
+
+.inv-section-title {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: var(--sp-3);
+}
+
+/* os dois selects e o botão numa linha; embrulha em tela estreita em vez de
+   espremer o "Gerar link" até virar um quadradinho ilegível */
+.inv-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3);
+}
+
+.inv-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  flex: 1 1 150px;
+  min-width: 0;
+}
+
+.inv-field-label {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+}
+
+.inv-select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text-normal);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+/* --- botões do painel --- */
+
+.inv-btn {
+  flex: none;
+  background: var(--bg-elevated);
+  /* --text-normal e não --text-muted: sobre --bg-elevated o muted dá 4.05:1,
+     abaixo do AA de 4.5:1 (a mesma conta já paga no login.css) */
+  color: var(--text-normal);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.inv-btn:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+.inv-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.inv-btn-primary {
+  background: var(--brand);
+  color: var(--text-strong);
+  padding: var(--sp-2) var(--sp-5);
+}
+.inv-btn-primary:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+
+/* revogar é destrutivo e por isso é o único vermelho do painel — a mesma
+   reserva do --danger que o card do membro (M9) faz com o server mute */
+.inv-danger {
+  color: var(--danger);
+}
+.inv-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--text-strong);
+}
+
+/* a confirmação de que copiou: verde por ~2,4 s, e vermelho quando a área de
+   transferência não estava disponível (http puro sem contexto seguro) */
+.inv-copy.is-copied {
+  color: var(--ok);
+}
+.inv-copy.is-failed {
+  color: var(--warn);
+}
+
+/* --- o link recém-criado --- */
+
+.inv-result {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--bg-guilds);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+}
+
+.inv-link {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-sm);
+  /* o link inteiro é a informação: cortar no meio faria alguém colar um
+     endereço truncado achando que copiou tudo */
+  text-overflow: ellipsis;
+}
+
+.inv-status {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+.inv-status.is-danger {
+  color: var(--danger);
+}
+
+/* --- lista --- */
+
+/* o base.css não reseta <ul> (nenhuma lista global existia até aqui): sem
+   margin/padding zerados sobra o recuo do marcador do navegador */
+.inv-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.inv-row {
+  background: var(--bg-elevated);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* Convite morto NÃO some da lista (item 46): quem mandou o link semana passada
+   precisa entender por que o amigo diz que não funciona. Esmaecido e sem
+   botão, ele responde a pergunta sem convidar a um clique inútil. */
+.inv-row.is-dead {
+  opacity: 0.55;
+}
+
+.inv-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.inv-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  letter-spacing: 0.04em;
+}
+
+.inv-pill {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: var(--r-full);
+  padding: 2px var(--sp-2);
+}
+.inv-pill.is-new {
+  background: var(--brand);
+  color: var(--text-strong);
+}
+.inv-pill.is-dead {
+  background: var(--bg-guilds);
+  color: var(--text-muted);
+}
+
+/* os metadados são uma frase quebrada em pedaços; o separador é do CSS para o
+   TypeScript não montar string com "·" no meio */
+.inv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.inv-meta > span + span::before {
+  content: "·";
+  margin-right: var(--sp-3);
+  color: var(--text-faint);
+}
+
+.inv-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.inv-dead-note {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.inv-empty {
+  color: var(--text-faint);
+  font-size: var(--fs-sm);
+  padding: var(--sp-3);
+  text-align: center;
+}
+
+.inv-done {
+  margin-left: auto;
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-5);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.inv-done:hover {
+  background: var(--brand-hover);
+}
+
+/* --------------------------------------------------------------------------
+   Landing do convite — a tela inteira, sem app por baixo
+   -------------------------------------------------------------------------- */
+
+#invite-landing {
+  position: fixed;
+  inset: 0;
+  /* 100 e não 21: o app empilha entre 1 e 2, os diálogos em 20 e o pad do
+     soundboard em 21. A landing não disputa com nada — ela SUBSTITUI a tela
+     enquanto existe, e o salto grande deixa isso explícito para quem for
+     mexer no empilhamento depois. */
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  /* o mesmo fundo do login: é a mesma "antessala" do app, e a pessoa que
+     acabou de entrar reconhece a tela seguinte */
+  background: var(--bg-guilds);
+  overflow-y: auto;
+}
+
+.inv-landing-card {
+  width: min(440px, 100%);
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  text-align: center;
+}
+/* o cartão recebe o foco a cada troca de estado (tabindex -1); o anel padrão
+   ali ficaria enorme e sem informação — quem precisa dele é o controle */
+.inv-landing-card:focus {
+  outline: none;
+}
+
+.inv-landing-badge {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-lg);
+  background: var(--brand);
+  color: var(--text-strong);
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.inv-landing-badge.is-bad {
+  background: var(--bg-elevated);
+  color: var(--warn);
+}
+
+.inv-landing-kicker {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.inv-landing-card h1 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--text-strong);
+  line-height: 1.2;
+  /* nome de guild é livre: sem isto, um nome sem espaços estoura o cartão */
+  overflow-wrap: anywhere;
+}
+
+.inv-landing-lead {
+  color: var(--text-normal);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.inv-landing-lead strong {
+  color: var(--text-strong);
+  font-weight: var(--fw-semibold);
+}
+
+.inv-landing-cta {
+  width: 100%;
+  margin-top: var(--sp-2);
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.inv-landing-cta:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+.inv-landing-cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.inv-landing-fine {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* saída discreta: existe em todos os estados, mas nunca compete com o CTA */
+.inv-landing-skip {
+  margin-top: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  transition: color var(--t-fast);
+}
+.inv-landing-skip:hover {
+  color: var(--text-normal);
+}

@@ -25,7 +25,7 @@ declare global {
      * <serverUrl>/auth/discord/start?redirect_port=<porta do listener>;
      * resolve com o OTC; rejeita em timeout (120s) ou erro (auth_error).
      */
-    oauthLogin(): Promise<string>;
+    oauthLogin(inviteCode?: string | null): Promise<string>;
     /** instala/troca o hook global; null desliga (uiohook para) */
     pttSetKey(keycode: number | null): Promise<void>;
     /** modo captura p/ remap: próxima tecla pressionada */

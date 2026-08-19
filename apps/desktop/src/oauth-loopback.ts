@@ -46,7 +46,7 @@ function page(title: string, detail: string): string {
 <body><main><h1>${title}</h1><p>${detail}</p></main></body></html>`;
 }
 
-export function oauthLogin(serverUrl: string): Promise<string> {
+export function oauthLogin(serverUrl: string, inviteCode?: string | null): Promise<string> {
   // um fluxo por vez: o anterior (se ficou pendurado) morre agora
   current?.cancel("substituído por um novo login");
 
@@ -106,7 +106,12 @@ export function oauthLogin(serverUrl: string): Promise<string> {
     // porta 0 = o SO escolhe uma livre; só em 127.0.0.1 — nada exposto à rede
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
-      const startUrl = `${serverUrl}/auth/discord/start?redirect_port=${port}`;
+      // M10: o convite viaja junto do redirect_port — o servidor guarda os dois
+      // no MESMO PendingAuth (junto do state). Sem isto, quem já tem o app
+      // instalado e recebe um link de convite não consegue entrar de jeito
+      // nenhum: o oauth recusa por allowlist antes de olhar o convite.
+      const invite = inviteCode != null && inviteCode !== "" ? `&invite=${encodeURIComponent(inviteCode)}` : "";
+      const startUrl = `${serverUrl}/auth/discord/start?redirect_port=${port}${invite}`;
       console.log(`[oauth] loopback ouvindo em 127.0.0.1:${port} — abrindo o navegador externo`);
       void shell.openExternal(startUrl).catch((err: unknown) => {
         console.error("[oauth] shell.openExternal falhou", err);

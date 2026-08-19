@@ -18,6 +18,10 @@ import "./messages.test.ts";
 // qualquer ordem; as rotas do soundboard usam banco :memory: próprio
 import "./sound-probe.test.ts";
 import "./sounds.test.ts";
+// M10: convites, cargos, kick/ban e timeout. Banco :memory: próprio e nenhum
+// relógio mockado — mas o bootstrap mexe no config.ownerDiscordId (e o
+// restaura), então ele fica longe das suítes que dependem de env no import
+import "./moderation.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte

@@ -17,7 +17,7 @@ interface DanjocordDesktop {
   secretSet(key: string, value: string | null): Promise<void>;
   /** grava vários numa transação só — o trio de sessão não pode ir pela metade */
   secretSetMany(entries: [string, string | null][]): Promise<void>;
-  oauthLogin(): Promise<string>;
+  oauthLogin(inviteCode?: string | null): Promise<string>;
   pttSetKey(keycode: number | null): Promise<void>;
   pttCaptureNextKey(): Promise<{ keycode: number; label: string }>;
   onPtt(cb: (down: boolean) => void): void;
@@ -39,8 +39,8 @@ const bridge: DanjocordDesktop = {
   secretSetMany(entries) {
     return ipcRenderer.invoke("secret:set-many", entries) as Promise<void>;
   },
-  oauthLogin() {
-    return ipcRenderer.invoke("oauth:login") as Promise<string>;
+  oauthLogin(inviteCode) {
+    return ipcRenderer.invoke("oauth:login", inviteCode ?? null) as Promise<string>;
   },
   pttSetKey(keycode) {
     return ipcRenderer.invoke("ptt:set-key", keycode) as Promise<void>;

@@ -15,7 +15,7 @@
  * Como no M7, o módulo não conhece o `state` do main.ts nem o VoiceClient:
  * tudo entra pelo UiContext (getters vivos montados no main.ts).
  */
-import type { Sound, VoiceSoundboardData } from "@danjocord/protocol";
+import { isStaff, type Sound, type VoiceSoundboardData } from "@danjocord/protocol";
 import {
   analyzeAudioFile,
   deleteSound,
@@ -233,7 +233,7 @@ function cancelCooldown(): void {
 function canManage(sound: Sound): boolean {
   const me = ctx?.state.me ?? null;
   if (me === null) return false;
-  if (me.is_admin === true) return true;
+  if (isStaff(me)) return true; // M10: cargo no lugar do booleano
   return sound.uploader_id === me.id;
 }
 

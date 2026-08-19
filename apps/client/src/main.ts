@@ -6,6 +6,8 @@ import {
   type Channel,
   type DispatchName,
   type Message,
+  type PresenceStatus,
+  type PresenceUpdateData,
   type ReadyData,
   type Sound,
   type User,
@@ -17,7 +19,14 @@ import { desktop } from "./bridge.js";
 import { emit, emitConnection, mountSound } from "./sound/index.js";
 import { TypingSender, TypingTracker } from "./typing.js";
 import { mountChrome, renderChannelHead, setConnectionStatus } from "./ui/chrome.js";
-import { clearComposer, focusComposer, mountComposer, setComposerChannel, setComposerValue } from "./ui/composer.js";
+import {
+  clearComposer,
+  focusComposer,
+  mountComposer,
+  setComposerChannel,
+  setComposerMuted,
+  setComposerValue,
+} from "./ui/composer.js";
 import { renderMembers } from "./ui/members.js";
 import { isUserSilenced, setUserSilenced } from "./sound/soundboard.js";
 import {
@@ -32,11 +41,17 @@ import {
 import {
   closeUserControls,
   mountUserControls,
+  isBlocked,
   openUserControls,
   refreshUserControls,
+  subscribeBlocked,
   type UserControlsContext,
 } from "./ui/user-controls.js";
 import { closeVoiceSettings, restoreVoicePrefs, voiceSettingsMenuItem } from "./ui/voice-settings.js";
+import { closeInvites, refreshInvitesMenu } from "./ui/invites.js";
+import { inviteCodeFromLocation, renderInviteLanding } from "./ui/invite-landing.js";
+import { memberRemoved } from "./ui/members.js";
+import { mountPresence, myStatus, syncPresence } from "./ui/presence.js";
 import { closeSettings } from "./ui/settings.js";
 import {
   editDraftOf,
@@ -136,7 +151,11 @@ interface State {
   me: User | null;
   channels: Channel[];
   members: Map<string, User>;
-  online: Set<string>;
+  /**
+   * M10 (item 56): status de quem NÃO está offline. A ausência É o offline —
+   * o mapa espelha o fio, onde "offline" viaja para APAGAR a entrada.
+   */
+  presences: Map<string, PresenceStatus>;
   currentChannel: string | null;
   /** nonce → elemento renderizado otimisticamente, aguardando o Dispatch */
   pending: Map<string, HTMLElement>;
@@ -149,7 +168,7 @@ const state: State = {
   me: null,
   channels: [],
   members: new Map(),
-  online: new Set(),
+  presences: new Map(),
   currentChannel: null,
   pending: new Map(),
   voiceStates: new Map(),
@@ -227,6 +246,7 @@ function showLogin(error?: string): void {
   closeSettings();
   closeVoiceSettings();
   closeUserControls(false);
+  closeInvites();
   el.app.hidden = true;
   el.login.hidden = false;
   el.loginError.textContent = error ?? "";
@@ -246,7 +266,7 @@ function resetState(): void {
   state.me = null;
   state.channels = [];
   state.members = new Map();
-  state.online = new Set();
+  state.presences = new Map();
   state.currentChannel = null;
   state.pending = new Map();
   state.voiceStates = new Map();
@@ -267,6 +287,13 @@ function resetState(): void {
 }
 
 function authErrorMessage(code: string): string {
+  // M10: quem chega por link de convite precisa saber POR QUE não entrou —
+  // "tente de novo" manda a pessoa repetir uma coisa que nunca vai funcionar
+  if (code === "banned") return "Seu acesso a este servidor foi bloqueado.";
+  if (code === "invite_expired") return "Esse convite expirou — peça um link novo para quem te chamou.";
+  if (code === "invite_exhausted") return "Esse convite já foi usado o número máximo de vezes — peça um link novo.";
+  if (code === "invite_revoked") return "Esse convite foi revogado — peça um link novo para quem te chamou.";
+  if (code === "invite_invalid") return "Esse link de convite não existe. Confira se copiou inteiro.";
   if (code === "not_allowed") return "Seu Discord não está na allowlist — peça convite ao dono.";
   return "Falha no login, tente de novo."; // state, discord e afins
 }
@@ -325,6 +352,14 @@ function renderMsg(m: Message, pending = false): HTMLElement {
   return messageEl(m, ui, msgActions, pending);
 }
 
+/**
+ * Bloquear (M10, item 54) é LOCAL: esconder as mensagens é metade do recurso —
+ * a outra metade (silenciar a voz) o próprio card faz pelo VoiceClient.
+ */
+function visivel(m: Message): boolean {
+  return !isBlocked(m.author_id);
+}
+
 function renderTypingBar(): void {
   const cid = state.currentChannel;
   renderTyping(el.typing, ui, cid === null ? [] : typingTracker.typers(cid));
@@ -375,10 +410,12 @@ async function loadLatest(channelId: string): Promise<void> {
     v.reachedStart = history.length < PAGE_SIZE;
     v.detachedBottom = false;
     history.reverse();
-    el.messages.replaceChildren(...history.map((m) => renderMsg(m)));
+    el.messages.replaceChildren(...history.filter(visivel).map((m) => renderMsg(m)));
     // drena o que chegou pelo gateway durante o fetch e não veio no snapshot
     for (const m of resyncBuffer) {
-      if (m.channel_id === channelId && findMessageEl(el.messages, m.id) === null) el.messages.append(renderMsg(m));
+      if (m.channel_id === channelId && visivel(m) && findMessageEl(el.messages, m.id) === null) {
+        el.messages.append(renderMsg(m));
+      }
     }
     resyncBuffer = [];
     // agrupamento e separadores de data só existem em RELAÇÃO ao vizinho: o
@@ -427,7 +464,7 @@ async function maybeLoadOlder(): Promise<void> {
       const prevHeight = el.messages.scrollHeight;
       const frag = document.createDocumentFragment();
       older.reverse();
-      for (const m of older) frag.append(renderMsg(m));
+      for (const m of older) if (visivel(m)) frag.append(renderMsg(m));
       el.messages.prepend(frag);
       // OBRIGATORIAMENTE entre o prepend e o delta de scroll: as mensagens que
       // chegaram ganham avatar/separador e a antiga primeira PERDE os dela —
@@ -577,7 +614,9 @@ function onDispatch(t: DispatchName, d: unknown): void {
     state.me = ready.user;
     state.channels = ready.channels;
     state.members = new Map(ready.members.map((m) => [m.id, m]));
-    state.online = new Set([ready.user.id]);
+    // o READY passou a trazer presença (M10): antes disto quem entrava via todo
+    // mundo offline até alguém reconectar. Só entradas != "offline" viajam.
+    state.presences = new Map(ready.presences.map((p) => [p.user_id, p.status]));
     // snapshot de voz (M3): quem já está em canal quando entramos
     state.voiceStates = new Map();
     for (const v of ready.voice_states ?? []) {
@@ -585,6 +624,9 @@ function onDispatch(t: DispatchName, d: unknown): void {
     }
     state.speaking = new Map(); // "quem fala" não vem no snapshot; o próximo VOICE_SPEAKING repõe
     applySoundCatalog(ready.sounds); // antes dos renders: o pad já nasce certo
+    syncPresence(); // sessão nova começa "online" no servidor — redeclara o meu
+    setComposerMuted(ready.user.muted_until); // timeout de chat vem no snapshot
+    refreshInvitesMenu(ui); // o cargo só é conhecido a partir daqui
     renderUserPanel(ui);
     renderChannels();
     renderChannelHead(ui); // a lista de canais só existe a partir daqui
@@ -701,9 +743,17 @@ function onDispatch(t: DispatchName, d: unknown): void {
     if (!state.members.has(msg.author_id)) {
       // fallback para MEMBER_ADD perdido fora da janela de Resume; o evento
       // real substitui este placeholder quando (re)chegar
-      state.members.set(msg.author_id, { id: msg.author_id, username: `user-${msg.author_id.slice(-4)}`, avatar_url: null });
+      state.members.set(msg.author_id, {
+        id: msg.author_id,
+        username: `user-${msg.author_id.slice(-4)}`,
+        nickname: null,
+        avatar_url: null,
+        role: "member", // placeholder nunca vira staff: o MEMBER_ADD real corrige
+        muted_until: null,
+      });
       renderMembers(ui, (userId) => openUserControls(userId));
     }
+    if (isBlocked(msg.author_id)) return; // bloqueado: sem nó, sem som, sem badge
     // Som ANTES do return abaixo: mensagem em canal que não estou vendo é
     // justamente o caso que precisa avisar. A política descarta a minha
     // própria e decide entre "estou vendo este canal" e "janela sem foco".
@@ -779,10 +829,38 @@ function onDispatch(t: DispatchName, d: unknown): void {
     renderTypingBar(); // "Usuário desconhecido" na barra pode virar o nome real
     return;
   }
+  if (t === "MEMBER_UPDATE") {
+    const user = d as User;
+    state.members.set(user.id, user);
+    // o MEU cargo/apelido/timeout também chegam por aqui: sem isto o menu de
+    // convites não apareceria numa promoção, e o composer não travaria no timeout
+    if (user.id === state.me?.id) {
+      state.me = user;
+      setComposerMuted(user.muted_until); // pôr e tirar o timeout passam por aqui
+    }
+    renderMembers(ui, (userId) => openUserControls(userId));
+    renderUserPanel(ui);
+    renderTypingBar(); // o nome exibido pode ter mudado
+    refreshInvitesMenu(ui); // promoção/rebaixamento mostra ou some com o item
+    refreshUserControls();
+    return;
+  }
+  if (t === "MEMBER_REMOVE") {
+    const gone = d as { id: string };
+    state.members.delete(gone.id);
+    state.presences.delete(gone.id);
+    state.voiceStates.delete(gone.id);
+    for (const set of state.speaking.values()) set.delete(gone.id);
+    memberRemoved(ui, gone.id, (userId) => openUserControls(userId));
+    renderChannels(); // some da lista de participantes do canal de voz também
+    return;
+  }
   if (t === "PRESENCE_UPDATE") {
-    const p = d as { user_id: string; online: boolean };
-    if (p.online) state.online.add(p.user_id);
-    else state.online.delete(p.user_id);
+    const p = d as PresenceUpdateData;
+    // "offline" APAGA a entrada em vez de preencher: o mapa guarda só quem tem
+    // status para mostrar, e quem não está lá está fora — sem estado morto
+    if (p.status === "offline") state.presences.delete(p.user_id);
+    else state.presences.set(p.user_id, p.status);
     renderMembers(ui, (userId) => openUserControls(userId));
     renderUserPanel(ui); // a bolinha de status do painel do usuário é minha presença
   }
@@ -896,8 +974,14 @@ const ui: SidebarContext & UserControlsContext = {
     get members() {
       return state.members;
     },
+    get presences() {
+      return state.presences;
+    },
+    // derivado das chaves do mapa: enquanto sidebar e user-controls ainda
+    // perguntam "está online?", este getter existe para não haver uma segunda
+    // verdade para desencontrar (ver o comentário em ui/context.ts)
     get online() {
-      return state.online;
+      return new Set(state.presences.keys());
     },
     get currentChannel() {
       return state.currentChannel;
@@ -995,6 +1079,20 @@ if (userMenu !== null) userMenu.insertBefore(voiceSettingsMenuItem(voice, el.use
  * Som (M8). O callback é lido no INSTANTE de cada evento — nada de listener de
  * focus/blur nem de espelhar estado: a política pergunta, o main responde.
  */
+// M10: o status desta sessão. `declare` manda o op 3; `repaint` atualiza a
+// bolinha do painel do usuário sem re-renderizar a tela toda.
+mountPresence({
+  declare: (status) => currentGateway?.presence(status),
+  repaint: () => renderUserPanel(ui),
+});
+
+// bloquear é local e some com a pessoa da tela: refazer a janela inteira é o
+// caminho certo por causa da regra do M7 (o trim corta nas DUAS pontas, e o
+// loadLatest já cuida do regroup) — tirar nós à mão deixaria o agrupamento torto
+subscribeBlocked(() => {
+  if (state.currentChannel !== null) void loadLatest(state.currentChannel);
+});
+
 mountSound(() => ({
   meId: state.me?.id ?? null,
   deafened: voice.deafened,
@@ -1002,6 +1100,7 @@ mountSound(() => ({
   voiceChannelId: voice.channelId,
   viewingChannelId: state.currentChannel,
   windowFocused: document.hasFocus(),
+  dnd: myStatus() === "dnd", // "não perturbe" cala notificação, não a voz
 }));
 
 /**
@@ -1549,6 +1648,38 @@ async function boot(): Promise<void> {
   // desktop (M6): hidrata o cache de segredos ANTES de qualquer getAccessToken
   // síncrono — sem isto, uma sessão salva no safeStorage pareceria logout
   await hydrateAuth();
+
+  // M10 (item 47): /invite/<code>. Vem ANTES de tudo que é sessão porque quem
+  // clica num link de convite normalmente NÃO tem conta — a tela de login
+  // genérica seria a pior recepção possível. O código sobrevive ao ida-e-volta
+  // do OAuth viajando no `state` (o servidor cuida disso).
+  const inviteCode = inviteCodeFromLocation();
+  if (inviteCode !== null && getAccessToken() === null) {
+    // desktop: o mesmo fluxo loopback do M6, agora levando o convite junto —
+    // sem isto, quem já tem o app instalado e recebe um link não entra. O
+    // `exactOptionalPropertyTypes` do projeto não aceita `onEnter: undefined`,
+    // então o objeto é montado antes.
+    const bridge = desktop;
+    const opts =
+      bridge === undefined
+        ? { onDismiss: () => showLogin() }
+        : {
+            onDismiss: () => showLogin(),
+            onEnter: (code: string) => {
+              void bridge
+                .oauthLogin(code)
+                .then((otc) => exchangeOtc(otc))
+                .then(() => startApp())
+                .catch((err: unknown) => showLogin(desktopLoginErrorMessage(err)));
+            },
+          };
+    renderInviteLanding(inviteCode, opts);
+    return;
+  }
+  // já logado num /invite/<code>: a pessoa já é membro e o caminho não diz
+  // nada — limpa a barra de endereço e segue para o app
+  if (inviteCode !== null) history.replaceState(null, "", "/");
+
   const params = new URLSearchParams(location.search);
   // o OTC chega no FRAGMENT (#otc=) de propósito: fragment não é enviado ao
   // servidor, então a credencial nunca aparece em access log nem em Referer

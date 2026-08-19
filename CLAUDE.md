@@ -189,6 +189,44 @@ usuário) → GainNode(mestre)`, o que dá mute local e volume 0..200% por pesso
 O `<audio>` continua no DOM, vivo e mudo, porque no Chromium um MediaStream de
 WebRTC só "anda" ligado a um sink — está comentado no `voice.ts`; não remova.
 
+## Convites e moderação (M10)
+
+Até o M9 a única porta era o dono rodar um CLI. Com convite por link a porta
+abre sozinha, e aí "quem manda", "quem não entra nunca mais" e "quem fez o quê"
+deixam de ser opcionais.
+
+- **Cargo no lugar do booleano**: `users.role` (owner/admin/member); a coluna
+  `is_admin` **foi removida** na migration 004 — duas fontes da verdade para a
+  mesma pergunta é como nasce o bug em que a UI mostra uma coisa e o servidor
+  decide outra. `roleRank()`, `isStaff()` e `displayName()` moram no
+  **protocolo**: cliente e servidor decidem pela mesma regra.
+- **A regra de quem-mexe-em-quem é UMA função** (`moderationProblem`): ninguém
+  age sobre si mesmo, o owner é intocável (é isso que garante "nunca sem
+  owner"), e `roleRank(ator) <= roleRank(vítima)` é 403.
+- **Kick ≠ ban.** Kick sai da allowlist (volta com convite); ban entra em
+  `bans` (nenhum convite serve). Ban é checado **antes** da allowlist em
+  `store.isMember` — readicionar pelo CLI não desfaz um ban.
+- **O furo do kickado (roadmap 114) fecha pelos dois lados**: kick/ban derrubam
+  refresh + WebSocket + voz na hora; e o heartbeat revalida PERTENCIMENTO (não
+  o JWT — ele expira em 15 min e a chamada dura horas), que é o único jeito de
+  alcançar uma mudança feita por outro processo, como o `scripts/allowlist.ts`.
+- **O código do convite viaja no `state` do OAuth**, nunca em cookie nem na
+  query do callback — senão dá para trocá-lo no meio do fluxo. O resgate e o
+  incremento de `uses` são a MESMA transação: dois logins simultâneos no último
+  uso furariam o `max_uses`.
+- `GET /api/invites/:code` é a **única rota sem auth** do projeto: devolve só
+  `{valid, guild_name, inviter_name}`, e tem rate limit por IP em que a
+  tentativa conta (adivinhar código não pode ser barato).
+- **Timeout de chat vai ao BANCO** (`users.muted_until`), ao contrário dos flags
+  de voz: um prazo de 24 h que evapora no deploy não é prazo. O composer se
+  fecha sozinho e reabre no vencimento por timer local — o vencimento não gera
+  evento no servidor.
+- **Bootstrap** (roadmap 116): `DANJOCORD_OWNER_DISCORD_ID`. Deploy limpo tem
+  allowlist vazia e ninguém entra; "primeiro login vira dono" seria sequestro
+  de servidor com o Ingress público.
+- Bloquear (item 54) é 100% local e refaz a janela de mensagens pelo
+  `loadLatest` — arrancar nós à mão quebraria o agrupamento do M7.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

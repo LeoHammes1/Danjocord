@@ -1,18 +1,24 @@
-/* Card do membro (M9, item 48) — ui/user-controls.ts.
+/* Card do membro (M9 + M10, item 48) — ui/user-controls.ts.
    Nada aqui existe no index.html: o popover inteiro nasce em JS, e este é o
    único arquivo de estilo que o conhece.
 
-   Duas regras que valem para o arquivo inteiro:
+   Três regras que valem para o arquivo inteiro:
 
-   1. --danger é RESERVADO à moderação (silenciar para todos, desconectar) e ao
-      selo de quem já foi silenciado. Volume, mute local e soundboard são
-      "só para mim": mudar o áudio para você não é perigo nenhum, e pintar tudo
-      de vermelho apagaria a diferença que o card existe para deixar clara.
+   1. --danger é RESERVADO ao que atinge OUTRA pessoa (silenciar para todos,
+      desconectar, expulsar, banir) e aos selos de quem já sofreu uma dessas.
+      Volume, mute local, soundboard e bloquear são "só para você": mudar o que
+      VOCÊ ouve não é perigo nenhum, e pintar tudo de vermelho apagaria a
+      diferença que o card existe para deixar clara.
 
    2. Superfícies: o card usa --bg-chat e cada linha usa --bg-elevated por cima
       — e por isso NENHUM texto daqui é --text-muted: sobre --bg-elevated ele dá
       4.05:1, abaixo do AA de 4.5:1 (mesma restrição do settings.css). Texto
-      secundário é --text-normal, e o destaque vem do peso e do tamanho. */
+      secundário é --text-normal, e o destaque vem do peso e do tamanho.
+
+   3. As quatro faixas do card (perfil / só para você / moderação / não dá para
+      desfazer) são separadas por BORDA, não por espaço: com dez linhas na
+      caixa, espaço sozinho não diz onde uma coisa acaba e a outra começa — e a
+      fronteira antes de "banir" é a mais importante da tela. */
 
 /* --- caixa ----------------------------------------------------------------
    position: fixed + left/top escritos pelo place(): o card é ancorado numa
@@ -25,8 +31,8 @@
 .uc-pop {
   position: fixed;
   z-index: 10;
-  width: 300px;
-  /* o card cresce com a seção de moderação; em janela baixa ele rola por
+  width: 320px;
+  /* o card cresce com as seções de moderação; em janela baixa ele rola por
      dentro em vez de vazar pela borda */
   max-height: calc(100vh - 16px);
   overflow-y: auto;
@@ -39,11 +45,18 @@
   box-shadow: var(--shadow-high);
 }
 
-/* --- cabeçalho ----------------------------------------------------------- */
+/* --- cabeçalho de perfil ------------------------------------------------- */
 .uc-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--sp-3);
+}
+.uc-avatar {
+  flex: none;
+  /* o slot existe porque o sync() TROCA o nó do avatar quando a presença muda;
+     sem um contêiner de tamanho fixo, o card daria um pulo a cada troca */
+  width: 56px;
+  height: 56px;
 }
 .uc-idbox {
   flex: 1;
@@ -61,8 +74,22 @@
   font-weight: var(--fw-semibold);
   overflow-wrap: anywhere; /* o username vem do Discord: pode não ter espaço nenhum */
 }
+/* o @username do Discord embaixo do apelido da guild: menor e mais fraco que o
+   nome exibido, porque quem manda na identificação aqui é o apelido */
+.uc-handle {
+  width: 100%;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
 .uc-sub {
   width: 100%;
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+}
+.uc-since {
+  width: 100%;
+  margin-top: var(--sp-1);
   color: var(--text-normal);
   font-size: var(--fs-xs);
 }
@@ -74,33 +101,60 @@
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
 }
+/* dono em --warn (dourado) e não em --brand: existe UM dono, e ele precisa se
+   distinguir dos administradores num olhar — não é uma "categoria a mais" */
+.uc-badge-owner {
+  background: var(--warn);
+  color: var(--bg-guilds);
+}
 .uc-close {
   align-self: start; /* o X acompanha o topo do card, não o meio do avatar */
 }
 
-/* --- selo de silenciado por admin ---------------------------------------
-   Aparece para TODO MUNDO (não é controle, é explicação de por que a pessoa
-   sumiu do áudio) — por isso fica no cabeçalho e não na seção de moderação. */
-.uc-server-flag {
+/* --- selos de estado imposto ---------------------------------------------
+   Aparecem para TODO MUNDO (não são controles, são a explicação de por que a
+   pessoa sumiu do áudio ou parou de escrever) — por isso ficam antes do corpo
+   e fora de qualquer seção de moderação. */
+.uc-flag {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   padding: var(--sp-2);
   border-radius: var(--r-sm);
   background: var(--bg-elevated);
-  color: var(--danger);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
 }
-.uc-server-flag svg {
+.uc-flag svg {
   flex: none;
 }
+/* voz silenciada pelo servidor: é --danger, como a chave que a causou */
+.uc-flag-voice {
+  color: var(--danger);
+}
+/* timeout de chat: --warn, porque é temporário e passa sozinho — usar o mesmo
+   vermelho do server mute faria as duas punições parecerem a mesma coisa */
+.uc-flag-chat {
+  color: var(--warn);
+}
 
-/* --- corpo --------------------------------------------------------------- */
+/* --- corpo e faixas ------------------------------------------------------- */
 .uc-body {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+.uc-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.uc-section-head {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .uc-row {
@@ -117,6 +171,14 @@
   color: var(--text-normal);
   font-size: var(--fs-xs);
 }
+/* dica de estado ("o bloqueio já silencia") — informação neutra, não ressalva:
+   fica em --text-normal e itálico, para não competir com a descrição */
+.uc-hint {
+  margin-top: var(--sp-1);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
 /* aviso de "isto não vale para tudo" (volume acima de 100%) — é ressalva, não
    erro: --warn, o mesmo do aviso de áudio travado do diálogo de som */
 .uc-warn {
@@ -124,6 +186,7 @@
   color: var(--warn);
   font-size: var(--fs-xs);
 }
+
 /* --- linha com chave ------------------------------------------------------
    Grade de duas colunas: a chave ocupa as duas linhas (rótulo em cima,
    descrição embaixo) — o mesmo desenho das linhas do diálogo de som. */
@@ -142,8 +205,19 @@
   grid-column: 1;
 }
 .uc-switch-row > .uc-label,
-.uc-switch-row > .uc-desc {
+.uc-switch-row > .uc-desc,
+.uc-switch-row > .uc-hint {
   grid-column: 2;
+}
+/* chave desabilitada (o "parar de ouvir" quando o bloqueio já silencia): o
+   rótulo desbota junto, senão a linha parece ativa com a chave travada */
+.uc-switch-row > .settings-switch:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.uc-switch-row:has(> .settings-switch:disabled) > .uc-label {
+  color: var(--text-normal);
+  cursor: default;
 }
 
 /* --- volume ---------------------------------------------------------------
@@ -194,27 +268,31 @@
   grid-column: 1 / -1;
 }
 
-/* --- moderação (só admin) ------------------------------------------------
+/* --- moderação (só para quem tem cargo) ----------------------------------
    Separada por uma linha: o que está abaixo dela vale para TODOS, e a
    fronteira precisa ser visível antes de o rótulo ser lido. */
 .uc-admin {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
   margin-top: var(--sp-1);
   padding-top: var(--sp-3);
   border-top: 1px solid var(--line);
 }
-.uc-admin-head {
-  color: var(--text-normal);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+
+/* --- faixa irreversível ---------------------------------------------------
+   Borda em --danger, e não a mesma --line da moderação: expulsar e banir não
+   são "mais uma seção" — são a única parte do card que quem apertar não
+   consegue desfazer. A distância aqui é proposital: o dedo não escorrega da
+   última linha da moderação para dentro desta. */
+.uc-danger-zone {
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--danger);
+}
+.uc-danger-zone > .uc-section-head {
+  color: var(--danger);
 }
 
-/* borda esquerda em --danger: marca as duas linhas destrutivas sem tingir o
-   texto inteiro de vermelho (que gritaria mais que o próprio estado) */
+/* borda esquerda em --danger: marca as linhas destrutivas sem tingir o texto
+   inteiro de vermelho (que gritaria mais que o próprio estado) */
 .uc-destructive {
   border-left: 2px solid var(--danger);
 }
@@ -226,6 +304,10 @@
   background: var(--danger);
 }
 
+/* --- botões de ação ------------------------------------------------------
+   Dois pesos, e só dois: o neutro (promover, silenciar no chat, liberar) e o
+   --danger. O que decide não é a importância da ação, é se ela machuca. */
+.uc-action-btn,
 .uc-danger-btn {
   display: inline-flex;
   align-items: center;
@@ -233,25 +315,85 @@
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
   background: var(--bg-chat);
-  color: var(--danger);
   font-weight: var(--fw-medium);
   transition:
     background-color var(--t-fast),
     color var(--t-fast);
 }
+.uc-action-btn {
+  color: var(--text-strong);
+}
+.uc-action-btn:hover:not(:disabled) {
+  background: var(--brand);
+}
+.uc-danger-btn {
+  color: var(--danger);
+}
 .uc-danger-btn:hover:not(:disabled) {
   background: var(--danger);
   color: var(--text-strong);
 }
+.uc-action-btn:disabled,
 .uc-danger-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
+.uc-row > .uc-action-btn + .uc-desc,
 .uc-row > .uc-danger-btn + .uc-desc {
   margin-top: var(--sp-2);
 }
 
-/* --- confirmação do desconectar ------------------------------------------
+/* --- cargo ----------------------------------------------------------------
+   As duas ações de cargo são sub-linhas SEM caixa própria: elas já estão
+   dentro da linha "Cargo", e uma caixa dentro da outra viraria degrau. */
+.uc-role {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.uc-subrow {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+
+/* --- timeout de chat ------------------------------------------------------ */
+.uc-timeout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.uc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+/* as durações são pastilhas e não uma <select>: quatro opções cabem na tela, e
+   um menu esconderia justamente a informação que decide o clique */
+.uc-chip {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-full);
+  background: var(--bg-chat);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  transition:
+    background-color var(--t-fast),
+    color var(--t-fast);
+}
+.uc-chip:hover {
+  background: var(--warn);
+  color: var(--bg-guilds);
+}
+/* "liberar agora" é o desfazer: fica separado das pastilhas por uma margem
+   maior, para ninguém libertar alguém querendo silenciar por 5 minutos */
+.uc-timeout-clear {
+  margin-top: var(--sp-1);
+}
+
+/* --- confirmação ----------------------------------------------------------
    Fica DENTRO da mesma linha, no lugar do botão (que some enquanto ela está no
    ar): a pergunta e a resposta no mesmo ponto da tela, sem diálogo do
    navegador por cima e sem a linha virar uma caixa vazia. */
@@ -267,6 +409,20 @@
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
+/* o motivo ocupa a linha inteira acima dos botões: ele é opcional, mas quando
+   alguém escreve, escreve uma frase — não uma palavra */
+.uc-reason {
+  width: 100%;
+  padding: var(--sp-2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+}
+.uc-reason::placeholder {
+  color: var(--text-faint);
+}
 .uc-cancel {
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
@@ -281,8 +437,9 @@
 }
 
 /* --- erro ---------------------------------------------------------------
-   Op 20 recusado (não sou admin, alvo saiu no meio): a falha aparece NO card,
-   não no console — "cliquei e nada aconteceu" é o pior retorno possível. */
+   Rota ou op 20 recusados (cargo insuficiente, alvo que saiu no meio): a falha
+   aparece NO card, em português, não no console — "cliquei e nada aconteceu" é
+   o pior retorno possível. */
 .uc-error {
   padding: var(--sp-2);
   border-radius: var(--r-sm);

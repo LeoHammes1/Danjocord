@@ -5,6 +5,9 @@ import { openDb } from "./db/index.js";
 import { Store } from "./store.js";
 import { Gateway } from "./gateway.js";
 import { registerRoutes } from "./routes.js";
+import { registerModerationRoutes } from "./moderation.js";
+import { Guild } from "./guild.js";
+import { bootstrapOwner } from "./bootstrap.js";
 import { Sessions } from "./sessions.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { registerOAuthRoutes } from "./oauth.js";
@@ -48,6 +51,14 @@ const store = new Store(db);
 const gateway = new Gateway(store);
 // UMA instância: os OTCs do fluxo OAuth vivem em memória dentro dela
 const sessions = new Sessions(db, store);
+// M10: quem entra, quem sai e quem fez o quê (allowlist + convites + bans + log)
+const guild = new Guild(db);
+
+// Bootstrap do primeiro dono (roadmap 116) ANTES de aceitar qualquer conexão:
+// num deploy limpo a allowlist nasce vazia, o OAuth recusa todo mundo e não
+// existe admin para convidar — o servidor subiria trancado por fora. Roda com
+// o log do Fastify porque a única saída de um deploy trancado é ler o log.
+bootstrapOwner(store, guild, (msg) => app.log.warn(msg));
 
 // usuário novo (dev ou OAuth) aparece na sidebar de todo mundo na hora;
 // atribuição pós-construção porque Store e Gateway não se conhecem
@@ -80,8 +91,18 @@ registerRoutes(app, store, gateway);
 // o canal onde o som toca é o que o SERVIDOR vê, nunca o que o cliente diz —
 // a rota pergunta ao módulo de voz e responde 403 para quem está fora
 registerSoundRoutes(app, store, gateway, { voiceChannelOf: (userId) => voice.channelOfUser(userId) });
+// M10: kick e ban precisam derrubar as sessões de gateway (o gateway valida o
+// token uma vez, no Identify — roadmap 114) e tirar o alvo da voz; as duas
+// capacidades entram por aqui, e o módulo de moderação não conhece nem o ws
+// nem o mediasoup
+registerModerationRoutes(app, store, gateway, guild, {
+  disconnectFromVoice: (userId) => voice.removeUserFromVoice(userId),
+});
 registerAuthRoutes(app, store, sessions);
-registerOAuthRoutes(app, db, store, sessions);
+// o callback de MEMBER_UPDATE só dispara no primeiro login do dono configurado
+// (bootstrap): o cargo muda depois do MEMBER_ADD, e sem o aviso a sidebar de
+// quem já estava conectado mostraria o dono como membro comum até um F5
+registerOAuthRoutes(app, store, sessions, guild, (user) => gateway.broadcast("MEMBER_UPDATE", user));
 await registerStaticClient(app);
 
 await app.listen({ host: config.host, port: config.port });

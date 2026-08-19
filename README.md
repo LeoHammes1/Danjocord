@@ -73,18 +73,43 @@ disso é necessário: com `DANJOCORD_DEV_AUTH=1` (o default fora de produção),
    pelo `apply-secrets.sh` do KubeCluster), mais `PUBLIC_BASE_URL` e `APP_URL`
    (`https://danjocord.leohammes.dev` em produção; em dev os defaults já
    apontam para localhost).
-3. Só passa do OAuth quem está na allowlist. Administre pela CLI (de
-   `apps/server`; em dev, rode `pnpm --filter @danjocord/server build` antes —
-   o script abre o banco pelo código compilado):
+3. **Primeiro dono** (`DANJOCORD_OWNER_DISCORD_ID`): num deploy limpo a
+   allowlist nasce **vazia** — o OAuth recusa todo mundo e não existe admin
+   para criar convite, então o servidor sobe saudável e trancado por fora. Com
+   esta env definida, o boot põe esse `discord_id` na allowlist **só quando a
+   allowlist está vazia**, e o primeiro login dele vira `owner`. Reiniciar
+   depois disso não mexe em nada; trocar o valor não promove ninguém numa guild
+   que já existe.
+
+   Sem a env e com a allowlist vazia, o servidor **avisa no log** no boot
+   (senão ninguém descobre por que o login recusa todo mundo). O caminho
+   "o primeiro que logar vira dono" está descartado de propósito: o Ingress é
+   público.
+
+4. Depois disso, quem entra entra **por convite** (link `/invite/<código>`,
+   criado por admin+ na UI) — a allowlist deixa de ser o caminho normal. A CLI
+   continua existindo para operar o servidor de fora (de `apps/server`; em dev,
+   rode `pnpm --filter @danjocord/server build` antes — o script abre o banco
+   pelo código compilado):
 
    ```bash
    node scripts/allowlist.ts add 123456789012345678 --by 987654321098765432
    node scripts/allowlist.ts remove 123456789012345678
    node scripts/allowlist.ts list
+
+   node scripts/admin.ts grant <user_id>    # cargo admin
+   node scripts/admin.ts revoke <user_id>   # cargo member
+   node scripts/admin.ts owner <user_id>    # transfere o cargo de dono
+   node scripts/admin.ts list
    ```
 
-   A CLI respeita o mesmo `DB_PATH` do servidor. Em produção:
+   As CLIs respeitam o mesmo `DB_PATH` do servidor. Em produção:
    `kubectl -n production exec deploy/danjocord -- node scripts/allowlist.ts list`.
+
+   Elas rodam em **outro processo**, direto no banco: não emitem eventos (quem
+   está com o app aberto vê o estado antigo até dar F5) e não derrubam sessão
+   de gateway na hora — quem cobre isso é a revalidação de pertencimento no
+   heartbeat (~41 s). Kick e ban **pela UI** derrubam na hora.
 
 ## App desktop (Electron, M6)
 

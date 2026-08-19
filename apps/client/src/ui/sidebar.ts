@@ -12,6 +12,8 @@ import { avatarColor, avatarEl } from "./avatar.js";
 import type { Channel, UiContext, VoiceState } from "./context.js";
 import { icon, type IconName } from "./icons.js";
 import { openUserControls } from "./user-controls.js";
+import { invitesMenuItem } from "./invites.js";
+import { presenceMenuItems } from "./presence.js";
 import { soundMenuItem } from "./settings.js";
 
 /**
@@ -191,8 +193,14 @@ export function mountSidebar(ctx: SidebarContext): void {
     setMenuOpen(false);
     ctx.actions.logout();
   });
-  // som primeiro, "Sair" por último — destrutivo no fim é convenção de menu
-  userMenu.append(soundMenuItem(el.userSettings, () => setMenuOpen(false)), el.logout);
+  // status → som → convidar → "Sair". O destrutivo fica por último, e o
+  // "Voz e vídeo" é inserido pelo main.ts (só ele conhece o VoiceClient).
+  userMenu.append(
+    ...presenceMenuItems(ctx, el.userSettings, () => setMenuOpen(false)),
+    soundMenuItem(el.userSettings, () => setMenuOpen(false)),
+    invitesMenuItem(ctx, el.userSettings, () => setMenuOpen(false)),
+    el.logout,
+  );
   el.userPanel.append(userMenu);
 
   // fechar o menu: Esc devolve o foco à engrenagem (quem abriu por teclado

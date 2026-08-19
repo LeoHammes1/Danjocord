@@ -58,11 +58,37 @@
   height: var(--dot);
   border-radius: var(--r-full);
 }
+/* As QUATRO presenças do M10 (item 56). Cor E forma, nunca só cor: um terço
+   dos homens com daltonismo não separa o verde do âmbar, e é justamente a
+   diferença entre "chama ele" e "deixa quieto". As formas são as do Discord
+   pela razão mais simples do mundo — quem chega já sabe lê-las.
+
+   O recorte é máscara (como o buraco do .av-cut logo acima) e não um pseudo-
+   elemento da cor do fundo: a mesma bolinha aparece sobre --bg-sidebar, sobre
+   --bg-elevated (linha em hover) e dentro do menu do usuário, e um "furo"
+   pintado ficaria visível como mancha em dois desses três lugares.
+
+   O 98%/100% nas paradas é antialiasing da borda, igual ao do .av-cut. */
 .av-dot.av-online {
   background: var(--ok);
 }
+/* ausente: lua minguante — um círculo mordido no canto superior direito */
+.av-dot.av-idle {
+  background: var(--warn);
+  -webkit-mask-image: radial-gradient(ellipse 58% 58% at 78% 16%, #0000 98%, #000 100%);
+  mask-image: radial-gradient(ellipse 58% 58% at 78% 16%, #0000 98%, #000 100%);
+}
+/* não perturbe: a barra horizontal do "proibido" */
+.av-dot.av-dnd {
+  background: var(--danger);
+  -webkit-mask-image: linear-gradient(#000 0 32%, #0000 32% 68%, #000 68% 100%);
+  mask-image: linear-gradient(#000 0 32%, #0000 32% 68%, #000 68% 100%);
+}
+/* offline: anel vazado — a ausência desenhada como ausência */
 .av-dot.av-offline {
   background: var(--text-faint);
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #0000 44%, #000 46%);
+  mask-image: radial-gradient(circle at 50% 50%, #0000 44%, #000 46%);
 }
 
 /* Sem foto: círculo tingido com a inicial. O tingimento (color-mix) resolve
@@ -108,13 +134,16 @@
 
 .members-empty {
   padding: 0 var(--sp-4);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: var(--fs-xs);
 }
 
+/* --text-muted e não o --text-faint do M7: sobre --bg-sidebar o faint dá
+   3.6:1, e o cabeçalho de seção é texto de 12px — não cabe na exceção de
+   "texto grande" do AA. O muted dá 4.8:1 e continua sendo o cinza discreto. */
 .member-group-head {
   padding: var(--sp-4) var(--sp-4) var(--sp-1);
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
@@ -162,20 +191,40 @@
   font-weight: var(--fw-medium);
 }
 
-/* Offline apagado no grupo inteiro (avatar junto), como no Discord: o
-   contraste é o que separa as duas seções à primeira vista, mais que o
-   cabeçalho. */
-.member-group-offline .member {
-  opacity: 0.4;
+/* Offline apagado, como no Discord — mas só o AVATAR. O M7 punha opacity 0.4
+   na linha inteira e isso derrubava o nome para 1.9:1 sobre --bg-sidebar: o
+   grupo "Offline" era, na prática, texto ilegível (AA pede 4.5:1). O avatar é
+   decorativo e pode apagar à vontade; o nome fica no --int-normal de todo
+   mundo, e quem separa as seções é o cabeçalho mais a forma da bolinha. */
+.member-group-offline .av {
+  opacity: 0.45;
 }
 
+/* Selo: fundo TINGIDO com texto em --text-strong, e não a cor cheia com texto
+   por cima. O selo do M7 era --brand sólido, e #f2f3f5 sobre #5865f2 dá 4.1:1
+   — reprova no AA, e a 12px não vale a exceção de "texto grande". Tingido, o
+   mesmo par dá ~9:1 em todas as variantes, e a cor continua fazendo o trabalho
+   dela, que é dizer QUAL selo é sem precisar ler. É o mesmo truque do
+   .av-initial ali em cima. */
 .member-badge {
   flex: none;
   padding: 0 var(--sp-1);
   border-radius: var(--r-sm);
-  background: var(--brand);
+  background: color-mix(in srgb, var(--brand) 26%, var(--bg-sidebar));
   color: var(--text-strong);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
   line-height: 1.4;
+  white-space: nowrap;
+}
+/* dono: âmbar, o mesmo --warn do "ausente" — não há disputa, um é bolinha e o
+   outro é palavra */
+.member-badge.is-owner {
+  background: color-mix(in srgb, var(--warn) 26%, var(--bg-sidebar));
+}
+/* silenciado no texto (item 53): vermelho porque é uma punição em curso, e é
+   informação para TODO MUNDO — quem não entende por que fulano parou de
+   escrever é justamente quem não é admin */
+.member-badge.is-timeout {
+  background: color-mix(in srgb, var(--danger) 26%, var(--bg-sidebar));
 }

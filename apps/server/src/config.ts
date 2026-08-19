@@ -70,4 +70,20 @@ export const config = {
   publicBaseUrl: env.PUBLIC_BASE_URL ?? "http://localhost:8080",
   /** para onde o navegador volta com o one-time code (dev: o vite) */
   appUrl: env.APP_URL ?? (env.NODE_ENV === "production" ? (env.PUBLIC_BASE_URL ?? "") : "http://localhost:5173"),
+
+  // --- convites e moderação (M10, doc §5 / roadmap 43–57) ---
+  /** nome da guild — a landing pública do convite mostra ISTO e mais nada de dentro */
+  guildName: env.GUILD_NAME ?? "Danjocord",
+  /**
+   * Bootstrap do primeiro dono (roadmap 116). Num deploy limpo a allowlist
+   * nasce VAZIA: o OAuth recusa todo mundo e não existe admin para convidar —
+   * o servidor sobe trancado por fora. Com esta env definida, o boot insere
+   * ESTE discord_id na allowlist (só quando a allowlist está vazia) e o
+   * primeiro login dele vira `owner`.
+   *
+   * O caminho alternativo óbvio — "o primeiro que logar vira dono" — está
+   * DESCARTADO de propósito: o Ingress é público, e quem passasse na frente
+   * levaria o servidor junto.
+   */
+  ownerDiscordId: env.DANJOCORD_OWNER_DISCORD_ID ?? "",
 } as const;

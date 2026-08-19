@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { User } from "@danjocord/protocol";
+import { claimOwner } from "./bootstrap.js";
 import { config } from "./config.js";
-import type { Db } from "./db/index.js";
+import type { Guild, InviteProblem } from "./guild.js";
 import type { Store } from "./store.js";
 import type { Sessions } from "./sessions.js";
 
@@ -20,6 +22,14 @@ import type { Sessions } from "./sessions.js";
  * ?redirect_port=<porta do http.Server efêmero do Electron> e o callback
  * devolve o resultado para http://127.0.0.1:<porta>/danjocord-callback em vez
  * do appUrl. O fluxo web (sem a porta) fica intocado.
+ *
+ * M10: /start aceita ?invite=<code>, e quem NÃO está na allowlist tenta o
+ * convite antes de ser recusado — é a única exceção controlada ao "allowlist
+ * antes de qualquer escrita". O código viaja DENTRO do `PendingAuth`, amarrado
+ * ao state, e nunca em cookie nem na query do callback: se ele voltasse do
+ * navegador, alguém no meio do caminho trocaria o convite depois que a pessoa
+ * já autorizou no Discord — a autorização seria de um link e o resgate, de
+ * outro.
  */
 
 /** state → code_verifier pendente. Em memória de propósito: um fluxo OAuth não sobrevive a restart. */
@@ -32,6 +42,13 @@ interface PendingAuth {
    * exactOptionalPropertyTypes — o campo é sempre gravado, às vezes vazio.)
    */
   redirectPort: number | undefined;
+  /**
+   * M10: convite apresentado no /start. Vive AQUI, colado ao state, porque é
+   * ele que amarra "o link que a pessoa clicou" a "a autorização que ela deu".
+   * (`| undefined` e não `?`: exactOptionalPropertyTypes — o campo é sempre
+   * gravado, às vezes vazio.)
+   */
+  inviteCode: string | undefined;
 }
 
 /** Resposta do /users/@me. O id é snowflake do DISCORD (string) — nunca confundir com os nossos. */
@@ -62,9 +79,46 @@ const CallbackQuery = z.object({
  */
 const StartQuery = z.object({
   redirect_port: z.coerce.number().int().min(1024).max(65535).optional(),
+  /**
+   * M10: código do convite. A forma é checada aqui só para não guardar lixo em
+   * memória — quem decide se ele vale é o `redeemInvite`, no callback, depois
+   * de saber QUEM está entrando (um código válido não vale para um banido).
+   */
+  invite: z.string().regex(/^[0-9A-Za-z]{1,32}$/).optional(),
 });
 
-export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, sessions: Sessions): void {
+/**
+ * `InviteProblem` → código de `auth_error`. São códigos próprios (e não o
+ * genérico `not_allowed`) porque a tela de login precisa dizer O QUE FAZER:
+ * "peça um link novo" resolve um convite vencido e não resolve um ban.
+ */
+function authErrorFor(problem: InviteProblem): string {
+  switch (problem) {
+    case "unknown":
+      return "invite_invalid";
+    case "revoked":
+      return "invite_revoked";
+    case "expired":
+      return "invite_expired";
+    case "exhausted":
+      return "invite_exhausted";
+    case "banned":
+      return "banned";
+  }
+}
+
+export function registerOAuthRoutes(
+  app: FastifyInstance,
+  store: Store,
+  sessions: Sessions,
+  guild: Guild,
+  /**
+   * Avisa a guild que um membro mudou. Só é usado quando o bootstrap do dono
+   * promove alguém no primeiro login — o oauth não conhece o gateway, e o
+   * wiring do index.ts liga isto ao broadcast de MEMBER_UPDATE.
+   */
+  onMemberUpdate: (user: User) => void = () => undefined,
+): void {
   const pending = new Map<string, PendingAuth>();
   const redirectUri = config.publicBaseUrl + "/auth/discord/callback";
 
@@ -77,7 +131,9 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
 
     const parsedQuery = StartQuery.safeParse(req.query);
     if (!parsedQuery.success) {
-      return reply.code(400).send({ error: "redirect_port inválido — esperado inteiro entre 1024 e 65535" });
+      return reply
+        .code(400)
+        .send({ error: "query inválida — redirect_port entre 1024 e 65535, invite alfanumérico de até 32 chars" });
     }
 
     // Faxina preguiçosa: com ~10 usuários não vale um timer só para isto.
@@ -93,6 +149,7 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
       codeVerifier,
       expiresAt: now + config.oauthStateTtlMs,
       redirectPort: parsedQuery.data.redirect_port,
+      inviteCode: parsedQuery.data.invite,
     });
 
     const url = new URL("https://discord.com/oauth2/authorize");
@@ -151,13 +208,36 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
       return reply.redirect(dest("auth_error", "discord"), 302);
     }
 
-    // Allowlist ANTES de qualquer escrita: quem não foi convidado não deixa
-    // rastro no banco — nem usuário, nem sessão.
-    const allowed = db.prepare("SELECT 1 FROM allowlist WHERE discord_id = ?").get(discordUser.id) !== undefined;
-    if (!allowed) {
+    // BAN NA FRENTE DE TUDO (M10): quem está banido perde mesmo estando na
+    // allowlist (o CLI pode readicionar sem saber) e mesmo com um convite
+    // válido na mão. É a mesma ordem que o redeemInvite usa por dentro —
+    // repetida aqui porque quem está banido nem chega a tentar um convite.
+    if (guild.isBanned(discordUser.id)) {
       await revokeDiscordToken(app, accessToken);
-      app.log.warn({ discordId: discordUser.id }, "login OAuth recusado: fora da allowlist");
-      return reply.redirect(dest("auth_error", "not_allowed"), 302);
+      app.log.warn({ discordId: discordUser.id }, "login OAuth recusado: banido");
+      return reply.redirect(dest("auth_error", "banned"), 302);
+    }
+
+    // Allowlist ANTES de qualquer escrita: quem não foi convidado não deixa
+    // rastro no banco — nem usuário, nem sessão. O convite (M10) é a ÚNICA
+    // exceção controlada deste ponto: ele entra na allowlist e, aí sim, o
+    // fluxo segue igual ao de quem já estava.
+    if (!guild.isAllowed(discordUser.id)) {
+      const code = entry.inviteCode;
+      if (code === undefined) {
+        await revokeDiscordToken(app, accessToken);
+        app.log.warn({ discordId: discordUser.id }, "login OAuth recusado: fora da allowlist");
+        return reply.redirect(dest("auth_error", "not_allowed"), 302);
+      }
+      // transacional lá dentro: dois logins simultâneos no ÚLTIMO uso não furam
+      // o max_uses (a corrida clássica de resgate — ver guild.redeemInvite)
+      const redeemed = guild.redeemInvite(code, discordUser.id);
+      if (!redeemed.ok) {
+        await revokeDiscordToken(app, accessToken);
+        app.log.warn({ discordId: discordUser.id, problem: redeemed.problem }, "login OAuth recusado: convite");
+        return reply.redirect(dest("auth_error", authErrorFor(redeemed.problem)), 302);
+      }
+      app.log.info({ discordId: discordUser.id, code }, "convite resgatado — entrou na guild");
     }
 
     // Upsert por discord_id (vive no Store desde o M2): re-login atualiza
@@ -170,6 +250,16 @@ export function registerOAuthRoutes(app: FastifyInstance, db: Db, store: Store, 
         ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
         : null;
     const { user } = store.upsertDiscordUser(discordUser.id, displayName, avatarUrl);
+
+    // Bootstrap do dono (roadmap 116): num deploy limpo a linha em `users` só
+    // nasce AGORA, no primeiro login — é por isto que a promoção acontece aqui
+    // e não no boot. Não faz nada quando a guild já tem dono, nem para quem não
+    // é o id configurado.
+    const promoted = claimOwner(store, guild, discordUser.id);
+    if (promoted) {
+      app.log.info({ discordId: discordUser.id }, "bootstrap: primeiro login do dono — cargo owner aplicado");
+      onMemberUpdate(promoted);
+    }
 
     // O token do Discord já cumpriu o papel dele (um /users/@me) — revoga.
     await revokeDiscordToken(app, accessToken);

@@ -20,13 +20,26 @@
  *    sem nenhum estado persistido. É por isso que `avatarColor` é exportada —
  *    o nome do autor na mensagem usa exatamente a mesma cor.
  */
+import { displayName, type PresenceStatus } from "@danjocord/protocol";
 import type { User } from "./context.js";
 
-/** O avatar não precisa do usuário inteiro — só do que ele desenha. */
-type AvatarUser = Pick<User, "id" | "username" | "avatar_url">;
+/**
+ * O avatar não precisa do usuário inteiro — só do que ele desenha. O
+ * `nickname` é OPCIONAL (e não `Pick<User, "nickname">`) porque metade dos
+ * chamadores desenha um placeholder montado à mão, de quem só se sabe o id:
+ * exigir o campo obrigaria todos eles a escrever `nickname: null` sem motivo.
+ */
+type AvatarUser = Pick<User, "id" | "username" | "avatar_url"> & Partial<Pick<User, "nickname">>;
 
-/** Presença desenhada como bolinha recortada; ausente = sem bolinha. */
-export type PresenceKind = "online" | "offline";
+/**
+ * Presença desenhada como bolinha recortada; ausente = sem bolinha.
+ *
+ * M10 (item 56): eram dois valores (o booleano `online`), agora são os quatro
+ * do protocolo. O alias continua existindo porque quem desenha um avatar não
+ * precisa saber que a fonte é o `PresenceStatus` do gateway — e porque
+ * `avatarEl(user, 32, "online")` de antes segue válido, palavra por palavra.
+ */
+export type PresenceKind = PresenceStatus;
 
 /**
  * Quantas cores a paleta do fallback tem. Os valores em si são
@@ -92,6 +105,8 @@ function initialEl(user: AvatarUser): HTMLElement {
   const span = document.createElement("span");
   span.className = "avatar av-initial";
   span.setAttribute("aria-hidden", "true");
-  span.textContent = user.username.trim().charAt(0).toUpperCase() || "?";
+  // a inicial é a do nome EXIBIDO (item 55): com apelido, o círculo do "Zé"
+  // mostrando "L" de "leonardo" seria a única peça da tela discordando do resto
+  span.textContent = displayName({ username: user.username, nickname: user.nickname ?? null }).trim().charAt(0).toUpperCase() || "?";
   return span;
 }

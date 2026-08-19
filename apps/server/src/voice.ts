@@ -778,7 +778,32 @@ export class Voice {
     return {};
   }
 
-  /** Fonte única de "é admin?": a coluna users.is_admin (a mesma do DELETE do M2). */
+  /**
+   * Tira TODAS as sessões de um usuário da voz, sem ator e sem checagem de
+   * cargo (M10): quem chama é a moderação REST, que já validou quem pode o quê
+   * — e o "ator" de um kick não tem sessão de voz nenhuma envolvida.
+   *
+   * É irmã do `disconnectUser` acima e não a mesma função de propósito: lá
+   * existe o caso do admin que se desconecta a si mesmo, que JÁ está dentro da
+   * fila da própria sessão e não pode enfileirar de novo (deadlock). Aqui esse
+   * caso não existe — a chamada vem de fora de qualquer fila —, então o código
+   * é o mais simples possível. Idempotente: alvo fora da voz é no-op.
+   */
+  async removeUserFromVoice(userId: string): Promise<void> {
+    const targets = [...this.sessions.values()].filter((s) => s.userId === userId).map((s) => s.sessionId);
+    await Promise.all(
+      // pela fila DA SESSÃO ALVO: um join em voo termina de se registrar e só
+      // então é derrubado (mesma corrida do disconnectUser)
+      targets.map((sessionId) =>
+        this.chainOp(sessionId, () => {
+          const session = this.sessions.get(sessionId);
+          if (session) this.doLeave(session);
+        }),
+      ),
+    );
+  }
+
+  /** Fonte única de "é admin?": o cargo em users.role (o mesmo do DELETE do M2). */
   private mustAdmin(ctx: VoiceCtx): void {
     if (!this.store.isAdmin(ctx.userId)) throw new Error("só admin pode moderar a voz");
   }

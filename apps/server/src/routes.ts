@@ -22,6 +22,21 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
       return reply.code(404).send({ error: "canal de texto não encontrado" });
     }
 
+    // Timeout de chat (M10, item 53). Fica AQUI e não num hook global porque é
+    // silêncio no TEXTO: quem está de castigo continua ouvindo e falando na
+    // voz, lendo o histórico e apertando o soundboard — só não escreve.
+    // Expira SOZINHO, na comparação com o relógio: não existe job de limpeza,
+    // e um timeout vencido durante um restart simplesmente deixa de valer.
+    const mutedUntil = store.mutedUntil(user.id);
+    if (mutedUntil !== null) {
+      return reply.code(403).send({
+        error: `você está silenciado neste servidor até ${new Date(mutedUntil).toISOString()}`,
+        // epoch ms junto: a UI mostra a hora no fuso de quem lê e conta o
+        // relógio regressivo sem ter que interpretar a frase acima
+        muted_until: mutedUntil,
+      });
+    }
+
     const body = CreateMessageBody.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "corpo inválido" });
 
@@ -105,6 +120,11 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     if (channelId === null || !store.channelExists(channelId, "text")) {
       return reply.code(404).send({ error: "canal de texto não encontrado" });
     }
+
+    // silenciado não anuncia digitação: o POST da mensagem vai ser recusado
+    // logo em seguida, e o indicador prometeria aos outros uma fala que nunca
+    // chega. 204 mesmo assim — o cliente não precisa tratar um erro aqui.
+    if (store.mutedUntil(user.id) !== null) return reply.code(204).send();
 
     // efêmero de propósito: nada persiste — broadcast para todos (o cliente
     // ignora o próprio user_id) e o indicador expira sozinho (~10s) lá

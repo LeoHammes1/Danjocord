@@ -14,7 +14,7 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | M7 | fundação visual — §6 + 75–77 | ✅ |
 | M8 | som — §1 e §2 + 113 | ✅ |
 | M9 | soundboard + controles de voz — §3 e §4 | ✅ |
-| M10 | convites + moderação — §5 + 114, 116 | |
+| M10 | convites + moderação — §5 + 114, 116 | ✅ |
 | M11 | chat completo — §7 | |
 
 Fora de marco, mas **antes do primeiro release público**: 106 (versão travada em
@@ -77,23 +77,23 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 41. ✅ `P` Erro acionável quando entrar na voz falha — hoje `joinVoice()` engole a exceção num `console.warn` e nada acontece na tela.
 42. ✅ `P` Mostrar quem está falando nos tiles de vídeo e no rodapé.
 
-## 5. Convite por link e moderação
+## 5. Convite por link e moderação ✅ M10
 
-43. `M` Migration + tabela `invites` (código, criador, expiração, limite de usos, revogação).
-44. `M` Aceitar `?invite=<código>` no fluxo OAuth — o `oauth.ts` recusa fora da allowlist **antes** de escrever no banco; o convite é a exceção controlada desse ponto.
-45. `M` `POST /api/invites` restrito a admin + `GET`/`DELETE` para listar e revogar.
-46. `M` UI de convites: gerar, copiar, ver usos/validade, revogar.
-47. `M` Rota `/invite/<code>` no cliente com landing e estados de erro.
-48. `M` Card/popover de perfil do membro — é onde mute local, volume, bloquear, server mute, kick e ban precisam **morar**.
-49. `M` Kick pela UI (rota REST que remove da allowlist e revoga sessões).
-50. `M` Tabela `bans`, separando kick de ban — com convite por link, remover da allowlist deixa de ser definitivo.
-51. `M` Trocar `is_admin` por cargo (owner/admin/membro), com proteção contra rebaixar o dono.
-52. `M` `MEMBER_UPDATE` e `MEMBER_REMOVE` no protocolo — só existe `MEMBER_ADD`.
-53. `M` Timeout de chat (silenciar no texto por X min).
-54. `M` Bloquear usuário (esconder mensagens, não só silenciar).
-55. `M` Nickname e avatar próprios da guild (hoje sobrescritos a cada login).
-56. `M` Status real (online/ausente/ocupado/invisível) + auto-ausente por inatividade.
-57. `P` Log auditável de moderação.
+43. ✅ `M` Migration + tabela `invites` (código, criador, expiração, limite de usos, revogação).
+44. ✅ `M` Aceitar `?invite=<código>` no fluxo OAuth — o `oauth.ts` recusa fora da allowlist **antes** de escrever no banco; o convite é a exceção controlada desse ponto.
+45. ✅ `M` `POST /api/invites` restrito a admin + `GET`/`DELETE` para listar e revogar.
+46. ✅ `M` UI de convites: gerar, copiar, ver usos/validade, revogar.
+47. ✅ `M` Rota `/invite/<code>` no cliente com landing e estados de erro.
+48. ✅ `M` Card/popover de perfil do membro — é onde mute local, volume, bloquear, server mute, kick e ban precisam **morar**.
+49. ✅ `M` Kick pela UI (rota REST que remove da allowlist e revoga sessões).
+50. ✅ `M` Tabela `bans`, separando kick de ban — com convite por link, remover da allowlist deixa de ser definitivo.
+51. ✅ `M` Trocar `is_admin` por cargo (owner/admin/membro), com proteção contra rebaixar o dono.
+52. ✅ `M` `MEMBER_UPDATE` e `MEMBER_REMOVE` no protocolo — só existe `MEMBER_ADD`.
+53. ✅ `M` Timeout de chat (silenciar no texto por X min).
+54. ✅ `M` Bloquear usuário (esconder mensagens, não só silenciar).
+55. ✅ `M` Nickname e avatar próprios da guild (hoje sobrescritos a cada login).
+56. ✅ `M` Status real (online/ausente/ocupado/invisível) + auto-ausente por inatividade.
+57. ✅ `P` Log auditável de moderação.
 
 ## 6. Visual — shell no espírito do Discord ✅ M7
 
@@ -164,9 +164,9 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 
 ## 9. Buracos reais encontrados no levantamento
 
-114. `M` **Kickado continua dentro** — o gateway valida o token uma única vez, no Identify; a sessão WS aberta segue lendo o chat e ouvindo a voz.
+114. ✅ `M` **Kickado continua dentro** — o gateway valida o token uma única vez, no Identify; a sessão WS aberta segue lendo o chat e ouvindo a voz.
 115. `P` **Um evento novo derruba o cliente antigo** — `ServerMessage.parse()` sem `try/catch` no listener.
-116. `M` **Deploy limpo nasce trancado** — allowlist vazia + `is_admin` default 0. Falta bootstrap do primeiro dono.
+116. ✅ `M` **Deploy limpo nasce trancado** — allowlist vazia + `is_admin` default 0. Falta bootstrap do primeiro dono.
 117. `M` Zero rate limit no REST e no gateway.
 118. `M` **Zero backup do SQLite** — PVC local-path preso a um nó, sem snapshot.
 119. `M` Nada é purgado nunca (`sessions` acumula todas as gerações de refresh).

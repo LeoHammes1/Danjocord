@@ -328,9 +328,10 @@ test("PATCH: autor renomeia; terceiro não; admin sim — com SOUND_UPDATE no fi
   assert.equal((autor.json() as Sound).name, "Nome novo");
   assert.deepEqual(findAll<Sound>("SOUND_UPDATE").at(-1), autor.json(), "SOUND_UPDATE carrega o registro atualizado");
 
-  // admin (is_admin por SQL direto, como o dono faria no pod — migration 002)
+  // admin pelo Store, como o CLI faria no pod (M10: a migration 004 trocou o
+  // booleano is_admin por users.role — a coluna antiga não existe mais)
   const root = store.findOrCreateDevUser("root");
-  db.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").run(idFromString(root.id));
+  store.setRole(root.id, "admin");
   const admin = await app.inject({
     method: "PATCH",
     url: `/api/sounds/${som.id}`,

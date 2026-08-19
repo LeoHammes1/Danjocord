@@ -82,6 +82,26 @@ spec:
               value: "https://danjocord.leohammes.dev"
             - name: APP_URL                   # navegador volta para cá com o one-time code
               value: "https://danjocord.leohammes.dev"
+            # --- convites e moderação (M10, doc §5) ---
+            - name: GUILD_NAME                # a landing PÚBLICA do convite mostra isto (e mais nada de dentro)
+              value: "Danjocord"
+            # Bootstrap do primeiro dono (roadmap 116). Num deploy limpo a
+            # allowlist nasce VAZIA: o OAuth recusa todo mundo e não existe
+            # admin para criar convite — o pod sobe saudável, responde /healthz
+            # e ninguém entra. Com esta env, o boot põe ESTE discord_id na
+            # allowlist (SÓ quando a allowlist está vazia) e o primeiro login
+            # dele vira `owner`. Reiniciar o pod depois disso não mexe em nada,
+            # e trocar o valor não promove ninguém numa guild que já existe.
+            #
+            # DESCARTADO de propósito: "o primeiro que logar vira dono" — o
+            # Ingress é público e quem passasse na frente levaria o servidor.
+            #
+            # Preencha com o SEU id do Discord (Configurações → Avançado →
+            # Modo desenvolvedor → clique com o botão direito no seu nome →
+            # Copiar ID) e aplique ANTES do primeiro login. Sem ele e com a
+            # allowlist vazia, o servidor loga um aviso explicando isto no boot.
+            # - name: DANJOCORD_OWNER_DISCORD_ID
+            #   value: "000000000000000000"
           ports:
             - containerPort: 8080           # HTTP + WS → via Traefik
             - containerPort: 40000          # mídia SRTP (M3) — direto no nó

@@ -1295,7 +1295,9 @@ test("produce H264 aceito; assinante VP8-only fica CEGO para o tile mas não MUD
 // ---------------------------------------------------------------------------
 
 const admin = store.findOrCreateDevUser("admin");
-db.prepare("UPDATE users SET is_admin = 1 WHERE id = ?").run(BigInt(admin.id));
+// M10: a migration 004 trocou o booleano is_admin por users.role — quem
+// concede o cargo agora é o Store (o CLI scripts/admin.ts faz o mesmo)
+store.setRole(admin.id, "admin");
 const dave = store.findOrCreateDevUser("dave");
 
 /** producer de mic vivo de uma sessão (é nele que o server mute morde). */

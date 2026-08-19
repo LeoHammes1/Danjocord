@@ -15,6 +15,12 @@
 @import "./members.css";
 @import "./chat.css";
 
+/* presença e apelido (M10): DEPOIS do sidebar.css porque estende o `.menu-item`
+   dele (as opções de status moram no menu do usuário), e depois do members.css
+   porque reposiciona o `.av-dot` de lá — a cor e a forma da bolinha continuam
+   sendo daquele arquivo, aqui só muda onde ela fica */
+@import "./presence.css";
+
 /* o card do membro (M9) flutua sobre as duas listas, então vem depois delas —
    e ANTES do diálogo de som, que é modal e cobre o card também */
 @import "./user-controls.css";
@@ -32,3 +38,10 @@
    estar no fim, e depois do settings.css porque reusa o `.settings-switch`
    dele (a chave liga/desliga é primitiva, o diálogo é que não é) */
 @import "./voice-settings.css";
+
+/* convites (M10) por último, e são DUAS coisas empilhadas no fim por motivos
+   diferentes: o painel é um diálogo e depende das regras `.dialog-*` que o
+   voice-settings.css define acima; a landing é uma tela INTEIRA, que cobre o
+   login e o app — ela nem existe no mesmo momento que o resto do CSS, mas
+   ficar no fim é o que garante isso sem z-index inventado */
+@import "./invites.css";

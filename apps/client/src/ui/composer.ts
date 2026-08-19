@@ -83,7 +83,9 @@ function updateCounter(): void {
   counter.textContent = String(left);
   counter.classList.toggle("over", left < 0);
   // estourou: o envio some da mesa antes de virar 400 do servidor
-  if (sendBtn !== null) sendBtn.disabled = left < 0;
+  // durante um timeout quem manda é o paintComposer; sem o `||` o contador
+  // reabriria o botão a cada tecla
+  if (sendBtn !== null) sendBtn.disabled = left < 0 || (mutedUntil !== null && mutedUntil > Date.now());
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +135,54 @@ export function mountComposer(opts: ComposerOptions): void {
   window.addEventListener("resize", autoResize);
 }
 
+/**
+ * Timeout de chat (M10, item 53). O servidor recusa o POST com 403 enquanto
+ * durar — mas deixar o campo habilitado faria a pessoa digitar uma frase
+ * inteira para ela sumir num erro. Aqui o campo se fecha e DIZ até quando.
+ *
+ * O relógio é local: o vencimento não gera evento no servidor (ele só compara
+ * `Date.now()` na próxima mensagem), então quem reabre o campo é este timer.
+ */
+let mutedUntil: number | null = null;
+let mutedTimer: number | undefined;
+let channelName: string | null = null;
+
+function fimDoTimeout(ms: number): string {
+  const min = Math.ceil(ms / 60_000);
+  if (min <= 1) return "menos de um minuto";
+  if (min < 60) return `${min} minutos`;
+  const h = Math.round(min / 60);
+  return h === 1 ? "cerca de uma hora" : `cerca de ${h} horas`;
+}
+
+function paintComposer(): void {
+  const falta = mutedUntil === null ? 0 : mutedUntil - Date.now();
+  const calado = falta > 0;
+  el.input.disabled = calado;
+  if (sendBtn !== null) sendBtn.disabled = calado;
+  el.input.placeholder = calado
+    ? `Você está silenciado — faltam ${fimDoTimeout(falta)}`
+    : channelName === null
+      ? "Selecione um canal"
+      : `Conversar em #${channelName}`;
+  if (mutedTimer !== undefined) clearTimeout(mutedTimer);
+  mutedTimer = undefined;
+  if (!calado) return;
+  // reacorda no vencimento (ou em 1 min, o que vier antes, para o texto do
+  // contador não ficar velho na tela)
+  mutedTimer = window.setTimeout(paintComposer, Math.min(falta, 60_000) + 250);
+}
+
+/** `until` em epoch ms; null (ou passado) libera o campo. */
+export function setComposerMuted(until: number | null): void {
+  mutedUntil = until;
+  paintComposer();
+}
+
 /** Placeholder segue o canal — "Mensagem em #geral" cravado no HTML mentia. */
 export function setComposerChannel(name: string | null): void {
-  el.input.placeholder = name === null ? "Selecione um canal" : `Conversar em #${name}`;
+  channelName = name;
+  paintComposer();
   // primeira chance real de medir: na troca de canal o #app já está visível
   autoResize();
 }

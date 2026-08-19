@@ -92,18 +92,17 @@ export class Sessions {
         return "reused";
       }
       if (Number(row.expires_at) <= now) return null; // expirado nunca rotaciona
-      // kick via allowlist (doc §5): quem foi removido da lista não renova —
-      // o acesso restante morre com o access token corrente (≤ TTL do JWT).
-      // Usuário dev (discord_id NULL) não passa por allowlist.
-      const owner = this.db.prepare("SELECT discord_id FROM users WHERE id = ?").get(row.user_id) as
-        | { discord_id: string | null }
-        | undefined;
-      if (owner?.discord_id != null) {
-        const allowed = this.db.prepare("SELECT 1 FROM allowlist WHERE discord_id = ?").get(owner.discord_id);
-        if (allowed === undefined) {
-          this.revokeFamily(row.family_id, now);
-          return null;
-        }
+      // Kick e ban (doc §5): quem não pertence mais à guild não renova — o
+      // acesso restante morre com o access token corrente (≤ TTL do JWT).
+      //
+      // M10: a pergunta passou a ser `store.isMember`, e não mais a allowlist
+      // crua. É a MESMA pergunta que o heartbeat e o Identify do gateway
+      // refazem, num lugar só: banido perde aqui mesmo que alguém o tenha
+      // readicionado à allowlist pelo CLI sem saber do ban. Usuário dev
+      // (discord_id NULL) continua fora do fluxo e sempre passa.
+      if (!this.store.isMember(idToString(row.user_id))) {
+        this.revokeFamily(row.family_id, now);
+        return null;
       }
       this.db
         .prepare("UPDATE sessions SET revoked_at = ?, last_seen_at = ? WHERE id = ?")

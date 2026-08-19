@@ -30,16 +30,18 @@ process.env.DISCORD_CLIENT_SECRET = "test-client-secret";
 const { default: Fastify } = await import("fastify");
 const { openDb } = await import("../src/db/index.js");
 const { Store } = await import("../src/store.js");
+const { Guild } = await import("../src/guild.js");
 const { Sessions } = await import("../src/sessions.js");
 const { registerOAuthRoutes } = await import("../src/oauth.js");
 const { config } = await import("../src/config.js");
 
 const db = openDb(":memory:");
 const store = new Store(db);
+const guild = new Guild(db);
 const sessions = new Sessions(db, store);
 // logger desligado (default): os branches de erro do callback logam via app.log
 const app = Fastify();
-registerOAuthRoutes(app, db, store, sessions);
+registerOAuthRoutes(app, store, sessions, guild);
 
 /** GET /auth/discord/start com a query dada ("" = fluxo web). */
 function start(qs: string) {
@@ -81,6 +83,26 @@ test("start com redirect_port inválido: 400 (Zod barra fora de 1024..65535 e n�
   for (const bad of ["0", "80", "1023", "65536", "99999", "-1", "4.2", "abc", ""]) {
     const res = await start(`?redirect_port=${bad}`);
     assert.equal(res.statusCode, 400, `redirect_port=${JSON.stringify(bad)} deveria ser 400`);
+  }
+});
+
+test("start com ?invite=: aceito, e o código NÃO viaja para o Discord (M10)", async () => {
+  const res = await start("?invite=Ab23cd45Ef");
+  assert.equal(res.statusCode, 302);
+  const url = new URL(String(res.headers.location));
+  assert.equal(url.origin, "https://discord.com");
+  assert.ok(url.searchParams.get("state"));
+  // o convite mora no pending, AMARRADO ao state. Se ele voltasse pelo
+  // navegador (cookie ou query do callback), daria para trocar o convite
+  // depois que a pessoa já autorizou: autorização de um link, resgate de outro
+  assert.equal(url.searchParams.get("invite"), null);
+  assert.ok(!String(res.headers.location).includes("Ab23cd45Ef"));
+});
+
+test("start com invite fora da forma: 400 antes de guardar lixo em memória", async () => {
+  for (const bad of ["", "com espaço", "x".repeat(33), "não-alfanumérico"]) {
+    const res = await start(`?invite=${encodeURIComponent(bad)}`);
+    assert.equal(res.statusCode, 400, `invite=${JSON.stringify(bad)} deveria ser 400`);
   }
 });
 
