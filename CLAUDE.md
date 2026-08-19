@@ -57,8 +57,29 @@ node scripts/allowlist.ts <add|remove|list> [discord_id] [--by <discord_id>]
 ```
 
 A imagem do ghcr é publicada pelo `.github/workflows/release.yml` a cada push
-na main (amd64 — o pod pina no nó x86). Após publicar: `rollout restart` do
-deployment no cluster.
+na main (amd64 — o pod pina no nó x86).
+
+**O laço de deploy é `./scripts/deploy-cluster.sh`** (`-m "msg"` commita antes,
+`--status` só olha): push → espera a imagem aparecer no ghcr → `set image` →
+`rollout status` → confere healthz, upgrade do gateway (101) e o redirect do
+OAuth. Duas decisões dentro dele que valem saber:
+
+- **É pelo CI, e não build local + SCP como os outros apps do KubeCluster.** A
+  imagem tem ~370 MB e o nó fica na Hostinger: subir isso de uma conexão
+  doméstica é mais lento que o GitHub construir e o nó puxar pela rede do
+  datacenter. O caminho local só ganha quando o nó é local (caso do
+  `sensor-consumer`, não o nosso).
+- **A tag é o SHA do commit, não `:latest`.** Com `:latest` não dá para saber se
+  o pod subiu com o código novo ou reusou cache, e `rollout restart` vira fé; com
+  `sha-<commit>` o rollout falha alto quando a imagem não é a esperada, e o
+  rollback é um `set image` para o SHA anterior.
+
+**Pré-requisito de uma vez só**: o repo é privado, então o package do ghcr nasce
+**privado** e o kubelet leva `401 Unauthorized` (ImagePullBackOff) sem dizer por
+quê. Deixar o package público em
+`github.com/users/LeoHammes1/packages/container/danjocord/settings`. A imagem não
+carrega segredo — eles entram por env do Secret, e o `.dockerignore` barra o
+`.env`.
 
 ## App desktop (M6)
 

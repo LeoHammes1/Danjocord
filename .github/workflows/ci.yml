@@ -9,9 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # sem `version:` de propósito — a versão vem do campo packageManager do
+      # package.json raiz. Declarar nos dois lugares é erro fatal desde o
+      # action-setup v4 ("Multiple versions of pnpm specified"), e o
+      # desktop-release.yml já seguia esta regra.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
