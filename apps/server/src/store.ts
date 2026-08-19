@@ -1,4 +1,4 @@
-import type { Channel, Message, Role, Sound, User } from "@danjocord/protocol";
+import type { Channel, ChannelReadState, Message, MessageType, Role, Sound, User } from "@danjocord/protocol";
 import type { Db } from "./db/index.js";
 import { idFromString, idToString, nextId } from "./db/snowflake.js";
 
@@ -37,6 +37,21 @@ interface MessageRow {
   created_at: bigint;
   edited_at: bigint | null;
   deleted_at: bigint | null;
+  /** M11a: 'user' | 'member_join' | 'member_leave' (CHECK na migration 005) */
+  type: MessageType;
+  /** M11a: 0/1 — o SQLite não tem boolean */
+  mentions_everyone: bigint;
+}
+
+/**
+ * M11a: o que a rota já resolveu com `parseMentions` antes de gravar. Vem
+ * pronto de propósito — o Store grava o que decidiram, não decide.
+ */
+export interface NewMessage {
+  type?: MessageType;
+  /** ids já resolvidos; viram linhas em `message_mentions` */
+  mentions?: string[];
+  everyone?: boolean;
 }
 
 /** M9: linha da tabela `sounds` — `bytes` só é lido na rota de áudio */
@@ -271,18 +286,38 @@ export class Store {
     return type === undefined || row.type === type;
   }
 
-  createMessage(channelId: string, authorId: string, content: string): Message {
+  /**
+   * Cria a mensagem e, na MESMA transação, as linhas de menção (M11a): uma
+   * mensagem que existe sem as menções dela contaria errado no badge de quem
+   * foi chamado — e ninguém descobriria, porque o texto na tela estaria certo.
+   */
+  createMessage(channelId: string, authorId: string, content: string, extra: NewMessage = {}): Message {
     const id = nextId();
     const createdAt = Date.now();
-    this.db
-      .prepare("INSERT INTO messages (id, channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(id, idFromString(channelId), idFromString(authorId), content, createdAt);
+    const type = extra.type ?? "user";
+    // dedup defensivo: a PK de message_mentions recusaria o id repetido, e o
+    // parser já não repete — mas o Store não confia em quem o chama
+    const mentions = [...new Set(extra.mentions ?? [])];
+    const everyone = extra.everyone === true;
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          "INSERT INTO messages (id, channel_id, author_id, content, created_at, type, mentions_everyone)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(id, idFromString(channelId), idFromString(authorId), content, createdAt, type, everyone ? 1 : 0);
+      const insert = this.db.prepare("INSERT INTO message_mentions (message_id, user_id) VALUES (?, ?)");
+      for (const userId of mentions) insert.run(id, idFromString(userId));
+    })();
     return {
       id: idToString(id),
       channel_id: channelId,
       author_id: authorId,
       content,
       created_at: createdAt,
+      type,
+      mentions,
+      mentions_everyone: everyone,
     };
   }
 
@@ -302,7 +337,10 @@ export class Store {
             )
             .all(idFromString(channelId), idFromString(before), cappedLimit)
     ) as MessageRow[];
-    return rows.map((r) => this.messageToWire(r));
+    // menções da PÁGINA inteira numa query só: com limite de 100 linhas, uma
+    // consulta por mensagem seriam 100 idas ao banco para pintar uma tela
+    const mentions = this.mentionsOf(rows.map((r) => r.id));
+    return rows.map((r) => this.messageToWire(r, mentions.get(r.id) ?? []));
   }
 
   /**
@@ -313,7 +351,7 @@ export class Store {
     const row = this.db
       .prepare("SELECT * FROM messages WHERE id = ? AND channel_id = ? AND deleted_at IS NULL")
       .get(idFromString(messageId), idFromString(channelId)) as MessageRow | undefined;
-    return row ? this.messageToWire(row) : null;
+    return row ? this.messageToWire(row, this.mentionsOf([row.id]).get(row.id) ?? []) : null;
   }
 
   /** Autor/canal são checados nas rotas; o deleted_at fica também aqui por defesa. */
@@ -322,7 +360,11 @@ export class Store {
       .prepare("UPDATE messages SET content = ?, edited_at = ? WHERE id = ? AND deleted_at IS NULL")
       .run(content, Date.now(), idFromString(messageId));
     const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(idFromString(messageId)) as MessageRow;
-    return this.messageToWire(row);
+    // as menções NÃO são recalculadas na edição: quem já foi notificado não
+    // desnotifica, e quem entrou no texto depois entra pelo próximo POST. É
+    // uma escolha (a alternativa é reabrir a contagem de todo mundo) e está
+    // fixada em teste.
+    return this.messageToWire(row, this.mentionsOf([row.id]).get(row.id) ?? []);
   }
 
   /** Soft delete (doc §6): a linha fica, listagens e getMessage filtram por deleted_at. */
@@ -330,6 +372,140 @@ export class Store {
     this.db
       .prepare("UPDATE messages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
       .run(Date.now(), idFromString(messageId));
+  }
+
+  /**
+   * Canal de texto onde as mensagens de sistema entram (M11a, item 92): o
+   * primeiro da ordem, que é o "geral" do seed. Não é configurável de
+   * propósito — configuração sem tela para mexer nela é enfeite, e com uma
+   * guild só o primeiro canal é O canal.
+   */
+  defaultTextChannelId(): string | null {
+    const row = this.db.prepare("SELECT id FROM channels WHERE type = 'text' ORDER BY position, id LIMIT 1").get() as
+      | { id: bigint }
+      | undefined;
+    return row ? idToString(row.id) : null;
+  }
+
+  /** Última mensagem VISÍVEL do canal (null = canal vazio). */
+  lastMessageId(channelId: string): string | null {
+    const row = this.db
+      .prepare("SELECT MAX(id) AS last FROM messages WHERE channel_id = ? AND deleted_at IS NULL")
+      .get(idFromString(channelId)) as { last: bigint | null };
+    return row.last === null ? null : idToString(row.last);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Estado de leitura (M11a, item 81) — a base do badge, do separador de "novas
+  // mensagens" e de qualquer notificação que não queira avisar duas vezes.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * "Li até aqui." Duas garantias, e as duas existem porque o id vem do
+   * CLIENTE (só ele sabe o que apareceu na tela):
+   *
+   *   1. NÃO RETROCEDE — o `WHERE` do UPSERT recusa um id menor que o
+   *      guardado. Sem isso, clicar num canal e cair numa página antiga do
+   *      histórico "desleria" tudo que veio depois; e com duas abas abertas, a
+   *      que estivesse mais atrasada desfaria o ack da outra a cada scroll.
+   *   2. NÃO PASSA DA ÚLTIMA mensagem — um id inventado (ou o maior snowflake
+   *      possível) marcaria como lido tudo que ainda vai ser escrito, e o dono
+   *      da sessão nunca mais veria uma badge. É dano em si mesmo, mas é dano
+   *      silencioso, que é o pior tipo.
+   *
+   * Devolve a marca resultante (para o fan-out do MESSAGE_ACK) ou null quando
+   * não há o que marcar — canal sem mensagem nenhuma.
+   */
+  /**
+   * Marca TODOS os canais de texto como lidos até a última mensagem de cada um.
+   *
+   * Chamado quando alguém entra na guild. Sem isto, quem chega por convite (M10)
+   * numa guild com histórico vê o backlog inteiro como não-lido — e "342 novas"
+   * em cada canal não é informação, é um número que a pessoa nunca vai zerar
+   * lendo. Entrar num servidor não é ter perdido as conversas de antes dele.
+   *
+   * É o par explícito da regra de contagem: sem `read_state` conta tudo, e é
+   * justamente por isso que a linha precisa nascer junto com o membro.
+   */
+  markAllReadOnJoin(userId: string): void {
+    for (const channel of this.listChannels()) {
+      if (channel.type !== "text") continue;
+      const last = this.lastMessageId(channel.id);
+      if (last !== null) this.markRead(userId, channel.id, last);
+    }
+  }
+
+  markRead(userId: string, channelId: string, messageId: string): string | null {
+    const last = this.lastMessageId(channelId);
+    if (last === null) return null;
+    const wanted = idFromString(messageId);
+    const ceiling = idFromString(last);
+    const target = wanted > ceiling ? ceiling : wanted;
+    this.db
+      .prepare(
+        "INSERT INTO read_state (user_id, channel_id, last_read_message_id, updated_at) VALUES (?, ?, ?, ?)" +
+          " ON CONFLICT (user_id, channel_id) DO UPDATE SET" +
+          " last_read_message_id = excluded.last_read_message_id, updated_at = excluded.updated_at" +
+          " WHERE excluded.last_read_message_id > read_state.last_read_message_id",
+      )
+      .run(idFromString(userId), idFromString(channelId), target, Date.now());
+    return this.lastReadMessageId(userId, channelId);
+  }
+
+  /** Marca guardada, ou null se este usuário nunca deu ack neste canal. */
+  lastReadMessageId(userId: string, channelId: string): string | null {
+    const row = this.db
+      .prepare("SELECT last_read_message_id FROM read_state WHERE user_id = ? AND channel_id = ?")
+      .get(idFromString(userId), idFromString(channelId)) as { last_read_message_id: bigint } | undefined;
+    return row === undefined ? null : idToString(row.last_read_message_id);
+  }
+
+  /**
+   * Snapshot de não lidas por canal de texto, para o READY.
+   *
+   * REGRA DA AUSÊNCIA DE `read_state`: conta TUDO (menos as próprias). A linha
+   * só existe depois do primeiro ack, então não ter linha significa
+   * literalmente "nunca li nada aqui" — e é o que a contagem diz. A
+   * alternativa tentadora (assumir tudo lido) esconderia justamente o caso que
+   * a badge existe para cobrir: o canal que a pessoa nunca abriu. O certo de
+   * verdade seria contar a partir da ENTRADA na guild, mas isso exige uma data
+   * de entrada que hoje não existe (a linha em `users` sobrevive a kick e
+   * rejoin), e inventá-la aqui seria complexidade sem dono. O preço da escolha
+   * é um número grande na primeira visita, que um clique zera para sempre.
+   *
+   * As próprias mensagens saem da conta em todo caso — ninguém tem não-lida de
+   * si mesmo, e vê-las contadas ao mandar mensagem de outro dispositivo seria o
+   * bug mais confuso possível.
+   */
+  readStates(userId: string): ChannelReadState[] {
+    const me = idFromString(userId);
+    const unread = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM messages" +
+        " WHERE channel_id = ? AND deleted_at IS NULL AND author_id <> ? AND id > ?",
+    );
+    const mentions = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM messages m" +
+        " WHERE m.channel_id = ? AND m.deleted_at IS NULL AND m.author_id <> ? AND m.id > ?" +
+        " AND (m.mentions_everyone = 1" +
+        "      OR EXISTS (SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND mm.user_id = ?))",
+    );
+    const out: ChannelReadState[] = [];
+    for (const channel of this.listChannels()) {
+      // canal de voz não tem mensagem — e uma badge nele não teria o que contar
+      if (channel.type !== "text") continue;
+      const cid = idFromString(channel.id);
+      const stored = this.lastReadMessageId(userId, channel.id);
+      // 0n é o piso natural: todo snowflake é maior que zero, então "sem marca"
+      // e "conta tudo" viram a MESMA comparação — sem um ramo a mais na query
+      const floor = stored === null ? 0n : idFromString(stored);
+      out.push({
+        channel_id: channel.id,
+        last_message_id: this.lastMessageId(channel.id),
+        unread_count: Number((unread.get(cid, me, floor) as { n: bigint }).n),
+        mention_count: Number((mentions.get(cid, me, floor, me) as { n: bigint }).n),
+      });
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -424,7 +600,7 @@ export class Store {
     return info.changes > 0;
   }
 
-  private messageToWire(r: MessageRow): Message {
+  private messageToWire(r: MessageRow, mentions: string[]): Message {
     return {
       id: idToString(r.id),
       channel_id: idToString(r.channel_id),
@@ -432,7 +608,26 @@ export class Store {
       content: r.content,
       created_at: Number(r.created_at),
       edited_at: r.edited_at === null ? null : Number(r.edited_at),
+      type: r.type,
+      mentions,
+      mentions_everyone: r.mentions_everyone !== 0n,
     };
+  }
+
+  /** message_id → ids mencionados, para um lote de mensagens (M11a). */
+  private mentionsOf(ids: bigint[]): Map<bigint, string[]> {
+    const out = new Map<bigint, string[]>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(`SELECT message_id, user_id FROM message_mentions WHERE message_id IN (${placeholders})`)
+      .all(...ids) as { message_id: bigint; user_id: bigint }[];
+    for (const row of rows) {
+      const list = out.get(row.message_id) ?? [];
+      list.push(idToString(row.user_id));
+      out.set(row.message_id, list);
+    }
+    return out;
   }
 }
 

@@ -14,6 +14,9 @@ import "./sessions.test.ts";
 // depois de sessions de propósito: os testes de lá com relógio mockado deixam
 // o gerador de snowflakes "no futuro", e esta suíte usa banco novo — sem risco
 import "./messages.test.ts";
+// M11a: estado de leitura, menções e mensagens de sistema. Banco :memory:
+// próprio, canais próprios (a contagem é por canal) e nenhum relógio mockado
+import "./read-state.test.ts";
 // M9: o provador de duração é puro (nem banco nem Fastify), então entra em
 // qualquer ordem; as rotas do soundboard usam banco :memory: próprio
 import "./sound-probe.test.ts";

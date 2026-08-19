@@ -32,7 +32,9 @@ export type IconName =
   | "close"
   | "check"
   | "plus"
-  | "live";
+  | "live"
+  | "join"
+  | "leave";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -159,6 +161,14 @@ const SHAPES: Record<IconName, Shape[]> = {
   close: [LINE(6, 6, 18, 18), LINE(18, 6, 6, 18)],
   check: [S("M5 12.5 9.5 17 19 7", "2.5")],
   plus: [LINE(12, 5, 12, 19), LINE(5, 12, 19, 12)],
+
+  // M11a (item 92): o par das mensagens de sistema. Os dois compartilham a
+  // MESMA porta (à direita) e diferem só na direção da flecha — é isso que faz
+  // "entrou" e "saiu" serem lidos como opostos numa linha de 16px, sem cor.
+  // (O `logout` não serve para o "saiu": a porta dele está do outro lado e a
+  // flecha aponta na mesma direção da de entrada.)
+  join: [S("M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"), S("M8.5 8 12.5 12l-4 4"), LINE(3, 12, 12.5, 12)],
+  leave: [S("M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"), S("M7 8 3 12l4 4"), LINE(3, 12, 12.5, 12)],
 
   // ponto de transmissão + as ondas saindo dele
   live: [

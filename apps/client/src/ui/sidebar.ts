@@ -15,6 +15,7 @@ import { openUserControls } from "./user-controls.js";
 import { invitesMenuItem } from "./invites.js";
 import { presenceMenuItems } from "./presence.js";
 import { soundMenuItem } from "./settings.js";
+import { applyChannelUnread } from "./unread.js";
 
 /**
  * O UiContext base não carrega estes três — e a sidebar precisa deles: o
@@ -334,6 +335,9 @@ function channelItem(ctx: SidebarContext, c: Channel): HTMLElement {
   btn.type = "button";
   btn.className = "channel";
   btn.dataset.channelId = c.id; // âncora do refoco após replaceChildren
+  // a badge é pintada AQUI e não por fora: esta lista se recria sozinha
+  // (colapsar categoria faz replaceChildren) e badge de fora não sobreviveria
+  applyChannelUnread(btn, c.id);
   // As duas marcações eram a MESMA classe `.active` no M0–M6, e coexistiam
   // idênticas na tela: `.is-open` é o canal de texto ABERTO, `.is-connected` é
   // o canal de voz em que estou. Um canal de voz pode estar conectado sem

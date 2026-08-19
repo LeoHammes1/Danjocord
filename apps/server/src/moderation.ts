@@ -17,6 +17,7 @@ import type { Gateway } from "./gateway.js";
 import type { Guild } from "./guild.js";
 import { SlidingWindow } from "./limits.js";
 import type { Store } from "./store.js";
+import { announce } from "./system.js";
 
 /**
  * REST de convites e moderação (M10, roadmap §5). Arquivo próprio, no molde do
@@ -437,6 +438,13 @@ export function registerModerationRoutes(
     // faz o leave da voz); isto cobre uma sessão de voz que tenha sobrevivido
     // sem sessão de gateway. É idempotente.
     await deps.disconnectFromVoice(victim.id);
+    // M11a (item 92): o "fulano saiu" entra ANTES do MEMBER_REMOVE de
+    // propósito. A mensagem é assinada por quem saiu, e quem a recebesse
+    // depois de tirar essa pessoa da lista de membros desenharia um autor
+    // desconhecido na hora — o inverso da informação que o aviso existe para
+    // dar. (No histórico recarregado depois, quem resolve o autor que já não é
+    // membro é o `GET /api/users/:id`.)
+    announce(store, gateway, "member_leave", victim.id);
     gateway.broadcast("MEMBER_REMOVE", { user_id: victim.id });
   }
 }

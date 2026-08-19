@@ -97,6 +97,12 @@ export interface ComposerOptions {
   onSubmit(content: string): void;
   /** só dispara quando há texto de verdade (espaço em branco não é digitar) */
   onTyping(): void;
+  /**
+   * ↑ com o campo VAZIO (item 93). Devolve `true` se alguém tratou — só então
+   * o composer engole a tecla. O composer não sabe o que é "minha última
+   * mensagem"; ele só sabe que o campo está vazio, que é a condição da tecla.
+   */
+  onEditLast?: () => boolean;
 }
 
 export function mountComposer(opts: ComposerOptions): void {
@@ -113,6 +119,20 @@ export function mountComposer(opts: ComposerOptions): void {
 
   // textarea não submete o formulário no Enter como o <input> fazia
   el.input.addEventListener("keydown", (ev) => {
+    // ↑ no campo vazio abre a edição da última mensagem própria (padrão de
+    // Discord/Slack). Com texto no campo a tecla faz o de sempre: andar o cursor.
+    if (
+      ev.key === "ArrowUp" &&
+      !ev.shiftKey &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      !ev.metaKey &&
+      el.input.value === "" &&
+      opts.onEditLast?.() === true
+    ) {
+      ev.preventDefault();
+      return;
+    }
     // isComposing: no meio de um IME (acento morto, teclado japonês) o Enter é
     // "confirmar o caractere", não "enviar"
     if (ev.key !== "Enter" || ev.shiftKey || ev.isComposing) return;

@@ -45,3 +45,14 @@
    login e o app — ela nem existe no mesmo momento que o resto do CSS, mas
    ficar no fim é o que garante isso sem z-index inventado */
 @import "./invites.css";
+
+/* markdown do chat (M11a): estende o `.msg-content` do chat.css — bloco de
+   código e citação sobrescrevem cor, tamanho e white-space de lá, então tem
+   que vir depois. Nenhuma regra `.md-*` colide com o resto: fica no fim porque
+   é o lugar em que a ordem é garantida, não por precisar de prioridade. */
+@import "./markdown.css";
+
+/* não lidas (M11a): estende TRÊS donos — `.channel` (sidebar.css), `.msg`
+   (chat.css) e `#composer` (chrome.css) — e em dois pontos precisa GANHAR um
+   empate de especificidade, que só a ordem resolve. Por isso é o último. */
+@import "./unread.css";

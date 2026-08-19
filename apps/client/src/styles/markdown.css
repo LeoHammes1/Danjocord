@@ -1,0 +1,135 @@
+/* Dono: agente do MARKDOWN (ui/markdown.ts, M11a — itens 78 e 79).
+
+   Só as classes `.md-*` que o renderizador cria. A caixa que contém tudo isso
+   (`.msg-content`) é do chat.css — nada aqui mexe nela.
+
+   Precisa vir DEPOIS do chat.css no index.css: `.msg-content` define cor,
+   tamanho e `white-space` do conteúdo, e o bloco de código e a citação
+   sobrescrevem os três dentro do seu próprio pedaço.
+
+   Estrutura que o ui/markdown.ts monta (nada além disto existe):
+
+     strong.md-strong  em.md-em  u.md-underline  s.md-strike
+     code.md-code                              (código inline)
+     pre.md-codeblock > code[data-lang]        (bloco)
+     blockquote.md-quote
+     a.md-link
+     button.md-mention[.md-mention--self]      (pílula clicável)
+     span.md-mention[.md-mention--self]        (pílula sem clique: @todos) */
+
+/* --- ênfase --------------------------------------------------------------
+   Explícitas e não herdadas do navegador: `font-weight` do <strong> é `bolder`
+   por padrão, que resolve para um peso relativo — dentro de um bloco que já
+   está em 500 o "negrito" quase não aparece. */
+.md-strong {
+  font-weight: var(--fw-bold);
+}
+
+.md-em {
+  font-style: italic;
+}
+
+.md-underline {
+  text-decoration: underline;
+}
+
+.md-strike {
+  text-decoration: line-through;
+}
+
+/* --- código --------------------------------------------------------------
+   A pilha de fontes é a única coisa "literal" destes arquivos que não é cor:
+   monoespaçada não é um token do projeto porque não aparece em mais lugar
+   nenhum. Se aparecer, vira token. */
+.md-code,
+.md-codeblock {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
+  font-size: 85%;
+  background: var(--bg-guilds);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.md-code {
+  padding: 1px var(--sp-1);
+  /* o trecho de código não pode ser partido no meio por causa da linha */
+  white-space: break-spaces;
+}
+
+.md-codeblock {
+  /* bloco de verdade: o pai (`.msg-content`) ainda pode ser inline */
+  display: block;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+  /* linha comprida rola DENTRO do bloco; a coluna de mensagens não anda */
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-normal);
+}
+
+/* o <code> de dentro não repete a moldura do <pre> */
+.md-codeblock code {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* --- citação ------------------------------------------------------------- */
+
+.md-quote {
+  display: block;
+  margin: var(--sp-1) 0;
+  padding-left: var(--sp-3);
+  border-left: 4px solid var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+/* --- link ---------------------------------------------------------------- */
+
+.md-link {
+  color: var(--text-link);
+  text-decoration: none;
+  /* URL comprida quebra dentro da coluna em vez de esticá-la */
+  overflow-wrap: anywhere;
+}
+.md-link:hover {
+  text-decoration: underline;
+}
+
+/* --- menção --------------------------------------------------------------
+   `color-mix` em vez de um rgba literal: a translucidez é derivada do token da
+   marca, então trocar --brand troca a pílula junto — que é a razão de tokens.css
+   existir. */
+.md-mention {
+  padding: 0 2px;
+  border-radius: var(--r-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--brand) 30%, transparent);
+  /* a pílula clicável é <button>: sem isto ela quebraria a linha de outro jeito
+     que o <span> do @todos, e as duas têm de parecer a mesma coisa */
+  display: inline;
+  text-align: inherit;
+  transition: background-color var(--t-fast);
+}
+.md-mention:hover {
+  background: var(--brand);
+}
+
+/* A menção a MIM. O amarelo é o mesmo do Discord e é a única coisa que faz a
+   pessoa achar, rolando o histórico, onde foi chamada — por isso ele não pode
+   ser a mesma cor de todas as outras pílulas. */
+.md-mention--self {
+  background: color-mix(in srgb, var(--warn) 25%, transparent);
+  color: var(--warn);
+}
+.md-mention--self:hover {
+  background: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+/* Sem clique (é o caso do @todos, que não tem um perfil para abrir) o cursor
+   não pode prometer que abre alguma coisa. */
+span.md-mention {
+  cursor: default;
+}

@@ -1,0 +1,163 @@
+/* Dono: agente das NÃO LIDAS (M11a — itens 80, 81 e 83). Três desenhos, um
+   assunto: a badge no item de canal, a linha de "novas mensagens" dentro da
+   lista e a barra de "pular para o presente".
+
+   O arquivo entra por último no index.css porque estende coisas de três donos
+   diferentes — `.channel` (sidebar.css), `.msg` (chat.css) e `#composer`
+   (chrome.css) — e em dois casos precisa GANHAR um empate de especificidade.
+   Está anotado em cada um; não reordenar sem ler.
+
+   CONTRASTE (o requisito do M7): as duas cores de fundo usadas aqui foram
+   escolhidas medindo, não por gosto. `--danger` puro com `--text-strong` dá
+   3,4:1 e reprova o AA (4,5:1) em texto pequeno — daí o color-mix, que escurece
+   o vermelho até 4,7:1 sem inventar cor nova nem sair dos tokens. */
+
+/* --- badge no item de canal (item 80) ------------------------------------
+
+   Duas marcações somadas, porque elas respondem a perguntas diferentes: o
+   NEGRITO diz "tem coisa nova aqui" e sobrevive de canto de olho ao correr a
+   lista; a BADGE diz quanto. O nome sobe para --int-active (o mesmo do canal
+   aberto) porque um canal com não lida compete em atenção com o que está na
+   tela — mas sem o fundo elevado, que continua significando "é este que você
+   está lendo". */
+.channel.has-unread .channel-name {
+  color: var(--int-active);
+  font-weight: var(--fw-bold);
+}
+/* o `#` também acorda: com o nome forte e o ícone apagado a linha fica torta */
+.channel.has-unread svg {
+  color: var(--int-hover);
+}
+
+.unread-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  /* mais escuro que a sidebar E que o hover (--bg-elevated): a pílula continua
+     legível com o cursor em cima, que é justamente quando a pessoa vai clicar */
+  background: var(--bg-guilds);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  line-height: 1;
+  /* dígitos de mesma largura: sem isto a pílula muda de tamanho de 11 para 12 */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Menção tem cor própria: "alguém falou comigo" não pode parecer "tem mensagem
+   nova". O vermelho é o --danger escurecido com o --bg-guilds até o texto
+   passar no AA (4,7:1 contra --text-strong; o --danger puro dá 3,4:1). */
+.unread-badge--mention {
+  background: color-mix(in srgb, var(--danger) 78%, var(--bg-guilds));
+  color: var(--text-strong);
+}
+
+/* --- linha de "novas mensagens" (item 80) --------------------------------
+
+   Mora DENTRO da primeira `.msg` não lida, antes da `.msg-row` — como o
+   separador de data, e pelo mesmo motivo (ver o cabeçalho do ui/messages.ts:
+   irmão da mensagem, ela contaria na janela de DOM e viraria cursor de
+   paginação). */
+.unread-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2) var(--sp-4) 0;
+}
+.unread-line::before {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--danger);
+}
+.unread-line-label {
+  flex: none;
+  /* o --danger puro sobre o --bg-chat dá 3,3:1 em texto de 12px; clareado com
+     o --text-strong chega a 4,9:1 e continua sendo vermelho */
+  color: color-mix(in srgb, var(--danger) 65%, var(--text-strong));
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* A mensagem que abre as não lidas ganha o respiro de início de bloco mesmo
+   sendo continuação do bloco anterior — sem isto a linha vermelha encosta no
+   texto de cima. `:has()` em vez de uma classe no nó porque o agrupamento é do
+   ui/messages.ts (o regroupAt mexe nas classes da `.msg` a cada trim, e uma
+   classe minha ali seria uma segunda verdade para desencontrar).
+
+   ARMADILHA DA CASCATA: `.msg:has(.unread-line) .msg-row` empata em
+   especificidade com o `.msg:not(.msg--cont) .msg-row` do chat.css (três
+   classes dos dois lados). Quem decide é a ORDEM — e é por isso que este
+   arquivo é importado depois. */
+.msg:has(.unread-line) .msg-row {
+  padding-top: var(--sp-3);
+}
+
+/* --- barra "pular para o presente" (item 83) -----------------------------
+
+   Flutua acima do composer, ancorada NELE. O `#messages` não serve de âncora:
+   um filho da lista entraria na contagem da janela de DOM (M2) e o trim o
+   removeria junto com as mensagens. */
+#composer {
+  position: relative;
+}
+/* O composer inteiro ganha anel de foco no :focus-within (chrome.css) — com um
+   botão vivendo dentro dele, focar a barra acenderia o campo de texto, que não
+   está em foco nenhum. Este seletor tem id + classe + pseudo-classe e vence. */
+#composer:has(.jump-bar:focus) {
+  outline: none;
+}
+
+.jump-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + var(--sp-1));
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  /* --brand-hover e não --brand: o roxo cheio com texto claro dá 4,1:1 e
+     reprova o AA por pouco; o escuro dá 5,8:1 e ainda lê como "a cor da marca" */
+  background: var(--brand-hover);
+  color: var(--text-strong);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  text-align: left;
+  box-shadow: var(--shadow-low);
+  transition: background-color var(--t-fast);
+}
+/* escurecer no hover (e não clarear) é o que mantém o contraste do texto: o
+   caminho de volta seria justamente o roxo que reprovou acima */
+.jump-bar:hover {
+  background: color-mix(in srgb, var(--brand-hover) 85%, var(--bg-guilds));
+}
+
+.jump-bar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jump-bar-action {
+  flex: none;
+  font-weight: var(--fw-semibold);
+}
+
+.jump-bar svg {
+  flex: none;
+}
+
+/* a barra cobre o #typing (20px) enquanto está visível: são dois avisos para o
+   mesmo canto da tela, e "você não está vendo o presente" ganha de "fulano
+   está digitando" — o segundo reaparece assim que se volta ao fundo */

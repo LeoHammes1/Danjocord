@@ -6,16 +6,24 @@
    de edição e o indicador de digitação (o texto é escrito pelo ui/messages.ts;
    #typing em si é do chrome.css).
 
+   O conteúdo DENTRO do `.msg-content` (negrito, código, citação, pílula de
+   menção) é do markdown.css, que por isso é importado depois deste.
+
    Estrutura que o ui/messages.ts monta:
 
-     .msg[.pending][.msg--day][.msg--cont]
+     .msg[.pending][.msg--day][.msg--cont][.msg--mention][.msg--failed]
        .msg-sep > .msg-sep-label          (só visível com .msg--day)
        .msg-row                            (a linha que acende no hover)
          .msg-gutter  > .msg-avatar + .msg-minitime
          .msg-body    > .msg-head (.msg-author + .msg-time) + .msg-content
+                        [+ .msg-edited] [+ .msg-failed > texto + 2 botões]
          .msg-actions > botões
 
-   As duas classes de estado NÃO trocam nós, só escondem: `--day` mostra o
+     .msg.msg--system[.msg--day]           (M11a, item 92)
+       .msg-sep > .msg-sep-label
+       .msg-row.msg-system > .msg-system-icon + .msg-system-text + .msg-system-time
+
+   As classes de estado NÃO trocam nós, só escondem/pintam: `--day` mostra o
    separador, `--cont` colapsa avatar e cabeçalho. É o que deixa o regroupAt
    (chamado a cada prepend/append/trim da janela de DOM) ser barato. */
 
@@ -50,6 +58,26 @@
 
 .msg.pending {
   opacity: 0.5;
+}
+
+/* --- a mensagem que me menciona (M11a, item 79) --------------------------
+   Faixa lateral + fundo, como no Discord: rolando o histórico, é a única
+   coisa que se acha de longe. A faixa é `box-shadow: inset` e não
+   `border-left` porque a borda entraria na caixa do grid e empurraria avatar
+   e texto 2px para a direita — a linha mencionada ficaria desalinhada das
+   vizinhas.
+
+   Vem DEPOIS do bloco de hover de propósito: `.msg--mention .msg-row` empata
+   em especificidade com `.msg-row:hover`, e num empate quem vem depois ganha.
+   Por isso o realce de hover é redeclarado aqui (com uma classe a mais, então
+   ele ganha dos dois). */
+.msg--mention .msg-row {
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+.msg--mention .msg-row:hover,
+.msg--mention .msg-row:focus-within {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
 /* --- gutter: avatar OU horário no hover --------------------------------- */
@@ -123,12 +151,17 @@
   color: var(--text-faint);
 }
 
+/* virou <div> no M11a (citação e bloco de código são block-level) — o
+   `display` explícito só documenta o que a tag já faz */
 .msg-content {
+  display: block;
   font-size: var(--fs-md);
   line-height: 22px;
   color: var(--text-normal);
   /* o composer virou <textarea> no M7: mensagem com quebra de linha precisa
-     chegar quebrada na tela */
+     chegar quebrada na tela. CONTINUA valendo com o markdown: o parser CONSOME
+     o "\n" (ele vira <br>), então não há linha dupla — mas o espaço que a
+     pessoa digitou no meio da frase ainda é preservado por aqui. */
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -136,6 +169,100 @@
 .msg-edited {
   font-size: var(--fs-xs);
   color: var(--text-faint);
+}
+
+/* --- mensagem de sistema (M11a, item 92) ---------------------------------
+   Linha centrada e discreta: é rastro, não conversa. Sem avatar, sem
+   cabeçalho e sem toolbar — o ui/messages.ts nem monta esses nós.
+
+   O seletor precisa das DUAS classes do nó (`.msg.msg--system`) para empatar
+   com `.msg:not(.msg--cont) .msg-row`, que também vale três classes e daria o
+   respiro de bloco aqui; no empate ganha quem vem depois, e este arquivo é
+   lido de cima para baixo. (É a mesma armadilha do @media anotada no
+   CLAUDE.md: especificidade não se soma por intenção.) */
+.msg.msg--system .msg-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* o ícone não é o rótulo (o texto ao lado é), mas a cor é o que faz "entrou" e
+   "saiu" se separarem antes da leitura */
+.msg-system-icon {
+  display: inline-flex;
+  flex: none;
+}
+.msg-system-icon--in {
+  color: var(--ok);
+}
+.msg-system-icon--out {
+  color: var(--danger);
+}
+
+/* o nome recebe a cor por autor inline (avatarColor), igual ao cabeçalho de um
+   bloco normal — é a mesma pessoa, tem de ser a mesma cor */
+.msg-system-name {
+  font-weight: var(--fw-medium);
+}
+
+.msg-system-time {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+/* --- envio que falhou (M11a, item 82) ------------------------------------
+   A mensagem FICA na lista, em vermelho, com os dois caminhos possíveis. Até
+   o M10 o nó era removido e o texto voltava ao campo — some a mensagem e some
+   junto a informação de que ela não foi.
+
+   `.pending` continua no nó (o cursor de paginação do main.ts sai de
+   `.msg:not(.pending)`, e o data-id daqui é um nonce que o servidor não
+   entende como cursor), então a opacidade dele é desfeita aqui. */
+.msg.pending.msg--failed {
+  opacity: 1;
+}
+.msg--failed .msg-row {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--danger);
+}
+.msg--failed .msg-row:hover,
+.msg--failed .msg-row:focus-within {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.msg--failed .msg-content {
+  color: var(--text-muted);
+}
+
+.msg-failed {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+}
+.msg-failed-text {
+  color: var(--danger);
+}
+/* os dois são <button> de texto: a ação principal é reenviar, e por isso ela é
+   a que tem a cor de link — descartar não pode ser o caminho mais fácil */
+.msg-failed-btn {
+  color: var(--text-link);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+.msg-failed-btn:hover {
+  text-decoration: underline;
+}
+.msg-failed-btn--danger {
+  color: var(--text-faint);
+}
+.msg-failed-btn--danger:hover {
+  color: var(--danger);
 }
 
 /* --- barra de ações ------------------------------------------------------

@@ -1,6 +1,19 @@
 import { z } from "zod";
 
 /**
+ * Parser de menções: módulo PURO à parte (M11a, item 79) e reexportado daqui
+ * para que o ponto de entrada do pacote continue sendo um só. Ele não conhece
+ * Zod nem o fio — é texto entrando e ids saindo, e é o que permite testá-lo
+ * sem subir nada (mesmo motivo do `catalog.ts` puro do M8).
+ */
+export {
+  parseMentions,
+  EVERYONE_KEYWORD,
+  type MentionCandidate,
+  type ParsedMentions,
+} from "./mentions.js";
+
+/**
  * Protocolo do gateway do Danjocord — versão reduzida do gateway do Discord.
  * Envelope único: { op, d, s?, t? }. Campos em snake_case no fio, como no original.
  *
@@ -205,18 +218,78 @@ export const Channel = z.object({
 });
 export type Channel = z.infer<typeof Channel>;
 
+/**
+ * Natureza da mensagem (M11a, item 92). Mensagem de sistema entra na tabela
+ * `messages` como qualquer outra — é isso que a faz aparecer na paginação, no
+ * histórico e no Resume sem uma linha de código especial em nenhum dos dois
+ * lados. O AUTOR é o sujeito do evento (quem entrou, quem saiu), e o conteúdo
+ * é vazio de propósito: quem monta a frase é o cliente, porque o nome exibido
+ * muda quando a pessoa troca de apelido — uma frase gravada envelheceria.
+ */
+export const MessageType = z.enum(["user", "member_join", "member_leave"]);
+export type MessageType = z.infer<typeof MessageType>;
+
 export const Message = z.object({
   id: z.string(),
   channel_id: z.string(),
   author_id: z.string(),
-  content: z.string().min(1).max(4000),
+  /**
+   * Sem `min(1)` desde o M11a: mensagem de sistema tem conteúdo VAZIO (a frase
+   * é montada na tela). O piso de 1 continua onde ele protege alguma coisa —
+   * no `CreateMessageBody`, que é o que o cliente manda.
+   */
+  content: z.string().max(4000),
   created_at: z.number().int(),
   /** ausente/null = nunca editada */
   edited_at: z.number().int().nullable().optional(),
   /** eco do nonce do cliente, para reconciliar o render otimista */
   nonce: z.string().optional(),
+  /** M11a: 'user' é o caso normal; o resto só o SERVIDOR cria */
+  type: MessageType,
+  /**
+   * M11a (item 79): quem esta mensagem menciona, RESOLVIDO pelo servidor no
+   * POST com `parseMentions`. Viaja resolvido (e não recalculado na tela) por
+   * dois motivos: é o mesmo resultado que a tabela `message_mentions` guardou
+   * para poder contar, e o cliente decide "isto é para mim?" sem reparsear —
+   * inclusive para mensagem de quem não está mais na lista de membros.
+   */
+  mentions: z.array(z.string()),
+  /** `@todos` — conta separado porque não é uma lista de ids */
+  mentions_everyone: z.boolean(),
 });
 export type Message = z.infer<typeof Message>;
+
+/**
+ * Estado de leitura de UM canal (M11a, item 81), como viaja no READY.
+ *
+ * É a base de tudo neste marco: sem ele não existe badge de não lidas (item
+ * 80), nem separador de "novas mensagens", nem notificação que saiba o que já
+ * foi visto. Vem no READY, e não numa rota por canal, porque com uma guild e
+ * ~10 pessoas o snapshot inteiro cabe numa mensagem — o contrário seria N
+ * requisições no boot para responder à pergunta mais barata do app.
+ */
+export const ChannelReadState = z.object({
+  channel_id: z.string(),
+  /** última mensagem do canal; null = canal sem mensagem nenhuma */
+  last_message_id: z.string().nullable(),
+  /** não lidas, já EXCLUINDO as minhas (ninguém tem não-lida de si mesmo) */
+  unread_count: z.number().int(),
+  /** quantas dessas me mencionam (ou são `@todos`) */
+  mention_count: z.number().int(),
+});
+export type ChannelReadState = z.infer<typeof ChannelReadState>;
+
+/**
+ * Ack de leitura (M11a): o fan-out vai SÓ para as outras sessões do próprio
+ * usuário. Quem tem o desktop e uma aba abertos não pode ver a badge sumir num
+ * e continuar acesa no outro — e ninguém mais tem o que fazer com a informação
+ * de que eu li alguma coisa.
+ */
+export const MessageAckData = z.object({
+  channel_id: z.string(),
+  last_read_message_id: z.string(),
+});
+export type MessageAckData = z.infer<typeof MessageAckData>;
 
 /**
  * M5 (doc §3.5/§3.6): origem SEMÂNTICA de um producer. O `kind` diz o que a
@@ -350,6 +423,11 @@ export const ReadyData = z.object({
   presences: z.array(PresenceUpdateData),
   /** catálogo do soundboard (M9): metadados; os bytes vêm por REST sob demanda */
   sounds: z.array(Sound),
+  /**
+   * M11a (item 81): não lidas por canal de TEXTO, já resolvidas. Evita N
+   * requisições no boot só para saber onde acender uma bolinha.
+   */
+  read_state: z.array(ChannelReadState),
 });
 export type ReadyData = z.infer<typeof ReadyData>;
 
@@ -432,6 +510,8 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_DELETE"), d: MessageDeleteData }),
   // sem evento de stop: o cliente ignora o próprio user_id e expira o indicador em ~10s
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("TYPING_START"), d: TypingStartData }),
+  // M11a: leitura reconhecida — só para as outras sessões do MESMO usuário
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_ACK"), d: MessageAckData }),
   // usuário NOVO criado (dev ou OAuth) — re-login de usuário conhecido não dispara
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_ADD"), d: User }),
   // M10 (item 52): cargo, apelido ou avatar da guild mudaram — d é o User inteiro
@@ -637,8 +717,29 @@ export type VoiceDisconnectUserParams = z.infer<typeof VoiceDisconnectUserParams
 export const CreateMessageBody = z.object({
   content: z.string().min(1).max(4000),
   nonce: z.string().max(64).optional(),
+  /**
+   * M11a: só "user" entra por aqui. O campo existe no corpo (em vez de ser
+   * ignorado) para que a recusa seja EXPLÍCITA: um cliente que tentasse
+   * forjar "member_join" leva 400 com o motivo, em vez de ver o servidor
+   * silenciosamente gravar outra coisa. Mensagem de sistema nasce no
+   * servidor, sempre.
+   */
+  type: z.literal("user").optional(),
 });
 export type CreateMessageBody = z.infer<typeof CreateMessageBody>;
+
+/**
+ * `POST /api/channels/:id/ack` (M11a, item 81) — "li até aqui".
+ *
+ * O id vem do cliente porque só ele sabe o que de fato apareceu na tela: o
+ * servidor não tem como distinguir "a janela está no fundo do canal" de "a aba
+ * está no tray há duas horas". O que o servidor garante é que a marca não
+ * ANDA PARA TRÁS e não passa da última mensagem do canal.
+ */
+export const AckMessageBody = z.object({
+  message_id: z.string(),
+});
+export type AckMessageBody = z.infer<typeof AckMessageBody>;
 
 /** PATCH de mensagem (M2) — sem nonce: o cliente já conhece o id da mensagem */
 export const UpdateMessageBody = z.object({

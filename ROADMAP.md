@@ -15,7 +15,8 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | M8 | som — §1 e §2 + 113 | ✅ |
 | M9 | soundboard + controles de voz — §3 e §4 | ✅ |
 | M10 | convites + moderação — §5 + 114, 116 | ✅ |
-| M11 | chat completo — §7 | |
+| M11a | chat: leitura, markdown, menções — 78–83, 85, 92, 93 | ✅ |
+| M11b | chat: reply, reações, anexos, busca — 84, 86–91 | |
 
 Fora de marco, mas **antes do primeiro release público**: 106 (versão travada em
 `0.0.1` quebra o auto-update), 115 (parse sem `try/catch` quebra cliente antigo
@@ -117,27 +118,27 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 
 ## 7. Chat
 
-75–77 saíram no M7; o resto continua aberto.
+75–77 saíram no M7; 78–83, 85, 92 e 93 no M11a. Falta o M11b.
 
 75. ✅ `G` Agrupar mensagens consecutivas do mesmo autor + avatar no início do bloco. Armadilha: a janela de DOM faz prepend/append/trim nas duas pontas — o agrupamento precisa ser reavaliado **nas bordas**.
 76. ✅ `M` Separador de data + timestamp legível.
 77. ✅ `M` Textarea auto-crescente com Enter/Shift+Enter e placeholder que segue o canal.
-78. `M` Markdown básico + links clicáveis com sanitização.
-79. `M` Menções `@usuario`/`@todos`.
-80. `M` Badge de não lidas por canal + separador "novas mensagens".
-81. `M` Persistir estado de leitura no servidor (`last_read_message_id` + ack) — **base de 79, 80 e da notificação**.
-82. `M` Mensagem que falhou fica em vermelho com "reenviar" (hoje ela desaparece do DOM).
-83. `P` Botão "pular para o presente" — com o fundo destacado, `MESSAGE_CREATE` é descartado e nada avisa.
+78. ✅ `M` Markdown básico + links clicáveis com sanitização.
+79. ✅ `M` Menções `@usuario`/`@todos`.
+80. ✅ `M` Badge de não lidas por canal + separador "novas mensagens".
+81. ✅ `M` Persistir estado de leitura no servidor (`last_read_message_id` + ack) — **base de 79, 80 e da notificação**.
+82. ✅ `M` Mensagem que falhou fica em vermelho com "reenviar" (hoje ela desaparece do DOM).
+83. ✅ `P` Botão "pular para o presente" — com o fundo destacado, `MESSAGE_CREATE` é descartado e nada avisa.
 84. `M` Hover na linha inteira + toolbar flutuante + menu de ações.
-85. `P` Cor por autor e tratamento de autor desconhecido (hoje vira `?`).
+85. ✅ `P` Cor por autor e tratamento de autor desconhecido (hoje vira `?`).
 86. `M` Responder mensagem (reply).
 87. `G` Reações.
 88. `M` Emoji picker + autocomplete `:nome:`.
 89. `G` Upload de anexos.
 90. `M` Preview de link (unfurl server-side, para não vazar o IP de cada amigo).
 91. `G` Busca no histórico (FTS5).
-92. `M` Mensagens de sistema ("fulano entrou", "canal criado").
-93. `P` Editar a última mensagem com ↑.
+92. ✅ `M` Mensagens de sistema ("fulano entrou", "canal criado").
+93. ✅ `P` Editar a última mensagem com ↑.
 
 ## 8. Usabilidade e desktop
 

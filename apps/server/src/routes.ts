@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { CreateMessageBody, UpdateMessageBody } from "@danjocord/protocol";
+import { AckMessageBody, CreateMessageBody, UpdateMessageBody, parseMentions } from "@danjocord/protocol";
 import type { Store } from "./store.js";
 import type { Gateway } from "./gateway.js";
 import { authFromHeader } from "./auth.js";
-import { canonicalId as pathId } from "./db/snowflake.js";
+import { canonicalId as pathId, idFromString } from "./db/snowflake.js";
 
 /**
  * Superfície REST mínima (doc §4: mutações entram por REST; o gateway só faz
@@ -38,9 +38,29 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     }
 
     const body = CreateMessageBody.safeParse(req.body);
-    if (!body.success) return reply.code(400).send({ error: "corpo inválido" });
+    if (!body.success) {
+      // o `type` do corpo só aceita "user" (schema): mensagem de sistema nasce
+      // no servidor, e a recusa é explícita para não parecer que foi gravada
+      const forjado = (req.body as { type?: unknown } | undefined)?.type;
+      return reply.code(400).send({
+        error:
+          forjado !== undefined && forjado !== "user"
+            ? "só o servidor cria mensagem de sistema"
+            : "corpo inválido",
+      });
+    }
 
-    const message = store.createMessage(channelId, user.id, body.data.content);
+    // Menções resolvidas AQUI, no POST (M11a, item 79), e não na leitura: é o
+    // que transforma "quantas não lidas me mencionam" numa query. O parser é o
+    // MESMO módulo que o cliente usa para pintar a pílula — duas
+    // implementações divergiriam no primeiro nome com ponto.
+    // `listMembers()` já devolve id/username/nickname, que é exatamente o
+    // MentionCandidate; e só quem está na guild AGORA pode ser mencionado.
+    const parsed = parseMentions(body.data.content, store.listMembers());
+    const message = store.createMessage(channelId, user.id, body.data.content, {
+      mentions: parsed.userIds,
+      everyone: parsed.everyone,
+    });
     // o nonce só ecoa no evento — o cliente usa para reconciliar o render otimista
     gateway.broadcast("MESSAGE_CREATE", body.data.nonce ? { ...message, nonce: body.data.nonce } : message);
     return reply.code(201).send(message);
@@ -110,6 +130,66 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     // ids da LINHA, não do path: são os canônicos que os clientes conhecem
     gateway.broadcast("MESSAGE_DELETE", { id: message.id, channel_id: message.channel_id });
     return reply.code(204).send();
+  });
+
+  /**
+   * "Li até aqui" (M11a, item 81). É a base do badge de não lidas, do separador
+   * de "novas mensagens" e de qualquer notificação que não queira avisar duas
+   * vezes pela mesma mensagem.
+   *
+   * Quem manda o id é o cliente, porque só ele sabe o que de fato apareceu na
+   * tela — o servidor não distingue "a janela está no fundo do canal" de "a aba
+   * está no tray há duas horas". As garantias (não retroceder, não passar da
+   * última mensagem) moram no `store.markRead`, com o porquê de cada uma.
+   */
+  app.post("/api/channels/:channelId/ack", async (req, reply) => {
+    const user = authFromHeader(req.headers.authorization, store);
+    if (!user) return reply.code(401).send({ error: "não autenticado" });
+
+    const channelId = pathId((req.params as { channelId: string }).channelId);
+    if (channelId === null || !store.channelExists(channelId, "text")) {
+      return reply.code(404).send({ error: "canal de texto não encontrado" });
+    }
+
+    const body = AckMessageBody.safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "corpo inválido" });
+    // mesma canonização dos ids de path: "01" e "1" são a mesma mensagem, e um
+    // id não-numérico vira 400 em vez de BigInt() explodindo em 500
+    const messageId = pathId(body.data.message_id);
+    if (messageId === null) return reply.code(400).send({ error: "id de mensagem inválido" });
+
+    const marked = store.markRead(user.id, channelId, messageId);
+    // canal sem mensagem nenhuma: não há o que marcar, e 204 é a resposta certa
+    // (o cliente não precisa tratar um caso que não é erro)
+    if (marked !== null) {
+      // SÓ as sessões do próprio usuário: quem tem o desktop e uma aba abertos
+      // não pode ver a badge sumir num e continuar acesa no outro. O evento
+      // sai mesmo quando a marca não andou — ele é o estado atual, não um
+      // delta, e reenviá-lo é idempotente para quem recebe.
+      gateway.dispatchToUser(user.id, "MESSAGE_ACK", { channel_id: channelId, last_read_message_id: marked });
+    }
+    return reply.code(204).send();
+  });
+
+  /**
+   * Um usuário pelo id (M11a). Existe por causa do HISTÓRICO: a lista de
+   * membros do READY tem só quem está na guild AGORA, e mensagem de quem foi
+   * expulso — ou a própria mensagem de sistema "fulano saiu" (item 92) — ficaria
+   * assinada por um autor que o cliente não sabe nomear (o "?" do item 85).
+   *
+   * A linha em `users` nunca é apagada justamente para isto. Responde a
+   * qualquer membro autenticado: com uma guild de ≤10 amigos, quem já esteve
+   * aqui não é segredo para quem está — e o que sai é o MESMO objeto que já
+   * viaja no READY, nada além.
+   */
+  app.get("/api/users/:userId", async (req, reply) => {
+    const me = authFromHeader(req.headers.authorization, store);
+    if (!me) return reply.code(401).send({ error: "não autenticado" });
+
+    const userId = pathId((req.params as { userId: string }).userId);
+    const user = userId === null ? null : store.getUserById(idFromString(userId));
+    if (!user) return reply.code(404).send({ error: "usuário não encontrado" });
+    return user;
   });
 
   app.post("/api/channels/:channelId/typing", async (req, reply) => {

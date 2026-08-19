@@ -6,6 +6,7 @@ import {
   type Channel,
   type DispatchName,
   type Message,
+  type MessageAckData,
   type PresenceStatus,
   type PresenceUpdateData,
   type ReadyData,
@@ -55,7 +56,10 @@ import { mountPresence, myStatus, syncPresence } from "./ui/presence.js";
 import { closeSettings } from "./ui/settings.js";
 import {
   editDraftOf,
+  editLastOwnMessage,
   findMessageEl,
+  markFailed,
+  mentionsMe,
   messageEl,
   regroupAll,
   regroupAt,
@@ -63,6 +67,17 @@ import {
   startEdit,
   type MessageActions,
 } from "./ui/messages.js";
+import {
+  ackDoFundo,
+  ackVisivel,
+  applyAck,
+  applyReadState,
+  mountUnread,
+  noteMessage,
+  openedChannel,
+  setDetached,
+  syncUnreadDivider,
+} from "./ui/unread.js";
 import {
   mountSidebar,
   renderChannels as renderChannelList,
@@ -215,6 +230,8 @@ function inertView(): PaginationView {
 }
 
 let view: PaginationView = inertView();
+/** quantas mensagens foram DESCARTADAS desde que o fundo se soltou (item 83) */
+let novasNoDetached = 0;
 
 // ---------------------------------------------------------------------------
 // Typing (M2): tracker recebe TYPING_START, sender emite com throttle
@@ -373,6 +390,9 @@ function renderTypingBar(): void {
 
 async function selectChannel(channelId: string): Promise<void> {
   state.currentChannel = channelId;
+  openedChannel(channelId);
+  novasNoDetached = 0;
+  setDetached(false, 0);
   renderChannels();
   renderChannelHead(ui); // header + document.title
   setComposerChannel(state.channels.find((c) => c.id === channelId)?.name ?? null);
@@ -422,7 +442,13 @@ async function loadLatest(channelId: string): Promise<void> {
     // lote inteiro entrou solto, então a passada vem agora — e ANTES do
     // scroll, que depende das alturas finais
     regroupAll(el.messages);
+    // ANTES de mexer no scroll: a linha de "novas mensagens" tem ~28px, e medir
+    // a altura depois dela entrar faria o texto pular
+    syncUnreadDivider(el.messages);
     el.messages.scrollTop = el.messages.scrollHeight;
+    novasNoDetached = 0;
+    setDetached(false, 0);
+    ackDoFundo(channelId, el.messages); // acabamos de colar no presente
   } catch {
     if (v === view && state.currentChannel === channelId && el.messages.childElementCount === 0) {
       // canal recém-trocado sem nada na tela: dá um gatilho manual de retry
@@ -470,6 +496,7 @@ async function maybeLoadOlder(): Promise<void> {
       // chegaram ganham avatar/separador e a antiga primeira PERDE os dela —
       // medir a altura antes disso faria o texto sob os olhos pular
       regroupAll(el.messages);
+      syncUnreadDivider(el.messages); // mesma razão do loadLatest: ele tem altura
       el.messages.scrollTop += el.messages.scrollHeight - prevHeight;
       trimBottom(v);
     }
@@ -487,6 +514,7 @@ function trimBottom(v: PaginationView): void {
   if (el.messages.childElementCount <= MAX_RENDERED) return;
   while (el.messages.childElementCount > MAX_RENDERED) el.messages.lastElementChild?.remove();
   v.detachedBottom = true;
+  setDetached(true, novasNoDetached); // o botão "pular para o presente" acende
 }
 
 /** Append estourou a janela: o excedente sai do TOPO (lado oposto à carga). */
@@ -593,21 +621,6 @@ class AuthGateway extends GatewayClient {
 
 let currentGateway: AuthGateway | null = null;
 
-/**
- * Detecção MÍNIMA de menção (M8): só o suficiente para o som de `mention` ter
- * significado. O recurso completo — realce no texto, @todos, regra de
- * notificação, persistência — é o item 79 do ROADMAP (M11); aqui não há
- * modelo de dados novo, só uma leitura do conteúdo.
- */
-function mentionsMe(msg: Message): boolean {
-  const me = state.me;
-  if (me === null || msg.author_id === me.id) return false;
-  // \b não serve como borda: username pode ter "." e "_", que são word chars,
-  // e aí "@leo" casaria dentro de "@leonardo". A borda tem que ser explícita.
-  const nome = me.username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`@${nome}(?![\\w.-])`, "i").test(msg.content);
-}
-
 function onDispatch(t: DispatchName, d: unknown): void {
   if (t === "READY") {
     const ready = d as ReadyData;
@@ -624,6 +637,7 @@ function onDispatch(t: DispatchName, d: unknown): void {
     }
     state.speaking = new Map(); // "quem fala" não vem no snapshot; o próximo VOICE_SPEAKING repõe
     applySoundCatalog(ready.sounds); // antes dos renders: o pad já nasce certo
+    applyReadState(ready.read_state); // antes do renderChannels: a badge nasce certa
     syncPresence(); // sessão nova começa "online" no servidor — redeclara o meu
     setComposerMuted(ready.user.muted_until); // timeout de chat vem no snapshot
     refreshInvitesMenu(ui); // o cargo só é conhecido a partir daqui
@@ -754,10 +768,20 @@ function onDispatch(t: DispatchName, d: unknown): void {
       renderMembers(ui, (userId) => openUserControls(userId));
     }
     if (isBlocked(msg.author_id)) return; // bloqueado: sem nó, sem som, sem badge
+    noteMessage(msg); // badge do canal + contagem de menção
     // Som ANTES do return abaixo: mensagem em canal que não estou vendo é
     // justamente o caso que precisa avisar. A política descarta a minha
     // própria e decide entre "estou vendo este canal" e "janela sem foco".
-    emit({ name: mentionsMe(msg) ? "mention" : "message", actorId: msg.author_id, channelId: msg.channel_id });
+    // `type === "user"`: "fulano entrou no servidor" não toca som de mensagem.
+    // E a menção agora vem RESOLVIDA do servidor — a regex local do M8 divergia
+    // dele em nome com ponto e não conhecia @todos.
+    if (msg.type === "user") {
+      emit({
+        name: mentionsMe(msg, state.me?.id ?? null) ? "mention" : "message",
+        actorId: msg.author_id,
+        channelId: msg.channel_id,
+      });
+    }
     if (msg.channel_id !== state.currentChannel) return;
     // resync em voo: o snapshot pode não conter esta mensagem e o
     // replaceChildren descartaria o append — bufferiza e aplica depois
@@ -767,7 +791,12 @@ function onDispatch(t: DispatchName, d: unknown): void {
     }
     // fundo fora da janela de DOM: append viraria buraco na timeline — o
     // loadLatest do retorno ao fundo traz esta mensagem junto
-    if (view.detachedBottom) return;
+    if (view.detachedBottom) {
+      // descartada de propósito (append viraria buraco): o contador é o que faz
+      // o botão "pular para o presente" dizer QUANTAS chegaram
+      setDetached(true, ++novasNoDetached);
+      return;
+    }
     if (findMessageEl(el.messages, msg.id) !== null) return; // dedup: loadLatest × Dispatch podem se cruzar
     const pendingEl = msg.nonce ? state.pending.get(msg.nonce) : undefined;
     // decidido ANTES do append (que muda o scrollHeight): cola no fundo quem
@@ -788,7 +817,10 @@ function onDispatch(t: DispatchName, d: unknown): void {
       regroupAt(fresh); // continua (ou não) o bloco de quem já estava no fim
       trimTop(view);
     }
-    if (stick) el.messages.scrollTop = el.messages.scrollHeight;
+    if (stick) {
+      el.messages.scrollTop = el.messages.scrollHeight;
+      ackVisivel(msg.channel_id, msg.id); // só sai com a janela em foco
+    }
     return;
   }
   if (t === "MESSAGE_UPDATE") {
@@ -827,6 +859,12 @@ function onDispatch(t: DispatchName, d: unknown): void {
     state.members.set(user.id, user); // substitui o placeholder "user-XXXX", se havia
     renderMembers(ui, (userId) => openUserControls(userId));
     renderTypingBar(); // "Usuário desconhecido" na barra pode virar o nome real
+    return;
+  }
+  if (t === "MESSAGE_ACK") {
+    // só as MINHAS sessões recebem: é o que impede a badge sumir no desktop e
+    // continuar acesa na aba. É estado (não delta), então reaplicar é inócuo.
+    applyAck(d as MessageAckData);
     return;
   }
   if (t === "MEMBER_UPDATE") {
@@ -1066,6 +1104,15 @@ const ui: SidebarContext & UserControlsContext = {
 };
 mountSidebar(ui);
 mountSoundboard(ui);
+mountUnread(ui, {
+  ack: (channelId, messageId) =>
+    api(`/api/channels/${channelId}/ack`, { method: "POST", body: JSON.stringify({ message_id: messageId }) }).then(
+      () => undefined,
+    ),
+  pularParaOPresente: () => {
+    if (state.currentChannel !== null) void loadLatest(state.currentChannel);
+  },
+});
 mountUserControls(ui); // aqui as preferências salvas voltam para o VoiceClient
 restoreVoicePrefs(voice); // dispositivo escolhido vale para o próximo join
 
@@ -1549,6 +1596,9 @@ el.streamUnmute.addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 mountComposer({
+  // ↑ no campo VAZIO (item 93). O composer não conhece `el.messages` nem quem
+  // eu sou; ele só pergunta se alguém tratou a tecla.
+  onEditLast: () => state.me !== null && editLastOwnMessage(el.messages, state.me.id),
   onTyping: () => {
     if (state.currentChannel === null) return;
     typingSender.typed(state.currentChannel);
@@ -1581,7 +1631,16 @@ mountComposer({
     // render otimista (doc §8): aparece já, reconcilia quando o Dispatch voltar
     const nonce = crypto.randomUUID();
     const pending = renderMsg(
-      { id: nonce, channel_id: channelId, author_id: me.id, content, created_at: Date.now() },
+      {
+        id: nonce,
+        channel_id: channelId,
+        author_id: me.id,
+        content,
+        created_at: Date.now(),
+        type: "user",
+        mentions: [], // o servidor resolve; o otimista ainda não sabe
+        mentions_everyone: false,
+      },
       true,
     );
     state.pending.set(nonce, pending);
@@ -1589,16 +1648,31 @@ mountComposer({
     regroupAt(pending); // continua o bloco de quem enviou a anterior
     el.messages.scrollTop = el.messages.scrollHeight;
 
-    void api(`/api/channels/${channelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content, nonce }),
-    }).catch(() => {
-      const next = pending.nextElementSibling;
-      pending.remove();
-      regroupAt(next);
-      state.pending.delete(nonce);
-      setComposerValue(content); // devolve o texto para retry manual
-    });
+    // A mensagem que falha NÃO some mais (item 82): sumir é o pior feedback —
+    // para quem olha, ela simplesmente desapareceu. Ela fica em vermelho, com
+    // "Reenviar" e "Descartar".
+    //
+    // Duas regras que não são óbvias: (a) o texto NÃO volta para o composer,
+    // porque ele está na tela — devolver duplicaria; (b) o `pending` só sai do
+    // Map no DESCARTE, senão o MESSAGE_CREATE do reenvio bem-sucedido não
+    // reconcilia e a mensagem aparece duas vezes.
+    const enviar = (): void => {
+      void api(`/api/channels/${channelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ content, nonce }),
+      }).catch(() => {
+        markFailed(pending, {
+          onResend: enviar,
+          onDiscard: () => {
+            const next = pending.nextElementSibling;
+            pending.remove();
+            regroupAt(next);
+            state.pending.delete(nonce);
+          },
+        });
+      });
+    };
+    enviar();
   },
 });
 

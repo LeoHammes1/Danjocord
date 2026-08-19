@@ -14,6 +14,7 @@ import { registerOAuthRoutes } from "./oauth.js";
 import { registerStaticClient } from "./static-client.js";
 import { registerSoundRoutes } from "./sounds/routes.js";
 import { seedSounds } from "./sounds/seed.js";
+import { announce } from "./system.js";
 import { Voice } from "./voice.js";
 
 // Sem segredo real em produção, todo JWT emitido seria forjável — aborta já.
@@ -62,7 +63,17 @@ bootstrapOwner(store, guild, (msg) => app.log.warn(msg));
 
 // usuário novo (dev ou OAuth) aparece na sidebar de todo mundo na hora;
 // atribuição pós-construção porque Store e Gateway não se conhecem
-store.onUserCreated = (u) => gateway.broadcast("MEMBER_ADD", u);
+store.onUserCreated = (u) => {
+  // entrar não é ter perdido o que veio antes: os canais nascem lidos para o
+  // recém-chegado. Antes do announce, senão o próprio "fulano entrou" já
+  // apareceria como não-lido para ele mesmo.
+  store.markAllReadOnJoin(u.id);
+  gateway.broadcast("MEMBER_ADD", u);
+  // M11a (item 92): o "fulano entrou" vai DEPOIS do MEMBER_ADD, e a ordem
+  // importa — a mensagem é assinada pelo recém-chegado, e quem a receber antes
+  // de conhecer o autor desenharia um avatar de desconhecido
+  announce(store, gateway, "member_join", u.id);
+};
 
 // soundboard (M9): os 9 embutidos entram no banco no primeiro boot — depois
 // disso o banco é a ÚNICA fonte do catálogo (embutido = som sem uploader)

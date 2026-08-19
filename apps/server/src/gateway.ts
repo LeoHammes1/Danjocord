@@ -108,6 +108,21 @@ export class Gateway {
     for (const session of this.sessions.values()) this.dispatchRaw(session, t, d);
   }
 
+  /**
+   * Fan-out só para as sessões do PRÓPRIO usuário (M11a: MESSAGE_ACK).
+   *
+   * É o primeiro evento do projeto que não é da guild inteira, e por um motivo
+   * concreto: quem tem o desktop e uma aba abertos não pode ver a badge sumir
+   * num e continuar acesa no outro. Aos outros membros, o que eu já li não diz
+   * nada — e "fulano leu sua mensagem" é justamente o recurso que ninguém
+   * pediu.
+   */
+  dispatchToUser<T extends DispatchName>(userId: string, t: T, d: Extract<DispatchEvent, { t: T }>["d"]): void {
+    for (const session of this.sessions.values()) {
+      if (session.user.id === userId) this.dispatchRaw(session, t, d);
+    }
+  }
+
   private dispatchRaw(session: GatewaySession, t: DispatchName, d: unknown): void {
     session.seq += 1;
     const raw = JSON.stringify({ op: Op.Dispatch, s: session.seq, t, d });
@@ -295,6 +310,9 @@ export class Gateway {
           voice_states: this.voiceStatesProvider?.() ?? [],
           presences: this.presences(),
           sounds: this.soundsProvider?.() ?? [],
+          // M11a (item 81): não lidas por canal já resolvidas — sem isto o
+          // cliente faria uma requisição por canal só para acender uma bolinha
+          read_state: this.store.readStates(user.id),
         });
         if (this.presenceOf(user.id) !== before) this.broadcastPresence(user.id, session);
         return;
