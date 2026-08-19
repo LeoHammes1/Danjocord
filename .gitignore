@@ -13,6 +13,10 @@ data/
 .env
 .env.*
 
+# certificado de teste em rede local (scripts/lan-cert.mjs) — contém CHAVE
+# PRIVADA, e é gerado por máquina/IP: nunca vai para o repositório
+certs/
+
 # artefatos de editor/SO
 .DS_Store
 Thumbs.db

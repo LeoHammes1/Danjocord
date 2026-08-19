@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
@@ -30,7 +31,35 @@ if (!config.devAuth && (!process.env.JWT_SECRET || process.env.JWT_SECRET.length
   process.exit(1);
 }
 
-const app = Fastify({ logger: true });
+/**
+ * TLS opcional, para TESTE EM REDE LOCAL.
+ *
+ * Não é para produção — lá o Traefik termina o TLS e o pod fala HTTP puro.
+ * Existe por um motivo específico: `getUserMedia` (microfone, câmera, Go Live)
+ * só funciona em CONTEXTO SEGURO, e `http://192.168.x.x` não é um. Sem isto,
+ * abrir o app no notebook dá chat funcionando e voz simplesmente ausente —
+ * `navigator.mediaDevices` vem `undefined` e nem erro aparece.
+ *
+ * Um certificado auto-assinado resolve: o navegador reclama uma vez, a pessoa
+ * aceita, e a origem passa a valer como segura. O WebSocket vira `wss://`
+ * sozinho (o cliente deriva do protocolo da API).
+ */
+function tlsOptions(): { key: Buffer; cert: Buffer } | null {
+  const cert = process.env.TLS_CERT_PATH;
+  const key = process.env.TLS_KEY_PATH;
+  if (!cert || !key) return null;
+  try {
+    return { cert: readFileSync(cert), key: readFileSync(key) };
+  } catch (err) {
+    console.error(`TLS_CERT_PATH/TLS_KEY_PATH definidos mas ilegíveis (${String(err)}) — abortando`);
+    process.exit(1);
+  }
+}
+
+// spread condicional e NAO um ternario entre duas chamadas: o tipo do Fastify
+// muda com `https`, e a uniao dos dois instanciadores quebra o addHook
+const tls = tlsOptions();
+const app = Fastify({ logger: true, ...(tls === null ? {} : { https: tls }) });
 
 // A mesma origem serve SPA + API e os tokens vivem no localStorage: um XSS no
 // render de mensagens roubaria a sessão — a CSP é a contenção. Em dev o

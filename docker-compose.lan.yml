@@ -1,0 +1,48 @@
+# Teste em REDE LOCAL — dois computadores na mesma casa.
+#
+#   node scripts/lan-cert.mjs
+#   docker compose -f docker-compose.lan.yml --env-file .env.lan up --build
+#
+# Diferente do docker-compose.yml (que é o ambiente de desenvolvimento, com
+# vite e hot reload em localhost), este sobe a imagem de PRODUÇÃO: um processo
+# só, servindo o cliente já compilado na MESMA origem da API. É o que se quer
+# num teste de verdade — sem CORS, sem URL de API embutida no bundle, e o mais
+# perto possível do que vai rodar no cluster.
+#
+# Três coisas fazem a voz funcionar entre máquinas, e todas estão aqui:
+#
+# 1. ANNOUNCED_IP — o mediasoup anuncia ESTE endereço nos candidatos ICE. Com o
+#    default (127.0.0.1) o notebook tentaria conectar a si mesmo e a chamada
+#    ficaria eternamente em "Conectando voz…".
+# 2. A porta de mídia publicada em UDP **e** TCP (o TCP é o fallback de ICE para
+#    rede que bloqueia UDP).
+# 3. TLS. `getUserMedia` só existe em contexto seguro, e `http://192.168.x.x`
+#    não é um — sem HTTPS o chat funciona e a voz não, sem mensagem de erro.
+services:
+  danjocord:
+    build:
+      context: .
+      target: runtime
+    ports:
+      - "8443:8080" # HTTPS (o app dentro do container continua na 8080)
+      - "41000:41000/udp" # mídia SRTP
+      - "41000:41000/tcp" # ICE-TCP, para rede que bloqueia UDP
+    environment:
+      # login por usuário, sem depender de app do Discord configurado. NUNCA em
+      # produção — qualquer nome digitado vira uma sessão válida.
+      DANJOCORD_DEV_AUTH: "1"
+      DB_PATH: /app/apps/server/data/danjocord.db
+      ANNOUNCED_IP: ${LAN_IP:?rode antes "node scripts/lan-cert.mjs" para gerar o .env.lan}
+      RTC_PORT: "41000"
+      TLS_CERT_PATH: /app/certs/danjocord.crt
+      TLS_KEY_PATH: /app/certs/danjocord.key
+      GUILD_NAME: Danjocord (teste local)
+    volumes:
+      - danjocord-lan-data:/app/apps/server/data
+      # o certificado fica FORA da imagem de propósito: ele carrega uma chave
+      # privada e muda quando o IP da casa muda
+      - ./certs:/app/certs:ro
+    restart: unless-stopped
+
+volumes:
+  danjocord-lan-data:
