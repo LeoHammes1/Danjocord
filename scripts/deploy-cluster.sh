@@ -94,9 +94,18 @@ passo "Conferindo"
 codigo=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$URL/healthz" || echo 000)
 [[ "$codigo" == "200" ]] && ok "healthz 200" || aviso "healthz devolveu $codigo"
 
-upgrade=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+# Duas armadilhas, as duas já mordidas na estreia deste script:
+#
+# 1. A chave TEM de decodificar para exatamente 16 bytes. Com outro tamanho o
+#    servidor responde 400 e o check acusa falha num gateway perfeito.
+# 2. Depois do 101 a conexão FICA ABERTA — o curl estoura o --max-time e sai
+#    com 28. Um `|| echo 000` aqui concatenaria e daria "101000". Por isso o
+#    `|| true` e o corte nos 3 primeiros dígitos: o código já foi impresso
+#    antes do timeout, e o timeout é o comportamento esperado, não erro.
+upgrade=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
-  -H "Sec-WebSocket-Key: ZGFuam9jb3JkdGVzdGUxMjM0NQ==" "$URL/gateway" || echo 000)
+  -H "Sec-WebSocket-Key: Qx7HmKw97hUluZSA72PuMQ==" "$URL/gateway" 2>/dev/null || true)
+upgrade="${upgrade:0:3}"; [[ -z "$upgrade" ]] && upgrade=000
 [[ "$upgrade" == "101" ]] && ok "gateway aceitou o upgrade (101)" || aviso "gateway devolveu $upgrade (esperado 101)"
 
 oauth=$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 20 "$URL/auth/discord/start" || true)
