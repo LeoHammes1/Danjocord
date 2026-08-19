@@ -25,7 +25,11 @@
 
    As classes de estado NÃO trocam nós, só escondem/pintam: `--day` mostra o
    separador, `--cont` colapsa avatar e cabeçalho. É o que deixa o regroupAt
-   (chamado a cada prepend/append/trim da janela de DOM) ser barato. */
+   (chamado a cada prepend/append/trim da janela de DOM) ser barato.
+
+   O M11b acrescentou citação, anexo, cartão de link, reações e o menu de
+   ações — todos DENTRO do `.msg-body` (menos os três que flutuam sobre a
+   página). O mapa deles está no bloco "M11b" no fim deste arquivo. */
 
 #messages {
   padding: var(--sp-4) 0 var(--sp-5);
@@ -406,4 +410,399 @@
     opacity: 1;
     transform: translateY(-2px);
   }
+}
+
+/* =========================================================================
+   M11b — a mensagem rica (citação, reações, anexo, cartão de link, menu)
+
+   Tudo abaixo mora DENTRO do `.msg-body`, com duas exceções que flutuam sobre
+   a página (o menu de ações, o lightbox e o aviso efêmero) e por isso são
+   penduradas no <body> pelo ui/messages.ts.
+
+   Estrutura acrescentada pelo ui/messages.ts:
+
+     .msg-body
+       .msg-reply | .msg-reply.msg-reply--gone     (citação, ACIMA do head)
+       .msg-head + .msg-content [+ .msg-edited]
+       .msg-attachments > .attachment > .attachment-img
+       .msg-embeds      > .link-card > site/title/desc      (nasce VAZIO)
+       .msg-reactions   > .reaction* + .reaction--add       (nasce VAZIO)
+
+   Os dois containers que nascem vazios somem por `:empty` — sem isso cada
+   mensagem carregaria duas faixas de margem em branco.
+
+   Sobre z-index: o app empilha entre 1 e 2 (header, menu da engrenagem), o
+   card de membro em 10 e os diálogos em 20/21 (ver settings.css e
+   soundboard.css). O menu de ações e o aviso ficam em 5 — acima do header
+   (senão o menu de uma mensagem no topo apareceria POR BAIXO dele) e abaixo de
+   qualquer modal. O lightbox é modal de verdade e vai acima de todos, em 30.
+   ========================================================================= */
+
+/* --- foco e realce da mensagem (item 84) --------------------------------
+   Cada `.msg` é `tabindex="-1"`: fora do Tab, alcançável pelas setas. O anel
+   vai no `.msg-row` (e não no nó, que inclui o separador de data) para
+   contornar exatamente a linha que a pessoa está lendo. */
+.msg:focus {
+  outline: none;
+}
+.msg:focus-visible .msg-row {
+  outline: 2px solid var(--text-link);
+  outline-offset: -2px;
+}
+/* mensagem focada mostra a toolbar: sem isso, quem chegou pelas setas veria a
+   linha selecionada e nenhuma ação */
+.msg:focus .msg-actions {
+  opacity: 1;
+}
+
+/* "cheguei aqui" (clique na citação; e a busca, item 91). Apaga sozinho — um
+   realce que fica vira ruído na próxima vez que a pessoa olhar a lista.
+   O base.css zera animação para quem pede prefers-reduced-motion. */
+@keyframes msg-flash {
+  from {
+    background: color-mix(in srgb, var(--brand) 34%, transparent);
+  }
+  to {
+    background: transparent;
+  }
+}
+.msg--flash .msg-row {
+  animation: msg-flash 2s ease-out;
+}
+
+/* --- citação (item 86) ---------------------------------------------------
+   Uma linha só, acima do cabeçalho, com o cotovelo entrando na gutter do
+   avatar. O cotovelo é `::before` com duas bordas e um raio — não é imagem
+   nem caractere, então acompanha a cor do tema sozinho. */
+.msg-reply {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0; /* sem isto o trecho comprido estoura a coluna do grid */
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.msg-reply::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -30px;
+  width: 26px;
+  height: 12px;
+  border-top: 2px solid color-mix(in srgb, var(--text-faint) 55%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--text-faint) 55%, transparent);
+  border-top-left-radius: 6px;
+}
+.msg-reply-avatar {
+  flex: none;
+}
+.msg-reply-author {
+  flex: none;
+  font-weight: var(--fw-medium);
+  color: var(--text-normal);
+}
+/* o trecho é uma linha elidida: a mensagem citada pode ter 4000 caracteres, e
+   a citação existe para IDENTIFICAR a original, não para repeti-la */
+.msg-reply-excerpt {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+button.msg-reply:hover .msg-reply-excerpt,
+button.msg-reply:hover .msg-reply-author {
+  color: var(--text-strong);
+}
+/* citada apagada: fica, em itálico. Sumir reescreveria a conversa. */
+.msg-reply--gone .msg-reply-excerpt {
+  color: var(--text-faint);
+  font-style: italic;
+}
+/* pisca quando a original NÃO está na janela de DOM — o clique não mentiu
+   dizendo que rolou; ver jumpToQuoted no ui/messages.ts */
+.msg-reply--nojump {
+  animation: msg-reply-shake 0.4s ease-in-out;
+}
+@keyframes msg-reply-shake {
+  0%,
+  100% {
+    color: var(--text-muted);
+  }
+  50% {
+    color: var(--warn);
+  }
+}
+
+/* --- anexos (item 89) ----------------------------------------------------
+   A caixa é RESERVADA antes de a imagem existir: `--att-w` e `--att-ratio`
+   vêm do fitBox (messages-core.ts), calculados a partir das dimensões que o
+   servidor leu do cabeçalho do arquivo. Sem isso a timeline pula quando cada
+   imagem carrega — e o #messages tem `overflow-anchor: none` (paginação do
+   M2), então o navegador não corrige nada sozinho.
+
+   `min(--att-w, 100%)` mantém a reserva correta também numa janela estreita:
+   a caixa encolhe junto, sem perder a proporção. */
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.attachment {
+  display: block;
+  width: min(var(--att-w, 240px), 100%);
+  aspect-ratio: var(--att-ratio, 4 / 3);
+  overflow: hidden;
+  border-radius: var(--r-md);
+  /* fundo enquanto os bytes não chegam: a caixa já está lá, e vazia e
+     transparente ela pareceria um buraco no layout */
+  background: var(--bg-elevated);
+}
+.attachment:hover {
+  filter: brightness(1.06);
+}
+.attachment-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* contain e não cover: com a dimensão lida do arquivo os dois são idênticos,
+     mas no fallback (dimensão ilegível) cover CORTARIA a imagem */
+  object-fit: contain;
+}
+.attachment--erro {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-3);
+  cursor: default;
+}
+.attachment-erro {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* --- lightbox (item 89) --------------------------------------------------
+   Modal próprio, e não a casca do ui/dialog.ts: as regras `.dialog-*` moram
+   num arquivo importado DEPOIS deste, e qualquer empate de especificidade
+   seria perdido daqui (a armadilha anotada no CLAUDE.md). */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  background: var(--bg-overlay);
+  z-index: 30;
+}
+/* [hidden] tem que GANHAR do display:flex acima, senão o overlay fica sempre
+   aberto — é a pegadinha clássica de esconder um flex container */
+.lightbox[hidden] {
+  display: none;
+}
+.lightbox-img {
+  max-width: min(1200px, 92vw);
+  max-height: 82vh;
+  object-fit: contain;
+  border-radius: var(--r-md);
+}
+.lightbox-close {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  color: var(--text-strong);
+}
+.lightbox-caption {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+/* --- cartão de link (item 90) -------------------------------------------
+   Discreto: faixa lateral, nome do site, título e até três linhas de
+   descrição. NÃO tem imagem, e não é esquecimento — ver linkCardEl. */
+.msg-embeds:empty {
+  display: none;
+}
+.link-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 440px;
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 4px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  /* o base.css não reseta `a`, então sem isto as TRÊS linhas do cartão vêm
+     sublinhadas — o sublinhado fica só no título, e só no hover */
+  text-decoration: none;
+}
+.link-card:hover {
+  background: var(--bg-input);
+}
+.link-card:hover .link-card-title {
+  text-decoration: underline;
+}
+.link-card-site {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+}
+.link-card-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-link);
+}
+.link-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* --- reações (item 87) ---------------------------------------------------
+   Pílulas embaixo da mensagem. O realce de "eu reagi" é borda + fundo da cor
+   da marca: a contagem sozinha não distingue "3 pessoas" de "3 pessoas,
+   incluindo eu", que é a informação que decide o próximo clique. */
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin-top: var(--sp-1);
+}
+.msg-reactions:empty {
+  display: none;
+}
+.reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums; /* a contagem não pode dançar ao mudar */
+  transition:
+    background-color var(--t-fast),
+    border-color var(--t-fast);
+}
+.reaction:hover {
+  border-color: color-mix(in srgb, var(--text-faint) 60%, transparent);
+  color: var(--text-normal);
+}
+.reaction--mine {
+  border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 22%, transparent);
+  color: var(--text-strong);
+}
+.reaction--mine:hover {
+  border-color: var(--brand-hover);
+}
+.reaction-emoji {
+  font-size: 15px;
+  line-height: 1;
+}
+/* pedido em voo: `aria-busy` e não `disabled`, para o botão não perder o foco
+   embaixo de quem navega por teclado (ver REAGINDO no ui/messages.ts) */
+.reaction[aria-busy="true"] {
+  opacity: 0.55;
+}
+.reaction--add {
+  padding: 0 6px;
+  color: var(--text-faint);
+}
+.reaction--add:hover {
+  color: var(--text-normal);
+}
+.reaction--add svg {
+  display: block;
+}
+
+/* --- menu de ações (item 84) --------------------------------------------
+   O `.menu-item` é o do sidebar.css (mesmo desenho do menu da engrenagem —
+   dois menus com aparências diferentes seriam dois menus). Aqui fica só o
+   invólucro, que é `position: fixed` porque o JS o posiciona em coordenadas
+   de janela, e vive no <body> (fora do #messages, que rola). */
+.msg-menu {
+  position: fixed;
+  min-width: 208px;
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-high);
+  z-index: 5;
+}
+/* os itens são tabindex=-1 e recebem foco PROGRAMÁTICO pelas setas: sem um
+   estado de :focus visível, quem navega por teclado não veria onde está */
+.msg-menu .menu-item:focus {
+  background: var(--bg-guilds);
+  color: var(--text-strong);
+  outline: none;
+}
+.msg-menu .menu-item.danger:focus {
+  background: var(--danger);
+  color: var(--text-strong);
+}
+
+/* --- aviso efêmero ------------------------------------------------------
+   "Link copiado", "não foi possível reagir". Some por `opacity` e NUNCA por
+   `hidden`/`visibility`: os dois tirariam o texto da árvore de
+   acessibilidade, e a região `role="status"` deixaria de anunciar — o aviso
+   existiria só para quem enxerga. */
+.msg-toast {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-guilds);
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+  box-shadow: var(--shadow-high);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-med);
+  z-index: 5;
+}
+.msg-toast--on {
+  opacity: 1;
+}
+
+/* --- barra de "respondendo a" (M11b, item 86) ---------------------------
+   Ela vive ACIMA do composer e é estado do CAMPO, não da timeline: some no
+   envio e na troca de canal. O fundo elevado a costura visualmente ao campo,
+   como se fossem uma peça só — que é o que ela é. */
+.composer-reply {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 var(--sp-4);
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--bg-elevated);
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+}
+.composer-reply[hidden] {
+  display: none;
+}
+.composer-reply-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

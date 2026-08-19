@@ -11,3 +11,4 @@
  * registrar os hooks.
  */
 import "./mentions.test.ts";
+import "./emoji.test.ts";

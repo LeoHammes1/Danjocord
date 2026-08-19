@@ -3,11 +3,14 @@
 import "./styles/index.css";
 import {
   CloseCode,
+  displayName,
   type Channel,
   type DispatchName,
   type Message,
+  type Attachment,
   type MessageAckData,
   type PresenceStatus,
+  type ReactionData,
   type PresenceUpdateData,
   type ReadyData,
   type Sound,
@@ -24,11 +27,17 @@ import {
   clearComposer,
   focusComposer,
   mountComposer,
+  replyTargetId,
+  restoreComposerAttachments,
   setComposerChannel,
+  setReplyTarget,
   setComposerMuted,
   setComposerValue,
 } from "./ui/composer.js";
 import { renderMembers } from "./ui/members.js";
+import { mountEmojiComposer } from "./ui/emoji.js";
+import { mountSearch } from "./ui/search.js";
+import { uploadAttachment } from "./ui/upload.js";
 import { isUserSilenced, setUserSilenced } from "./sound/soundboard.js";
 import {
   applySoundCatalog,
@@ -55,6 +64,7 @@ import { memberRemoved } from "./ui/members.js";
 import { mountPresence, myStatus, syncPresence } from "./ui/presence.js";
 import { closeSettings } from "./ui/settings.js";
 import {
+  applyReaction,
   editDraftOf,
   editLastOwnMessage,
   findMessageEl,
@@ -362,6 +372,13 @@ const msgActions: MessageActions = {
     }) as Promise<Message>,
   deleteMessage: (m) =>
     api(`/api/channels/${m.channel_id}/messages/${m.id}`, { method: "DELETE" }).then(() => undefined),
+  // o alvo vira estado do CAMPO (ui/composer): ele acompanha o que está sendo
+  // escrito, some no envio e some na troca de canal — o servidor recusa citar
+  // mensagem de outro canal, então deixar o alvo vivo daria 400 na cara
+  replyTo: (m) => {
+    const autor = state.members.get(m.author_id);
+    setReplyTarget({ id: m.id, autor: autor === undefined ? "alguém" : displayName(autor) });
+  },
 };
 
 /** todo call site de mensagem precisa do mesmo contexto + actions */
@@ -377,6 +394,17 @@ function visivel(m: Message): boolean {
   return !isBlocked(m.author_id);
 }
 
+/** corpo do POST: `attachment_ids` só viaja quando há anexo (item 89) */
+function corpo(content: string, attachments: Attachment[]): Record<string, unknown> {
+  const ids = attachments.map((a) => a.id);
+  const reply = replyTargetId();
+  return {
+    content,
+    ...(ids.length > 0 ? { attachment_ids: ids } : {}),
+    ...(reply !== null ? { reply_to_id: reply } : {}),
+  };
+}
+
 function renderTypingBar(): void {
   const cid = state.currentChannel;
   renderTyping(el.typing, ui, cid === null ? [] : typingTracker.typers(cid));
@@ -390,6 +418,7 @@ function renderTypingBar(): void {
 
 async function selectChannel(channelId: string): Promise<void> {
   state.currentChannel = channelId;
+  setReplyTarget(null); // citar mensagem de outro canal é 400 no servidor
   openedChannel(channelId);
   novasNoDetached = 0;
   setDetached(false, 0);
@@ -859,6 +888,12 @@ function onDispatch(t: DispatchName, d: unknown): void {
     state.members.set(user.id, user); // substitui o placeholder "user-XXXX", se havia
     renderMembers(ui, (userId) => openUserControls(userId));
     renderTypingBar(); // "Usuário desconhecido" na barra pode virar o nome real
+    return;
+  }
+  if (t === "REACTION_ADD" || t === "REACTION_REMOVE") {
+    // delta e não a mensagem inteira: a função ignora sozinha o que não é do
+    // canal aberto ou não está na janela de DOM
+    applyReaction(el.messages, d as ReactionData, t === "REACTION_ADD", ui);
     return;
   }
   if (t === "MESSAGE_ACK") {
@@ -1599,31 +1634,43 @@ mountComposer({
   // ↑ no campo VAZIO (item 93). O composer não conhece `el.messages` nem quem
   // eu sou; ele só pergunta se alguém tratou a tecla.
   onEditLast: () => state.me !== null && editLastOwnMessage(el.messages, state.me.id),
+  // sem isto o botão de anexar nem nasce (item 89)
+  uploadAttachment,
   onTyping: () => {
     if (state.currentChannel === null) return;
     typingSender.typed(state.currentChannel);
   },
-  onSubmit: (content) => {
+  onSubmit: (content, attachments) => {
     // sem canal (janela entre o startApp e o READY, ou boot com gateway fora)
     // o composer JÁ limpou o campo — devolver o texto é o contrato dele, e o
     // mesmo que os dois catch de rede abaixo fazem. Sem isto a frase digitada
     // desaparece sem enviar e sem aviso (revisão M7 #1).
     if (state.currentChannel === null || state.me === null) {
       setComposerValue(content);
+      restoreComposerAttachments(attachments);
       return;
     }
     const channelId = state.currentChannel;
     const me = state.me;
+    const corpoDoEnvio = corpo(content, attachments); // ANTES de limpar o alvo
+    setReplyTarget(null);
     typingSender.sent(channelId); // enviar encerra a "sessão de digitação" do throttle
 
     if (view.detachedBottom && view.channelId === channelId) {
       // fundo fora da janela de DOM: não há onde ancorar o render otimista —
       // envia sem nonce e recarrega o final (o dedup por data-id segura o
       // cruzamento entre o reload e o Dispatch)
-      void api(`/api/channels/${channelId}/messages`, { method: "POST", body: JSON.stringify({ content }) })
+      void api(`/api/channels/${channelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify(corpoDoEnvio),
+      })
         .then(() => loadLatest(channelId))
         .catch(() => {
           setComposerValue(content); // devolve o texto para retry manual
+          // e o anexo junto: sem isto ele some em silêncio, e pode ter sido um
+          // print que a pessoa nem salvou. Não há reupload — ele já está no
+          // servidor (o relógio de órfão é de 15 min).
+          restoreComposerAttachments(attachments);
         });
       return;
     }
@@ -1640,6 +1687,10 @@ mountComposer({
         type: "user",
         mentions: [], // o servidor resolve; o otimista ainda não sabe
         mentions_everyone: false,
+        // os anexos JÁ existem no servidor (upload em duas etapas), então o
+        // otimista desenha a imagem com as dimensões certas — sem pulo de layout
+        attachments,
+        reactions: [],
       },
       true,
     );
@@ -1659,7 +1710,7 @@ mountComposer({
     const enviar = (): void => {
       void api(`/api/channels/${channelId}/messages`, {
         method: "POST",
-        body: JSON.stringify({ content, nonce }),
+        body: JSON.stringify({ ...corpoDoEnvio, nonce }),
       }).catch(() => {
         markFailed(pending, {
           onResend: enviar,
@@ -1717,6 +1768,48 @@ el.devForm.addEventListener("submit", (ev) => {
 
 // header do canal, faixa de conexão e o botão de esconder a lista de membros
 mountChrome();
+mountEmojiComposer(); // botão de emoji + autocomplete de :nome: (item 88)
+mountSearch({ ctx: ui, api, jumpTo }); // item 91
+
+/**
+ * Leva a conversa até uma mensagem qualquer do histórico (resultado de busca,
+ * clique numa citação de reply). É o único pedaço que só este arquivo sabe
+ * fazer: a janela de DOM tem ~600 mensagens, e uma antiga exige recarregar
+ * EM VOLTA dela.
+ *
+ * `before` é EXCLUSIVO e os ids são snowflakes inteiros, então `id + 1` devolve
+ * a página que TERMINA na mensagem procurada. BigInt e não Number: um snowflake
+ * de 64 bits não cabe num double (regra do projeto).
+ */
+async function jumpTo(channelId: string, messageId: string): Promise<void> {
+  if (state.currentChannel !== channelId) await selectChannel(channelId);
+  let alvo = findMessageEl(el.messages, messageId);
+  if (alvo === null) {
+    const antes = (BigInt(messageId) + 1n).toString();
+    const janela = (await api(`/api/channels/${channelId}/messages?limit=${PAGE_SIZE}&before=${antes}`)) as Message[];
+    if (state.currentChannel !== channelId) return; // trocou de canal durante o fetch
+    janela.reverse();
+    view = {
+      channelId,
+      reachedStart: janela.length < PAGE_SIZE,
+      loadingOlder: false,
+      // o fundo NÃO está na janela: reaproveita o mecanismo do M2 — quando a
+      // pessoa rolar de volta ao fim, o listener de scroll recarrega o presente
+      detachedBottom: true,
+      resyncing: false,
+    };
+    el.messages.replaceChildren(...janela.filter(visivel).map((m) => renderMsg(m)));
+    regroupAll(el.messages); // o lote entrou solto; antes de medir altura
+    syncUnreadDivider(el.messages);
+    setDetached(true, novasNoDetached);
+    alvo = findMessageEl(el.messages, messageId);
+  }
+  if (alvo === null) throw new Error("mensagem não encontrada");
+  alvo.scrollIntoView({ block: "center" });
+  alvo.classList.add("msg-highlight");
+  const marcado = alvo;
+  window.setTimeout(() => marcado.classList.remove("msg-highlight"), 2000);
+}
 
 async function boot(): Promise<void> {
   // desktop (M6): hidrata o cache de segredos ANTES de qualquer getAccessToken

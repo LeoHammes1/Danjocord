@@ -12,6 +12,11 @@ import { Sessions } from "./sessions.js";
 import { registerAuthRoutes } from "./auth-routes.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { registerStaticClient } from "./static-client.js";
+import { registerAttachmentRoutes } from "./attachments/routes.js";
+import { ORPHAN_SWEEP_INTERVAL_MS, ORPHAN_TTL_MS } from "./attachments/limits.js";
+import { registerLinkRoutes } from "./links/routes.js";
+import { registerReactionRoutes } from "./reactions.js";
+import { registerSearchRoutes } from "./search.js";
 import { registerSoundRoutes } from "./sounds/routes.js";
 import { seedSounds } from "./sounds/seed.js";
 import { announce } from "./system.js";
@@ -34,17 +39,28 @@ app.addHook("onSend", async (_req, reply) => {
   reply.header("x-content-type-options", "nosniff");
   reply.header(
     "content-security-policy",
-    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://cdn.discordapp.com data:; " +
+    // M11b: `blob:` no img-src por causa dos anexos (item 89). O
+    // `GET /api/attachments/:id` exige `Authorization: Bearer`, e um
+    // `<img src>` não manda header nenhum — o cliente busca com `fetch`,
+    // envolve num Blob e usa `URL.createObjectURL`. A alternativa seria pôr o
+    // token na URL da imagem, que é o oposto do que o projeto faz desde o M1.
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; " +
+      "img-src 'self' https://cdn.discordapp.com data: blob:; " +
       "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   );
 });
 
 // Em produção o Traefik serve tudo na mesma origem; o CORS aberto existe só
 // para o vite dev server (localhost:5173) falar com o backend (localhost:8080).
-// methods explícito: o default do @fastify/cors é só GET/HEAD/POST, o que faz
-// o navegador barrar PATCH/DELETE depois do preflight (pego em verificação de UI).
+//
+// A lista de métodos é EXPLÍCITA porque o default do @fastify/cors é só
+// GET/HEAD/POST — e ela já se provou uma armadilha DUAS vezes: no M2 faltavam
+// PATCH e DELETE (as mensagens), e no M11b faltava PUT (as reações). Toda vez o
+// sintoma é o mesmo e engana: `Failed to fetch` no console, sem status HTTP,
+// porque o navegador barra no preflight e a requisição nem sai. Método novo na
+// API entra AQUI junto — em produção não aparece, e o bug só existe em dev.
 if (config.devAuth) {
-  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"] });
+  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
 }
 
 const db = openDb();
@@ -99,6 +115,15 @@ gateway.voiceStatesProvider = () => voice.voiceStates();
 gateway.soundsProvider = () => store.listSounds();
 
 registerRoutes(app, store, gateway);
+// M11b: reações, anexos, busca e preview de link. Cada um em módulo próprio
+// pelo mesmo motivo do M9/M10 — `routes.ts` é a superfície de MENSAGENS, e
+// misturar tudo faria um arquivo em que ninguém acha a regra que procura.
+registerReactionRoutes(app, store, gateway);
+registerAttachmentRoutes(app, store);
+registerSearchRoutes(app, store);
+// sem deps: em produção valem o DNS de verdade e a política de SSRF de verdade
+// (as injeções de `links/fetch.ts` existem só para o teste)
+registerLinkRoutes(app, store);
 // o canal onde o som toca é o que o SERVIDOR vê, nunca o que o cliente diz —
 // a rota pergunta ao módulo de voz e responde 403 para quem está fora
 registerSoundRoutes(app, store, gateway, { voiceChannelOf: (userId) => voice.channelOfUser(userId) });
@@ -116,6 +141,27 @@ registerAuthRoutes(app, store, sessions);
 registerOAuthRoutes(app, store, sessions, guild, (user) => gateway.broadcast("MEMBER_UPDATE", user));
 await registerStaticClient(app);
 
+/**
+ * Faxina dos anexos órfãos (M11b, item 89).
+ *
+ * O upload de anexo tem duas etapas (sobe o arquivo, depois manda a mensagem
+ * que o referencia) e a segunda pode simplesmente não acontecer: quem escolhe
+ * a imagem e fecha a aba deixa 8 MB no PVC sem nenhuma mensagem apontando para
+ * eles. Ninguém nunca vai abrir o banco procurando linhas com `message_id`
+ * nulo, então a faxina é do processo.
+ *
+ * Roda no BOOT (limpa o que ficou de uma queda) e a cada 5 minutos. `unref`
+ * para o timer não segurar o processo no shutdown — mesmo padrão do sweeper de
+ * sessões do gateway.
+ */
+function sweepOrphanAttachments(): void {
+  const removed = store.deleteOrphanAttachments(ORPHAN_TTL_MS);
+  if (removed > 0) app.log.info(`anexos: ${removed} órfãos apagados`);
+}
+sweepOrphanAttachments();
+const orphanSweeper = setInterval(sweepOrphanAttachments, ORPHAN_SWEEP_INTERVAL_MS);
+orphanSweeper.unref();
+
 await app.listen({ host: config.host, port: config.port });
 gateway.attach(app.server);
 
@@ -126,6 +172,7 @@ if (config.devAuth) {
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {
+    clearInterval(orphanSweeper);
     voice.close();
     gateway.close();
     await app.close();

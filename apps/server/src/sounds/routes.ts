@@ -3,6 +3,7 @@ import { CreateSoundQuery, PlaySoundBody, UpdateSoundBody } from "@danjocord/pro
 import { authFromHeader } from "../auth.js";
 import { canonicalId } from "../db/snowflake.js";
 import type { Gateway } from "../gateway.js";
+import { registerRawBodyParser } from "../raw-body.js";
 import type { Store } from "../store.js";
 import {
   clampGain,
@@ -47,41 +48,18 @@ export interface SoundRoutesDeps {
   voiceChannelOf: (userId: string) => string | null;
 }
 
-/**
- * Content-Types que o upload aceita. `application/octet-stream` é o caminho
- * padrão; os mimes de áudio entram porque um `fetch(file)` manda o `file.type`
- * do navegador sem pensar. Nenhum deles é levado a sério além disto: o
- * container é decidido pelos magic bytes.
- */
-const RAW_UPLOAD_TYPES = [
-  "application/octet-stream",
-  "audio/ogg",
-  "audio/opus",
-  "audio/wav",
-  "audio/x-wav",
-  "audio/wave",
-  "audio/vnd.wave",
-  "audio/mpeg",
-  "audio/mp3",
-];
-
 export function registerSoundRoutes(
   app: FastifyInstance,
   store: Store,
   gateway: Gateway,
   deps: SoundRoutesDeps,
 ): void {
-  // Corpo binário cru. O Fastify 5 só entende JSON e texto de fábrica, e
-  // multipart exigiria plugin — com metadados na query, o parser abaixo é tudo
-  // que falta. `bodyLimit` aqui é a defesa que importa: o Fastify corta o
-  // stream ao passar do teto (413) em vez de acumular na memória.
-  app.addContentTypeParser(
-    RAW_UPLOAD_TYPES,
-    { parseAs: "buffer", bodyLimit: MAX_SOUND_BYTES },
-    (_req, body, done) => {
-      done(null, body);
-    },
-  );
+  // Corpo binário cru. O parser mudou de casa no M11b (`../raw-body.ts`): os
+  // anexos precisam do MESMO `application/octet-stream`, e registrar o mesmo
+  // content-type duas vezes faz o Fastify lançar. O teto que vale para ESTA
+  // rota continua sendo o `bodyLimit` dela, logo abaixo — no Fastify 5 o limite
+  // da rota vence o do parser.
+  registerRawBodyParser(app);
 
   // Janelas em memória (o projeto não tem rate limit em lugar nenhum — roadmap
   // 117; estas são as primeiras). Restart zera, e tudo bem.

@@ -43,22 +43,69 @@
  *  - **editar a última com ↑** (93): `lastOwnMessage` + `openEditor`, para o
  *    composer não precisar do objeto Message (que ninguém guarda — a fonte da
  *    verdade da lista é o DOM).
+ *
+ * ---------------------------------------------------------------------------
+ * M11b transformou a "linha de texto" em mensagem RICA. Nada disso trocou a
+ * estrutura `.msg` / `.msg-row` / `.msg-body`, e é de propósito: a janela de
+ * DOM da paginação conta `childElementCount`, tira o cursor `before` de
+ * `.msg:not(.pending)` e reagrupa pelas duas pontas — qualquer nó novo teria
+ * que ser INTERNO para não mentir em nenhum dos três.
+ *
+ *  - **citação** (86): `.msg-reply` é o PRIMEIRO filho do `.msg-body`, acima do
+ *    cabeçalho. E ela mudou o agrupamento: `data-reply` no nó faz o
+ *    `regroupAt` recusar a continuação (ver `groupDecision` no core), porque
+ *    uma citação colapsada dentro de um bloco fica pendurada sem avatar nem
+ *    nome e parece pertencer à mensagem de cima.
+ *  - **reações** (87): `.msg-reactions` nasce SEMPRE (vazio e `hidden`), para o
+ *    delta do gateway não precisar descobrir onde inserir a barra. Aplicar o
+ *    delta NÃO recria a mensagem: recriar recarregaria a imagem do anexo e
+ *    perderia o cartão de link já buscado.
+ *  - **anexos** (89): a caixa é reservada por `fitBox` ANTES de a imagem
+ *    existir. Sem isso a lista pula quando cada imagem carrega — e o
+ *    `#messages` tem `overflow-anchor: none` (paginação), então o navegador
+ *    não corrige nada sozinho.
+ *  - **cartão de link** (90): buscado só quando a mensagem chega perto da tela
+ *    (IntersectionObserver) e memorizado por URL. Carregar 100 mensagens não
+ *    pode virar 100 requisições — o servidor limita a 30/min por usuário.
+ *  - **menu de ações** (84): a toolbar de hover ganhou responder/reagir/mais, e
+ *    o menu é alcançável por TECLADO — as setas andam pelas mensagens e o
+ *    Enter abre o menu na mensagem focada. Antes disto, chegar no botão de
+ *    apagar exigia tabular por todas as mensagens acima.
+ *
+ * O que NÃO existe aqui: fixar mensagem (não há nada disso no servidor) e
+ * imagem no cartão de link (o `LinkPreview` do protocolo não tem o campo, de
+ * propósito — buscar a imagem no site de origem vazaria o IP de cada amigo,
+ * que é exatamente o que o unfurl no servidor existe para evitar).
  */
-import { displayName, isStaff, type MessageType } from "@danjocord/protocol";
+import {
+  displayName,
+  isStaff,
+  type Attachment,
+  type LinkPreview,
+  type MessageReaction,
+  type MessageType,
+  type ReactionData,
+} from "@danjocord/protocol";
 import { typingLabel } from "../typing.js";
 import { avatarColor, avatarEl } from "./avatar.js";
+import { openEmojiPicker } from "./emoji.js";
 import { icon, type IconName } from "./icons.js";
-import { renderMarkdown, type MarkdownOptions } from "./markdown.js";
+import { isSafeHref, renderMarkdown, type MarkdownOptions } from "./markdown.js";
+import {
+  applyReactionDelta,
+  displayDomain,
+  excerptText,
+  firstLink,
+  fitBox,
+  groupDecision,
+  messageLink,
+  reactionLabel,
+  startOfDay,
+  type GroupFacts,
+} from "./messages-core.js";
+import { attachmentObjectUrl, fetchLinkPreview, sendReactionRequest } from "./messages-net.js";
 import { openUserControls } from "./user-controls.js";
 import type { Message, UiContext, User } from "./context.js";
-
-/**
- * Janela de agrupamento: mensagens do mesmo autor dentro dela viram um bloco
- * só. 7 min é o valor do Discord — curto o bastante para "voltei depois do
- * almoço" abrir bloco novo, longo o bastante para uma conversa não virar
- * parede de nomes.
- */
-const GROUP_WINDOW_MS = 7 * 60_000;
 
 /** Membro que não está no Map (histórico anterior à janela de Resume). */
 const UNKNOWN_AUTHOR = "Usuário desconhecido";
@@ -71,6 +118,20 @@ const UNKNOWN_AUTHOR = "Usuário desconhecido";
 export interface MessageActions {
   editMessage(msg: Message, content: string): Promise<Message>;
   deleteMessage(msg: Message): Promise<void>;
+
+  /**
+   * M11b (item 86): "responder a esta". É o ÚNICO gancho novo do marco, e é
+   * assim de propósito — reagir, baixar a imagem do anexo e buscar o cartão de
+   * link falam com a rede direto de `ui/messages-net.ts` (o mesmo molde de
+   * `ui/upload.ts`, `ui/invites.ts` e `sound/soundboard.ts`), porque cada
+   * gancho a mais é um passo que o integrador pode esquecer — e um recurso que
+   * some da tela sem erro nenhum.
+   *
+   * Responder é a exceção porque não é rede: quem entra em modo de resposta é
+   * o COMPOSER, e só o main.ts fala com ele. Sem o gancho, o botão e o item de
+   * menu simplesmente não aparecem.
+   */
+  replyTo?(msg: Message): void;
 }
 
 /**
@@ -87,15 +148,8 @@ function askConfirm(question: string): Promise<boolean> {
 // mensagem de ontem às 14:32 e uma de hoje às 14:32 eram idênticas na tela.
 // ---------------------------------------------------------------------------
 
-function startOfDay(ts: number): number {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-function sameDay(a: number, b: number): boolean {
-  return startOfDay(a) === startOfDay(b);
-}
+// `startOfDay`/`sameDay` vivem no messages-core.ts: o agrupamento depende deles
+// e é lá que ele é testado sem DOM.
 
 /**
  * "hoje" / "ontem" / null (qualquer outro dia). O ontem sai de setDate(-1) e
@@ -229,13 +283,75 @@ function markdownOptions(ctx: UiContext): MarkdownOptions {
   };
 }
 
-function iconButton(name: IconName, label: string): HTMLButtonElement {
+/**
+ * Os três ícones que o M11b precisou e que o `ui/icons.ts` não tem.
+ *
+ * Ficam AQUI, e não lá, por uma razão de processo: `icons.ts` é arquivo
+ * compartilhado e este marco tem mais de um pacote editando o cliente ao mesmo
+ * tempo — dois agentes acrescentando entradas na mesma tabela é conflito
+ * garantido. A convenção é a de lá e sem exceção: geometria à mão,
+ * `currentColor`, `aria-hidden` (o nome acessível é o do BOTÃO), nunca emoji
+ * como ícone. Mover os três para `icons.ts` depois é recortar e colar.
+ */
+type LocalIcon = "smile" | "reply" | "more";
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function localIcon(name: LocalIcon, size = 16): SVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  for (const [tag, attrs] of LOCAL_SHAPES[name]) {
+    const shape = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) shape.setAttribute(k, v);
+    svg.append(shape);
+  }
+  return svg;
+}
+
+const TRACO = {
+  fill: "none",
+  stroke: "currentColor",
+  "stroke-width": "2",
+  "stroke-linecap": "round",
+  "stroke-linejoin": "round",
+} as const;
+
+const LOCAL_SHAPES: Record<LocalIcon, [tag: "path" | "circle", attrs: Record<string, string>][]> = {
+  // rosto: círculo, dois olhos cheios e o arco do sorriso
+  smile: [
+    ["circle", { cx: "12", cy: "12", r: "9", ...TRACO }],
+    ["circle", { cx: "9", cy: "10", r: "1.3", fill: "currentColor" }],
+    ["circle", { cx: "15", cy: "10", r: "1.3", fill: "currentColor" }],
+    ["path", { d: "M8 14.5a5 5 0 0 0 8 0", ...TRACO }],
+  ],
+  // seta curvando para a esquerda e subindo — a de "responder" do Discord
+  reply: [
+    ["path", { d: "M9.5 7 5 11.5 9.5 16", ...TRACO }],
+    ["path", { d: "M5 11.5h7.5a6 6 0 0 1 6 6V19", ...TRACO }],
+  ],
+  // ⋯ : três pontos cheios (o "mais ações" de toda toolbar)
+  more: [
+    ["circle", { cx: "5.5", cy: "12", r: "1.8", fill: "currentColor" }],
+    ["circle", { cx: "12", cy: "12", r: "1.8", fill: "currentColor" }],
+    ["circle", { cx: "18.5", cy: "12", r: "1.8", fill: "currentColor" }],
+  ],
+};
+
+function isLocalIcon(name: IconName | LocalIcon): name is LocalIcon {
+  return name === "smile" || name === "reply" || name === "more";
+}
+
+function iconButton(name: IconName | LocalIcon, label: string): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "icon-btn";
   btn.setAttribute("aria-label", label); // o SVG é aria-hidden: o nome vem daqui
   btn.title = label;
-  btn.append(icon(name, 16));
+  btn.append(isLocalIcon(name) ? localIcon(name) : icon(name, 16));
   return btn;
 }
 
@@ -346,6 +462,23 @@ function systemRowEl(msg: Message, kind: Exclude<MessageType, "user">, ctx: UiCo
 }
 
 /**
+ * A `Message` de cada nó renderizado (M11b). WeakMap e não Map pelo mesmo
+ * motivo do EDITORS: nó que sai da janela de DOM é coletado com a entrada.
+ *
+ * Não é uma segunda fonte da verdade — é a MESMA mensagem que desenhou o nó,
+ * guardada para quem precisa dela depois do render (o menu de ações, o delta
+ * de reação, o "copiar texto"). Quando um delta chega, a entrada é
+ * SUBSTITUÍDA por um objeto novo (nunca remendada): o main.ts pode ter
+ * passado o mesmo objeto para outro lugar.
+ */
+const MESSAGES = new WeakMap<HTMLElement, Message>();
+
+/** A Message que desenhou este nó, se ele ainda estiver na janela de DOM. */
+export function messageOf(wrap: HTMLElement): Message | undefined {
+  return MESSAGES.get(wrap);
+}
+
+/**
  * Uma mensagem. Nasce SEMPRE como início de bloco e com o separador de data
  * escondido; quem colapsa é o regroupAt, chamado depois da inserção.
  *
@@ -363,6 +496,12 @@ export function messageEl(msg: Message, ctx: UiContext, actions: MessageActions,
   // guarda — a fonte da verdade da lista é o próprio DOM)
   wrap.dataset.author = msg.author_id;
   wrap.dataset.ts = String(msg.created_at);
+  // M11b (item 84): alvo de foco PROGRAMÁTICO. -1 = fora da ordem de tabulação
+  // (600 mensagens não podem virar 600 paradas de Tab) e focável pelas setas —
+  // ver "navegação por teclado" no fim do arquivo. A mensagem de sistema também
+  // ganha: ela é conteúdo que se lê, e pular por cima dela quebraria a leitura.
+  wrap.tabIndex = -1;
+  wrap.addEventListener("keydown", (ev) => onMessageKeydown(ev, wrap, ctx, actions));
 
   // mensagem de sistema (item 92): mesmo invólucro (dataset, separador de data,
   // id) e miolo completamente outro — ver systemRowEl
@@ -371,6 +510,13 @@ export function messageEl(msg: Message, ctx: UiContext, actions: MessageActions,
     wrap.append(daySeparatorEl(msg.created_at), systemRowEl(msg, msg.type, ctx));
     return wrap;
   }
+
+  // a Message fica pendurada no NÓ (WeakMap, como o EDITORS): o delta de reação
+  // e o menu de ações precisam dela depois, e o main.ts não guarda os objetos
+  // (a fonte da verdade da lista é o DOM). Nó fora da janela = entrada coletada.
+  MESSAGES.set(wrap, msg);
+  // o agrupamento precisa saber disto sem o objeto Message — ver factsOf
+  if (msg.reply_to != null) wrap.dataset.reply = "1";
 
   // faixa lateral de "isto é para mim": a decisão vem do servidor, e é a mesma
   // que dispara o som de menção — nunca duas leituras do texto
@@ -410,9 +556,29 @@ export function messageEl(msg: Message, ctx: UiContext, actions: MessageActions,
     body.append(edited);
   }
 
+  // --- M11b, na ordem em que aparecem embaixo do texto ---------------------
+  // A citação vai no TOPO do corpo (acima do cabeçalho): é o que o Discord faz
+  // e o que faz sentido — ela contextualiza a mensagem antes de ela ser lida.
+  if (msg.reply_to != null) body.prepend(replyQuoteEl(msg.reply_to, ctx));
+  const anexos = attachmentsEl(msg);
+  if (anexos !== null) body.append(anexos);
+  // os dois containers nascem VAZIOS de propósito: o cartão de link chega
+  // depois (busca preguiçosa) e a barra de reações é reescrita por delta —
+  // com o lugar já reservado, nenhum dos dois precisa saber onde inserir.
+  // Vazios não ocupam altura (`:empty { display: none }` no chat.css).
+  const embeds = document.createElement("div");
+  embeds.className = "msg-embeds";
+  const reacoes = document.createElement("div");
+  reacoes.className = "msg-reactions";
+  body.append(embeds, reacoes);
+
   row.append(gutter, body);
   if (!pending) appendActions(wrap, row, msg, ctx, actions);
   wrap.append(daySeparatorEl(msg.created_at), row);
+  renderReactions(wrap, ctx);
+  // pending não busca preview: a mensagem ainda não existe no servidor e o
+  // reenvio recriaria o nó — buscar duas vezes o mesmo link só gastaria cota
+  if (!pending) mountLinkPreview(wrap, msg);
   return wrap;
 }
 
@@ -434,26 +600,28 @@ export function regroupAt(node: Element | null): void {
   if (!(node instanceof HTMLElement) || !node.classList.contains("msg")) return;
   const prev = node.previousElementSibling;
   const prevMsg = prev instanceof HTMLElement && prev.classList.contains("msg") ? prev : null;
-  const ts = Number(node.dataset.ts ?? "0");
-  const prevTs = prevMsg === null ? 0 : Number(prevMsg.dataset.ts ?? "0");
-  // primeira mensagem da janela de DOM sempre mostra a data: sem ela o topo do
-  // histórico paginado ficaria sem régua nenhuma
-  const newDay = prevMsg === null || !sameDay(prevTs, ts);
-  // Mensagem de sistema QUEBRA o bloco pelos dois lados (item 92): ela nunca é
-  // continuação, e a mensagem embaixo dela também não pode ser — o caso comum
-  // é "fulano entrou" seguido do próprio fulano falando, em que o autor casa e
-  // o agrupamento esconderia o avatar de quem acabou de aparecer.
-  const system = node.classList.contains("msg--system");
-  const prevSystem = prevMsg !== null && prevMsg.classList.contains("msg--system");
-  const cont =
-    !newDay &&
-    !system &&
-    !prevSystem &&
-    prevMsg !== null &&
-    prevMsg.dataset.author === node.dataset.author &&
-    ts - prevTs < GROUP_WINDOW_MS;
+  // a REGRA está no messages-core.ts (pura e testada); aqui só se lê o dataset
+  // dos dois vizinhos e se aplicam duas classes — é isso que deixa esta função
+  // barata o bastante para rodar a cada prepend, append e trim da paginação
+  const { newDay, cont } = groupDecision(prevMsg === null ? null : factsOf(prevMsg), factsOf(node));
   node.classList.toggle("msg--day", newDay);
   node.classList.toggle("msg--cont", cont);
+}
+
+/**
+ * Os fatos do agrupamento, lidos do próprio nó. Tudo vem de `dataset` e de
+ * classe — nunca do objeto Message — porque o trim da janela de DOM pode ter
+ * apagado o vizinho de cima há muito tempo, e o que sobrou dele na tela é a
+ * única fonte de verdade que os dois lados compartilham.
+ */
+function factsOf(node: HTMLElement): GroupFacts {
+  return {
+    ts: Number(node.dataset.ts ?? "0"),
+    author: node.dataset.author ?? "",
+    system: node.classList.contains("msg--system"),
+    // M11b (item 86): `data-reply` é posto no messageEl e só some com o nó
+    reply: node.dataset.reply === "1",
+  };
 }
 
 /**
@@ -640,6 +808,26 @@ export function editLastOwnMessage(container: HTMLElement, meId: string): boolea
 // Ações: editar e apagar (as regras são as MESMAS do servidor)
 // ---------------------------------------------------------------------------
 
+/**
+ * Quem pode apagar: o autor OU staff. Editar continua sendo só do autor —
+ * exatamente as regras do servidor (`isStaff` mora no protocolo desde o M10
+ * para que os dois lados decidam pela MESMA função; a de verdade é a de lá).
+ */
+function canDelete(msg: Message, ctx: UiContext): boolean {
+  return msg.author_id === ctx.state.me?.id || (ctx.state.me !== null && isStaff(ctx.state.me));
+}
+
+/**
+ * A toolbar de hover (item 84). Até o M11a ela tinha só editar e apagar, e
+ * quem não é autor nem staff não recebia toolbar NENHUMA — reagir, responder e
+ * copiar não existiam, então não havia o que oferecer. Agora toda mensagem de
+ * usuário tem barra.
+ *
+ * Os botões continuam na ordem de tabulação (o CSS os esconde por `opacity`,
+ * não por `display`, desde o M7). O caminho NOVO de teclado — setas entre
+ * mensagens + Enter para abrir o menu — é adicional, e não substituto: o
+ * módulo não pode depender de o main.ts chamar nada para continuar acessível.
+ */
 function appendActions(
   wrap: HTMLElement,
   row: HTMLElement,
@@ -648,13 +836,23 @@ function appendActions(
   actions: MessageActions,
 ): void {
   const own = msg.author_id === ctx.state.me?.id;
-  // apagar: autor OU admin; editar: só o autor (espelha as regras do servidor)
-  // M10: o booleano virou cargo — `isStaff` mora no protocolo para cliente e
-  // servidor decidirem pela MESMA regra (a de verdade é a do servidor)
-  const canDelete = own || (ctx.state.me !== null && isStaff(ctx.state.me));
-  if (!own && !canDelete) return;
   const bar = document.createElement("div");
   bar.className = "msg-actions";
+  // aria-label no container: o leitor de tela anuncia "ações da mensagem" ao
+  // entrar no grupo, em vez de despejar cinco botões sem contexto
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Ações da mensagem");
+
+  const react = iconButton("smile", "Reagir");
+  react.setAttribute("aria-haspopup", "dialog");
+  react.setAttribute("aria-expanded", "false");
+  react.onclick = () => openReactionPicker(react, wrap, ctx);
+  bar.append(react);
+  if (actions.replyTo !== undefined) {
+    const reply = iconButton("reply", "Responder");
+    reply.onclick = () => actions.replyTo?.(msg);
+    bar.append(reply);
+  }
   if (own) {
     const edit = iconButton("pencil", "Editar mensagem");
     const open = (): void => startEdit(wrap, msg, ctx, actions);
@@ -664,10 +862,18 @@ function appendActions(
     EDITORS.set(wrap, open);
     bar.append(edit);
   }
-  const del = iconButton("trash", "Apagar mensagem");
-  del.classList.add("msg-action-danger");
-  del.onclick = () => void confirmDelete(wrap, msg, actions);
-  bar.append(del);
+  if (canDelete(msg, ctx)) {
+    const del = iconButton("trash", "Apagar mensagem");
+    del.classList.add("msg-action-danger");
+    del.onclick = () => void confirmDelete(wrap, msg, actions);
+    bar.append(del);
+  }
+  const more = iconButton("more", "Mais ações");
+  more.setAttribute("aria-haspopup", "menu");
+  more.setAttribute("aria-expanded", "false");
+  more.onclick = () => toggleActionMenu(more, wrap, ctx, actions);
+  bar.append(more);
+
   row.append(bar);
 }
 
@@ -731,7 +937,14 @@ export function startEdit(
   input.setSelectionRange(input.value.length, input.value.length);
 
   // cancelar = reconstruir o elemento do zero (mais simples que restaurar spans)
-  const cancel = (): void => void replaceMessage(wrap, msg, ctx, actions);
+  //
+  // M11b: reconstrói a partir da Message GUARDADA NO NÓ, e não da capturada
+  // quando o editor abriu. Reações chegam por delta enquanto o editor está
+  // aberto, e o objeto de captura não as tem — cancelar uma edição apagaria da
+  // tela as reações que apareceram no meio. (O caminho do MESSAGE_UPDATE
+  // continua usando a mensagem do SERVIDOR, que é a autoridade: ela vem
+  // hidratada com as reações.)
+  const cancel = (): void => void replaceMessage(wrap, MESSAGES.get(wrap) ?? msg, ctx, actions);
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
       cancel();
@@ -753,7 +966,8 @@ export function startEdit(
       },
       () => {
         // 403/404/rede: restaura o original, se o broadcast já não o refez
-        if (wrap.isConnected) replaceMessage(wrap, msg, ctx, actions);
+        // (pela Message do nó, pelo mesmo motivo do `cancel` acima)
+        if (wrap.isConnected) replaceMessage(wrap, MESSAGES.get(wrap) ?? msg, ctx, actions);
       },
     );
   });
@@ -784,4 +998,872 @@ export function renderTyping(target: HTMLElement, ctx: UiContext, typers: string
   text.className = "typing-text";
   text.textContent = label;
   target.replaceChildren(dots, text);
+}
+
+// ===========================================================================
+// M11b — a mensagem rica
+// ===========================================================================
+
+/**
+ * Aviso efêmero, para as ações que não deixam rastro na tela: "link copiado",
+ * "a mensagem original não está carregada", "não foi possível reagir".
+ *
+ * É UM nó só (criado na primeira vez) com `role="status"`, e ele nunca é
+ * escondido por `hidden` nem por `visibility`: os dois tiram o texto da árvore
+ * de acessibilidade, e aí a região viva não anuncia mudança nenhuma — o
+ * recurso existiria só para quem enxerga. Some por `opacity`, que não tira.
+ */
+let toastEl: HTMLElement | null = null;
+let toastTimer = 0;
+
+function announce(text: string): void {
+  if (toastEl === null) {
+    toastEl = document.createElement("div");
+    toastEl.className = "msg-toast";
+    toastEl.setAttribute("role", "status");
+    toastEl.setAttribute("aria-live", "polite");
+    document.body.append(toastEl);
+  }
+  toastEl.textContent = text;
+  toastEl.classList.add("msg-toast--on");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl?.classList.remove("msg-toast--on"), 2400);
+}
+
+/** Folga em px para considerar a lista "colada no fundo". */
+const FUNDO_PX = 24;
+
+/**
+ * Roda `fn` preservando o "colado no fundo".
+ *
+ * Tudo que chega DEPOIS do render (cartão de link, primeira pílula de reação)
+ * cresce a mensagem e empurra o resto para baixo. Quem estava lendo o presente
+ * veria a última linha sair da tela — e o `#messages` tem `overflow-anchor:
+ * none` por causa da paginação (M2), então o navegador não corrige sozinho.
+ * Quem NÃO estava no fundo não é arrastado: o crescimento acontece abaixo do
+ * ponto de leitura dele e a linha que ele lê fica onde está.
+ */
+function withStick(lista: HTMLElement | null, fn: () => void): void {
+  const colado = lista !== null && lista.scrollHeight - lista.scrollTop - lista.clientHeight <= FUNDO_PX;
+  fn();
+  if (colado && lista !== null) lista.scrollTop = lista.scrollHeight;
+}
+
+/** O container de mensagens a que este nó pertence (ou null, fora do DOM). */
+function listOf(wrap: HTMLElement): HTMLElement | null {
+  const pai = wrap.parentElement;
+  return pai instanceof HTMLElement ? pai : null;
+}
+
+// ---------------------------------------------------------------------------
+// Citação (item 86)
+// ---------------------------------------------------------------------------
+
+/**
+ * A citação que aparece ACIMA da mensagem. Autor + trecho, uma linha só.
+ *
+ * O trecho vem RESOLVIDO do servidor (`MessageReference`), e é por isso que
+ * uma resposta a uma mensagem de três meses atrás desenha certo sem carregar
+ * nada: a citação não depende de a original estar na janela de DOM.
+ *
+ * Citada apagada NÃO some — vira "mensagem apagada" (o campo `deleted` do
+ * protocolo existe para isso). Sumir reescreveria a conversa de quem
+ * respondeu: a resposta continuaria lá, pendurada em nada.
+ */
+function replyQuoteEl(ref: NonNullable<Message["reply_to"]>, ctx: UiContext): HTMLElement {
+  if (ref.deleted || ref.author_id === null) {
+    const gone = document.createElement("div");
+    gone.className = "msg-reply msg-reply--gone";
+    const texto = document.createElement("span");
+    texto.className = "msg-reply-excerpt";
+    texto.textContent = "mensagem apagada";
+    gone.append(texto);
+    return gone;
+  }
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "msg-reply";
+
+  const autorId = ref.author_id;
+  const user = authorOf(ctx, autorId);
+  const av = avatarEl(user ?? { id: autorId, username: "?", avatar_url: null }, 16);
+  av.classList.add("msg-reply-avatar");
+
+  const nome = document.createElement("span");
+  nome.className = "msg-reply-author";
+  nome.textContent = authorName(ctx, autorId);
+  if (user !== undefined) nome.style.color = avatarColor(autorId);
+
+  // trecho em texto CRU (sem markdown): a citação é uma linha elidida por CSS,
+  // e um bloco de código ou uma pílula de menção dentro dela quebrariam a
+  // altura da linha inteira. O texto que a pessoa digitou é o que identifica
+  // a mensagem — a formatação está logo acima, na original.
+  const trecho = document.createElement("span");
+  trecho.className = "msg-reply-excerpt";
+  const cru = excerptText(ref.excerpt ?? "");
+  trecho.textContent = cru === "" ? "(sem texto)" : cru;
+
+  btn.append(av, nome, trecho);
+  btn.setAttribute("aria-label", `Ir para a mensagem de ${nome.textContent}: ${trecho.textContent}`);
+  btn.title = "Ir para a mensagem citada";
+  btn.onclick = () => jumpToQuoted(btn, ref.message_id);
+  return btn;
+}
+
+/**
+ * Rola até a original e a realça por um instante. Se ela NÃO está na janela de
+ * DOM (histórico não carregado, ou trimada por uma das duas pontas), não
+ * finge que rolou: pisca a citação e diz o que aconteceu. O trecho continua
+ * ali — que é a parte que o M11b garante mostrar de qualquer jeito.
+ */
+function jumpToQuoted(from: HTMLElement, messageId: string): void {
+  const wrap = from.closest<HTMLElement>(".msg");
+  const lista = wrap === null ? null : listOf(wrap);
+  if (lista !== null && scrollToMessage(lista, messageId)) return;
+  from.classList.add("msg-reply--nojump");
+  window.setTimeout(() => from.classList.remove("msg-reply--nojump"), 1200);
+  announce("A mensagem original não está carregada aqui.");
+}
+
+/** Quanto tempo o realce de "cheguei aqui" fica na mensagem. */
+const FLASH_MS = 2000;
+
+/**
+ * Rola até uma mensagem e a realça. Devolve false quando ela não está na
+ * janela de DOM — quem chama decide o que dizer.
+ *
+ * O realce sai sozinho: é uma classe com animação no CSS, removida por timer.
+ * Exportado porque a busca (item 91) quer exatamente isto.
+ */
+export function scrollToMessage(container: HTMLElement, messageId: string): boolean {
+  const alvo = findMessageEl(container, messageId);
+  if (alvo === null) return false;
+  alvo.scrollIntoView({ block: "center" });
+  alvo.classList.remove("msg--flash");
+  // leitura forçada de layout para reiniciar a animação quando a MESMA
+  // mensagem é alvo duas vezes seguidas (sem isso o segundo clique não pisca)
+  void alvo.offsetWidth;
+  alvo.classList.add("msg--flash");
+  window.setTimeout(() => alvo.classList.remove("msg--flash"), FLASH_MS);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Reações (item 87)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pedidos de reação em voo, para o clique duplo não virar dois pedidos.
+ *
+ * WeakSet de BOTÕES e não `disabled`: desabilitar o botão que está com o foco
+ * joga o foco no `<body>` e quem navega por teclado perde o lugar na lista.
+ * `aria-busy` conta a mesma coisa sem mexer no foco.
+ */
+const REAGINDO = new WeakSet<HTMLElement>();
+
+/**
+ * (Re)desenha a barra de reações a partir da Message guardada no nó.
+ *
+ * A barra é reescrita inteira em vez de remendada: são no máximo 20 pílulas
+ * (teto do servidor) e reconstruir é o que garante que contagem, realce de
+ * "eu reagi" e o rótulo de quem reagiu nunca fiquem desencontrados entre si.
+ */
+function renderReactions(wrap: HTMLElement, ctx: UiContext): void {
+  const bar = wrap.querySelector<HTMLElement>(".msg-reactions");
+  const msg = MESSAGES.get(wrap);
+  if (bar === null || msg === undefined) return;
+  if (msg.reactions.length === 0) {
+    bar.replaceChildren(); // vazio some por `:empty` — sem faixa em branco
+    return;
+  }
+  const meId = ctx.state.me?.id ?? null;
+  const nodes: HTMLElement[] = msg.reactions.map((r) => reactionPill(wrap, r, ctx, meId));
+  // o "+" só aparece quando JÁ existe alguma reação: numa mensagem sem nenhuma
+  // ele seria um botão permanente em cada linha da timeline. Sem reações, o
+  // caminho é o "Reagir" da toolbar (e o menu, pelo teclado).
+  nodes.push(addReactionBtn(wrap, ctx));
+  bar.replaceChildren(...nodes);
+}
+
+function reactionPill(wrap: HTMLElement, r: MessageReaction, ctx: UiContext, meId: string | null): HTMLButtonElement {
+  const minha = meId !== null && r.user_ids.includes(meId);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = minha ? "reaction reaction--mine" : "reaction";
+  // o objeto do botão é a reação; o ESTADO ("eu reagi") vai no aria-pressed —
+  // convenção do M7 para todo botão que reflete estado
+  b.setAttribute("aria-pressed", String(minha));
+
+  // "Você" no lugar do meu nome: a ordem é a de quem reagiu, e o pronome é o
+  // que faz o rótulo ser lido como frase
+  const nomes = r.user_ids.map((id) => (id === meId ? "Você" : authorName(ctx, id)));
+  const rotulo = reactionLabel(r.emoji, nomes);
+  b.title = rotulo;
+  b.setAttribute("aria-label", rotulo);
+
+  const glifo = document.createElement("span");
+  glifo.className = "reaction-emoji";
+  glifo.textContent = r.emoji;
+  const n = document.createElement("span");
+  n.className = "reaction-count";
+  n.textContent = String(r.user_ids.length);
+  b.append(glifo, n);
+
+  b.onclick = () => void sendReaction(b, wrap, r.emoji, !minha);
+  return b;
+}
+
+function addReactionBtn(wrap: HTMLElement, ctx: UiContext): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "reaction reaction--add";
+  b.setAttribute("aria-label", "Adicionar reação");
+  b.setAttribute("aria-haspopup", "dialog");
+  b.setAttribute("aria-expanded", "false");
+  b.title = "Adicionar reação";
+  b.append(localIcon("smile", 16));
+  b.onclick = () => openReactionPicker(b, wrap, ctx);
+  return b;
+}
+
+/**
+ * Abre o seletor de emoji do outro pacote (`ui/emoji.ts`). Ele não sabe nada de
+ * mensagem: devolve o `Emoji` escolhido e o que fazer com ele é daqui.
+ */
+function openReactionPicker(anchor: HTMLElement, wrap: HTMLElement, ctx: UiContext): void {
+  openEmojiPicker({
+    anchor,
+    label: "Reagir",
+    onPick: (emoji) => {
+      const msg = MESSAGES.get(wrap);
+      if (msg === undefined) return;
+      const meId = ctx.state.me?.id ?? null;
+      // escolher no seletor um emoji que eu JÁ pus ALTERNA para tirar — é o
+      // mesmo gesto da pílula. O contrário (mandar um PUT que o servidor
+      // responde 204 sem evento) pareceria um clique que não fez nada.
+      const jaMinha = meId !== null && msg.reactions.some((r) => r.emoji === emoji.char && r.user_ids.includes(meId));
+      void sendReaction(anchor, wrap, emoji.char, !jaMinha);
+    },
+  });
+}
+
+/**
+ * Põe ou tira a MINHA reação. Não há render otimista, e é a mesma decisão do
+ * soundboard do M9: todo mundo — inclusive quem clicou — pinta pelo eco do
+ * gateway (`REACTION_ADD` / `REACTION_REMOVE`). Um caminho só significa zero
+ * chance de a minha tela divergir da dos outros, e zero código de desfazer.
+ */
+async function sendReaction(btn: HTMLElement, wrap: HTMLElement, emoji: string, add: boolean): Promise<void> {
+  const msg = MESSAGES.get(wrap);
+  if (msg === undefined || REAGINDO.has(btn)) return;
+  REAGINDO.add(btn);
+  btn.setAttribute("aria-busy", "true");
+  try {
+    await sendReactionRequest(msg.channel_id, msg.id, emoji, add);
+  } catch {
+    // 409 (teto de reações), 403 (timeout de chat), 429 ou rede: o servidor é
+    // quem manda, e o que está na tela continua sendo o que ele mandou por último
+    announce("Não foi possível reagir.");
+  } finally {
+    REAGINDO.delete(btn);
+    btn.removeAttribute("aria-busy");
+  }
+}
+
+/**
+ * Aplica um `REACTION_ADD` / `REACTION_REMOVE` do gateway (M11b).
+ *
+ * Só mexe na BARRA — nunca recria a mensagem. Recriar recarregaria a imagem do
+ * anexo (novo `<img src>` = nova decodificação), perderia o cartão de link já
+ * buscado e mataria um editor inline aberto. O delta é idempotente (ver
+ * `applyReactionDelta` no core), então evento repetido não pinta duas vezes.
+ *
+ * Mensagem fora da janela de DOM: nada a fazer, e é o caso COMUM — o payload
+ * é um delta pequeno justamente porque quase sempre vai ser descartado.
+ */
+export function applyReaction(container: HTMLElement, d: ReactionData, add: boolean, ctx: UiContext): void {
+  const wrap = findMessageEl(container, d.message_id);
+  if (wrap === null) return;
+  const msg = MESSAGES.get(wrap);
+  if (msg === undefined || msg.channel_id !== d.channel_id) return;
+  MESSAGES.set(wrap, { ...msg, reactions: applyReactionDelta(msg.reactions, d.emoji, d.user_id, add) });
+  // a primeira pílula cresce a mensagem em ~28px: quem estava no fundo continua
+  withStick(listOf(wrap), () => renderReactions(wrap, ctx));
+}
+
+// ---------------------------------------------------------------------------
+// Anexos (item 89)
+// ---------------------------------------------------------------------------
+
+function attachmentsEl(msg: Message): HTMLElement | null {
+  if (msg.attachments.length === 0) return null;
+  const box = document.createElement("div");
+  box.className = "msg-attachments";
+  for (const att of msg.attachments) box.append(attachmentEl(att));
+  return box;
+}
+
+/**
+ * Uma imagem. O quadro é RESERVADO por `fitBox` antes de qualquer byte chegar:
+ * `--att-w` e `--att-ratio` viram largura e `aspect-ratio` no CSS, então a
+ * altura final já está no layout desde o primeiro frame. Sem isso a timeline
+ * pula a cada imagem carregada e quem está lendo perde a linha.
+ *
+ * O `src` é uma URL `blob:` — ver `ui/messages-net.ts` para o porquê.
+ */
+function attachmentEl(att: Attachment): HTMLElement {
+  const { w, h } = fitBox(att.width, att.height);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "attachment";
+  btn.style.setProperty("--att-w", `${w}px`);
+  btn.style.setProperty("--att-ratio", `${w} / ${h}`);
+  btn.setAttribute("aria-label", `Abrir imagem ${att.filename}`);
+  btn.title = att.filename;
+
+  const img = document.createElement("img");
+  img.className = "attachment-img";
+  // alt = nome do arquivo: é a única descrição que existe (ninguém digita alt
+  // ao arrastar uma print), e diz mais do que um "imagem" genérico
+  img.alt = att.filename;
+  img.decoding = "async";
+  btn.append(img);
+
+  void attachmentObjectUrl(att).then(
+    (url) => {
+      img.src = url;
+      // guardado no nó: o lightbox reusa a MESMA URL já baixada — abrir em
+      // tamanho grande não pode custar um segundo download
+      btn.dataset.src = url;
+    },
+    () => falharAnexo(btn, att.filename),
+  );
+  btn.onclick = () => {
+    const url = btn.dataset.src;
+    if (url !== undefined) openLightbox(att, url);
+  };
+  return btn;
+}
+
+/** Falha de download: o quadro (que já ocupa o espaço certo) vira um aviso. */
+function falharAnexo(btn: HTMLButtonElement, filename: string): void {
+  btn.classList.add("attachment--erro");
+  btn.disabled = true;
+  const aviso = document.createElement("span");
+  aviso.className = "attachment-erro";
+  aviso.textContent = `imagem indisponível — ${filename}`;
+  btn.replaceChildren(aviso);
+}
+
+/**
+ * Lightbox (item 89). Um nó só, reusado: abrir e fechar imagem é frequente, e
+ * criar/destruir o overlay a cada vez só geraria lixo.
+ *
+ * Não usa o `ui/dialog.ts` de propósito: aquela casca desenha cabeçalho, corpo
+ * e rodapé (é um painel de configuração), e as regras `.dialog-*` moram num
+ * arquivo importado DEPOIS do chat.css — sobrescrevê-las daqui perderia todo
+ * empate de especificidade (a armadilha anotada no CLAUDE.md). O que importa
+ * dela — Esc, fundo inerte, foco de volta — está reproduzido abaixo.
+ */
+interface Lightbox {
+  overlay: HTMLElement;
+  img: HTMLImageElement;
+  legenda: HTMLElement;
+}
+let lightbox: Lightbox | null = null;
+let lightboxVolta: HTMLElement | null = null;
+
+function ensureLightbox(): Lightbox {
+  if (lightbox !== null) return lightbox;
+  const overlay = document.createElement("div");
+  overlay.className = "lightbox";
+  overlay.hidden = true;
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+
+  const fechar = document.createElement("button");
+  fechar.type = "button";
+  fechar.className = "icon-btn lightbox-close";
+  fechar.setAttribute("aria-label", "Fechar");
+  fechar.title = "Fechar";
+  fechar.append(icon("close", 20));
+  fechar.onclick = () => closeLightbox();
+
+  const img = document.createElement("img");
+  img.className = "lightbox-img";
+
+  const legenda = document.createElement("div");
+  legenda.className = "lightbox-caption";
+
+  overlay.append(fechar, img, legenda);
+  // pointerdown e não click: arrastar de dentro da imagem para fora e soltar
+  // fecharia com click (o evento sobe até o ancestral comum) — a mesma
+  // correção que o ui/dialog.ts já tinha
+  overlay.addEventListener("pointerdown", (ev) => {
+    if (ev.target === overlay) closeLightbox();
+  });
+  overlay.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      closeLightbox();
+      return;
+    }
+    // só o botão de fechar é focável aqui: a armadilha de Tab é não deixar o
+    // foco sair, e com um controle só isso é prender o Tab no lugar
+    if (ev.key === "Tab") ev.preventDefault();
+  });
+
+  document.body.append(overlay);
+  lightbox = { overlay, img, legenda };
+  return lightbox;
+}
+
+function openLightbox(att: Attachment, src: string): void {
+  const lb = ensureLightbox();
+  lightboxVolta = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  lb.img.src = src;
+  lb.img.alt = att.filename;
+  lb.legenda.textContent = att.filename;
+  lb.overlay.setAttribute("aria-label", att.filename);
+  lb.overlay.hidden = false;
+  const app = document.getElementById("app");
+  if (app !== null) app.inert = true; // o app inteiro sai do foco e do leitor de tela
+  lb.overlay.querySelector<HTMLElement>(".lightbox-close")?.focus();
+}
+
+function closeLightbox(): void {
+  if (lightbox === null || lightbox.overlay.hidden) return;
+  lightbox.overlay.hidden = true;
+  // a URL do blob NÃO é revogada aqui: ela é do cache do ui/messages-net.ts e
+  // a mesma imagem continua na timeline atrás do overlay
+  lightbox.img.removeAttribute("src");
+  const app = document.getElementById("app");
+  if (app !== null) app.inert = false;
+  if (lightboxVolta !== null && lightboxVolta.isConnected) lightboxVolta.focus();
+  lightboxVolta = null;
+}
+
+// ---------------------------------------------------------------------------
+// Cartão de link (item 90)
+// ---------------------------------------------------------------------------
+
+/**
+ * Preview já resolvido, por URL. `null` = não há cartão (o servidor respondeu
+ * `ok:false`, ou a rede falhou). O cache NEGATIVO é tão importante quanto o
+ * positivo: sem ele, toda vez que a mensagem voltasse à janela de DOM o
+ * cliente pediria de novo um link que já se sabe que não vira cartão.
+ *
+ * A chave é a URL, então o mesmo link colado dez vezes custa uma requisição.
+ */
+const PREVIEWS = new Map<string, LinkPreview | null>();
+/** requisições em voo, para dez mensagens com o mesmo link pedirem UMA vez */
+const PREVIEWS_EM_VOO = new Map<string, Promise<LinkPreview | null>>();
+/** o que buscar quando ESTE nó aparecer na tela */
+const PREVIEW_ALVO = new WeakMap<Element, string>();
+
+let previewObserver: IntersectionObserver | null = null;
+
+/**
+ * Margem de antecipação: começa a buscar um pouco antes de a mensagem entrar
+ * na tela, para o cartão não aparecer com atraso visível ao rolar devagar.
+ */
+const PREVIEW_MARGEM = "200px";
+
+/**
+ * Nós que o observador já viu DENTRO do documento. Existe para uma coisa só:
+ * distinguir "ainda não foi anexado" de "foi trimado pela janela de DOM".
+ *
+ * A observação é agendada no `messageEl`, quando o nó ainda é órfão (o main.ts
+ * anexa logo depois) — e a primeira entrega do observador chega com
+ * `isIntersecting: false`. Sem esta distinção, essa primeira entrega seria
+ * lida como "saiu do documento" e o cartão nunca seria buscado.
+ */
+const PREVIEW_VISTO = new WeakSet<Element>();
+
+function ensurePreviewObserver(): IntersectionObserver {
+  previewObserver ??= new IntersectionObserver(
+    (entradas) => {
+      for (const e of entradas) {
+        if (e.target.isConnected) PREVIEW_VISTO.add(e.target);
+        // trimado pela paginação sem nunca ter aparecido: para de observar.
+        // O observador é um singleton de módulo (portanto sempre alcançável) e
+        // segura os alvos — sem isto, uma sessão longa rolando um canal cheio
+        // de links acumularia milhares de nós que já saíram da tela.
+        else if (PREVIEW_VISTO.has(e.target)) {
+          previewObserver?.unobserve(e.target);
+          PREVIEW_ALVO.delete(e.target);
+          continue;
+        }
+        if (!e.isIntersecting) continue;
+        previewObserver?.unobserve(e.target);
+        const url = PREVIEW_ALVO.get(e.target);
+        if (url === undefined) continue;
+        PREVIEW_ALVO.delete(e.target);
+        void fetchPreview(e.target as HTMLElement, url);
+      }
+    },
+    { rootMargin: PREVIEW_MARGEM },
+  );
+  return previewObserver;
+}
+
+/**
+ * Agenda a busca do cartão. PREGUIÇOSA de propósito: um `loadLatest` traz 50
+ * mensagens, e buscar o preview de todas de uma vez estouraria o limite do
+ * servidor (30/min por usuário) para pintar cartões que ninguém está olhando.
+ *
+ * Quem é observado é a `.msg` inteira, e não o `.msg-embeds`: o container do
+ * cartão nasce vazio, e `:empty { display: none }` faz um elemento sem caixa —
+ * que NUNCA intersecta nada, então o observador jamais dispararia.
+ */
+/** Peneira barata antes de reparsear: quase nenhuma mensagem tem link. */
+const TEM_URL = /https?:\/\//i;
+
+function mountLinkPreview(wrap: HTMLElement, msg: Message): void {
+  // o `firstLink` reparseia o markdown (é o mesmo scanner que desenhou o <a>,
+  // e essa igualdade vale o custo) — mas um `loadLatest` são 50 mensagens de
+  // até 4000 caracteres, e reparsear todas para descobrir que 48 não têm link
+  // nenhum é trabalho que dá para não fazer
+  if (msg.content === "" || !TEM_URL.test(msg.content)) return;
+  const url = firstLink(msg.content);
+  if (url === null || !isSafeHref(url)) return;
+  const slot = wrap.querySelector<HTMLElement>(".msg-embeds");
+  if (slot === null) return;
+
+  const cache = PREVIEWS.get(url);
+  if (cache !== undefined) {
+    // já resolvido nesta sessão (mensagem que voltou à janela de DOM, ou o
+    // mesmo link em outra mensagem): pinta na hora, sem rede e sem observador
+    if (cache !== null && cache.ok) slot.append(linkCardEl(cache, url));
+    return;
+  }
+  PREVIEW_ALVO.set(wrap, url);
+  ensurePreviewObserver().observe(wrap);
+}
+
+async function fetchPreview(wrap: HTMLElement, url: string): Promise<void> {
+  let voo = PREVIEWS_EM_VOO.get(url);
+  if (voo === undefined) {
+    // o catch é aqui, e não no chamador: a promessa é COMPARTILHADA por todas
+    // as mensagens com este link, e uma rejeição solta viraria unhandled
+    voo = fetchLinkPreview(url).catch(() => null);
+    PREVIEWS_EM_VOO.set(url, voo);
+    void voo.then((r) => {
+      PREVIEWS.set(url, r);
+      PREVIEWS_EM_VOO.delete(url);
+    });
+  }
+  const preview = await voo;
+  // falha, `ok:false` ou nó já fora da janela de DOM: sem cartão e sem espaço
+  // vazio — um cartão em branco é pior que nenhum cartão
+  if (preview === null || !preview.ok || !wrap.isConnected) return;
+  const slot = wrap.querySelector<HTMLElement>(".msg-embeds");
+  if (slot === null || slot.childElementCount > 0) return;
+  withStick(listOf(wrap), () => slot.append(linkCardEl(preview, url)));
+}
+
+/**
+ * O cartão. Discreto de propósito: faixa lateral, nome do site, título e duas
+ * linhas de descrição.
+ *
+ * Sem imagem — e não é esquecimento: o `LinkPreview` do protocolo não tem o
+ * campo porque uma `image_url` remota faria o navegador de cada amigo buscar o
+ * arquivo no site de origem, que é exatamente o IP que o unfurl no servidor
+ * existe para não vazar. (A CSP do cliente também só aceita imagem própria.)
+ *
+ * O `href` é a URL COMO ESTÁ NA MENSAGEM, e não a normalizada que voltou do
+ * servidor: o cartão tem que levar ao mesmo lugar que o link do texto acima.
+ */
+function linkCardEl(preview: LinkPreview, href: string): HTMLElement {
+  const a = document.createElement("a");
+  a.className = "link-card";
+  // setAttribute e não `a.href`, como no ui/markdown.ts: a propriedade resolve
+  // para absoluto e a gente quer no DOM o que a pessoa escreveu
+  a.setAttribute("href", href);
+  a.setAttribute("target", "_blank");
+  a.setAttribute("rel", "noopener noreferrer");
+
+  const site = preview.site_name ?? displayDomain(preview.url) ?? displayDomain(href);
+  if (site !== null) {
+    const s = document.createElement("span");
+    s.className = "link-card-site";
+    s.textContent = site;
+    a.append(s);
+  }
+  if (preview.title !== null) {
+    const t = document.createElement("span");
+    t.className = "link-card-title";
+    t.textContent = preview.title;
+    a.append(t);
+  }
+  if (preview.description !== null) {
+    const d = document.createElement("span");
+    d.className = "link-card-desc";
+    d.textContent = preview.description;
+    a.append(d);
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------------------
+// Menu de ações (item 84)
+// ---------------------------------------------------------------------------
+
+interface MenuAberto {
+  raiz: HTMLElement;
+  anchor: HTMLElement;
+  itens: HTMLButtonElement[];
+}
+let menuAberto: MenuAberto | null = null;
+
+interface MenuItem {
+  label: string;
+  danger?: boolean;
+  run: () => void;
+}
+
+/** Distância entre o menu e a borda da tela (e do âncora). */
+const MENU_FOLGA = 8;
+
+function toggleActionMenu(anchor: HTMLElement, wrap: HTMLElement, ctx: UiContext, actions: MessageActions): void {
+  if (menuAberto !== null && menuAberto.anchor === anchor) {
+    closeActionMenu();
+    return;
+  }
+  openActionMenu(anchor, wrap, ctx, actions);
+}
+
+/**
+ * Monta e abre o menu. Ele é um `role="menu"` de verdade — setas, Home/End,
+ * Esc e foco de volta — porque este é o caminho em que TODAS as ações
+ * (inclusive apagar) são alcançáveis sem mouse: da mensagem focada, Enter abre
+ * aqui.
+ *
+ * O que NÃO está no menu: fixar mensagem. Não existe nada disso no servidor, e
+ * um item que não faz nada é pior que a ausência dele.
+ */
+function openActionMenu(anchor: HTMLElement, wrap: HTMLElement, ctx: UiContext, actions: MessageActions): void {
+  const msg = MESSAGES.get(wrap);
+  if (msg === undefined) return; // mensagem de sistema: não há ação nenhuma
+  closeActionMenu();
+
+  const own = msg.author_id === ctx.state.me?.id;
+  const itens: MenuItem[] = [];
+  if (actions.replyTo !== undefined) {
+    itens.push({ label: "Responder", run: () => actions.replyTo?.(msg) });
+  }
+  // o seletor abre ancorado no MESMO botão que abriu o menu (que já fechou):
+  // o painel aparece onde o olho está
+  itens.push({ label: "Reagir…", run: () => openReactionPicker(anchor, wrap, ctx) });
+  if (msg.content !== "") {
+    itens.push({ label: "Copiar texto", run: () => void copyText(msg.content, "Texto copiado.") });
+  }
+  itens.push({ label: "Copiar link da mensagem", run: () => void copyText(linkOf(msg), "Link copiado.") });
+  if (own) {
+    itens.push({ label: "Editar mensagem", run: () => startEdit(wrap, msg, ctx, actions) });
+  }
+  if (canDelete(msg, ctx)) {
+    itens.push({ label: "Apagar mensagem", danger: true, run: () => void confirmDelete(wrap, msg, actions) });
+  }
+
+  const raiz = document.createElement("div");
+  raiz.className = "msg-menu";
+  raiz.setAttribute("role", "menu");
+  raiz.setAttribute("aria-label", "Ações da mensagem");
+
+  const botoes = itens.map((item) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = item.danger === true ? "menu-item danger" : "menu-item";
+    b.setAttribute("role", "menuitem");
+    // -1 em todos: quem navega aqui são as setas (padrão de menu do ARIA), e o
+    // Tab tem que SAIR do menu, não passear por dentro dele
+    b.tabIndex = -1;
+    b.textContent = item.label;
+    b.onclick = () => {
+      closeActionMenu();
+      item.run();
+    };
+    return b;
+  });
+  raiz.append(...botoes);
+  raiz.addEventListener("keydown", onMenuKeydown);
+  document.body.append(raiz);
+
+  menuAberto = { raiz, anchor, itens: botoes };
+  // só quem se declara "abre um menu" ganha o estado: pelo teclado o âncora
+  // pode ser a própria `.msg`, e um `aria-expanded` num div de mensagem é
+  // ruído para quem usa leitor de tela
+  if (anchor.hasAttribute("aria-haspopup")) anchor.setAttribute("aria-expanded", "true");
+  posicionarMenu(raiz, anchor);
+  botoes[0]?.focus();
+
+  // pointerdown no documento fecha ao clicar fora. Registrado no próximo tick
+  // para o clique que ABRIU o menu não o fechar em seguida; em captura, para
+  // fechar antes de o alvo lá fora reagir. A checagem evita registrar um
+  // listener órfão quando o menu fecha (Esc, por exemplo) antes deste tick.
+  window.setTimeout(() => {
+    if (menuAberto !== null) document.addEventListener("pointerdown", onMenuPointerDown, true);
+  }, 0);
+}
+
+function onMenuPointerDown(ev: PointerEvent): void {
+  if (menuAberto === null) return;
+  const alvo = ev.target;
+  if (alvo instanceof Node && (menuAberto.raiz.contains(alvo) || menuAberto.anchor.contains(alvo))) return;
+  closeActionMenu();
+}
+
+function onMenuKeydown(ev: KeyboardEvent): void {
+  const aberto = menuAberto;
+  if (aberto === null) return;
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    closeActionMenu();
+    return;
+  }
+  if (ev.key === "Tab") {
+    // Tab não navega DENTRO de um menu: ele fecha e o foco segue o fluxo
+    // normal da página — é o que o padrão do ARIA manda
+    closeActionMenu();
+    return;
+  }
+  const i = aberto.itens.indexOf(document.activeElement as HTMLButtonElement);
+  const ultimo = aberto.itens.length - 1;
+  let alvo = -1;
+  if (ev.key === "ArrowDown") alvo = i >= ultimo ? 0 : i + 1;
+  else if (ev.key === "ArrowUp") alvo = i <= 0 ? ultimo : i - 1;
+  else if (ev.key === "Home") alvo = 0;
+  else if (ev.key === "End") alvo = ultimo;
+  if (alvo < 0) return;
+  ev.preventDefault();
+  aberto.itens[alvo]?.focus();
+}
+
+/** Fecha o menu de ações, se houver um aberto. */
+export function closeActionMenu(): void {
+  const aberto = menuAberto;
+  if (aberto === null) return;
+  menuAberto = null;
+  document.removeEventListener("pointerdown", onMenuPointerDown, true);
+  aberto.raiz.remove();
+  if (aberto.anchor.hasAttribute("aria-haspopup")) aberto.anchor.setAttribute("aria-expanded", "false");
+  // o foco volta para quem abriu — a não ser que ele já tenha saído do DOM
+  // (a mensagem pode ter sido apagada pelo próprio item do menu)
+  if (aberto.anchor.isConnected) aberto.anchor.focus();
+}
+
+/** Abaixo do âncora, alinhado à direita dele, preso dentro da janela. */
+function posicionarMenu(raiz: HTMLElement, anchor: HTMLElement): void {
+  const a = anchor.getBoundingClientRect();
+  const m = raiz.getBoundingClientRect();
+  let top = a.bottom + MENU_FOLGA;
+  // sem espaço embaixo (mensagem no fim da lista): abre para cima
+  if (top + m.height > window.innerHeight - MENU_FOLGA) top = Math.max(MENU_FOLGA, a.top - m.height - MENU_FOLGA);
+  const left = Math.max(MENU_FOLGA, Math.min(a.right - m.width, window.innerWidth - m.width - MENU_FOLGA));
+  raiz.style.top = `${top}px`;
+  raiz.style.left = `${left}px`;
+}
+
+/**
+ * Link permanente da mensagem. `origin` + `pathname` saem da janela para o
+ * link funcionar na web e no desktop (onde o esquema é `app://`).
+ */
+function linkOf(msg: Message): string {
+  return messageLink(window.location.origin, window.location.pathname, msg.channel_id, msg.id);
+}
+
+/**
+ * Copiar. A API de área de transferência só existe em contexto seguro (https,
+ * localhost, `app://`) e pode ser negada por permissão — a falha é DITA, não
+ * engolida: senão o clique não faz nada e ninguém sabe por quê.
+ */
+async function copyText(text: string, ok: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    announce(ok);
+  } catch {
+    announce("Não foi possível copiar.");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Navegação por teclado entre mensagens (item 84)
+// ---------------------------------------------------------------------------
+
+/**
+ * Antes do M11b, chegar ao botão de apagar de uma mensagem no meio do
+ * histórico exigia tabular por todos os botões (e por todas as pílulas de
+ * menção) de todas as mensagens acima dela — com até 600 nós na janela de DOM,
+ * isso é "não dá para apagar".
+ *
+ * A saída NÃO foi pôr as mensagens na ordem de tabulação (seriam 600 paradas
+ * de Tab, o mesmo problema ao contrário): cada `.msg` tem `tabindex="-1"` e é
+ * alcançada pelas SETAS. O Tab continua fazendo exatamente o que sempre fez —
+ * nada do que funcionava parou de funcionar.
+ *
+ *   ↑ / ↓        mensagem anterior / seguinte
+ *   Home / End   primeira / última da janela de DOM
+ *   Enter        abre o menu de ações da mensagem focada
+ *   Shift+F10    idem (o atalho de "menu de contexto" do Windows)
+ *
+ * O listener é do PRÓPRIO nó (e não do container): assim o módulo não depende
+ * de o main.ts chamar nada para ser acessível — um passo de integração
+ * esquecido não pode virar uma regressão de acessibilidade.
+ */
+function onMessageKeydown(ev: KeyboardEvent, wrap: HTMLElement, ctx: UiContext, actions: MessageActions): void {
+  const alvo = ev.target;
+  // dentro do editor inline as setas são do CURSOR e o Enter salva
+  if (alvo instanceof HTMLInputElement || alvo instanceof HTMLTextAreaElement) return;
+  if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+  const lista = listOf(wrap);
+  if (lista === null) return;
+
+  if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+    const proxima = vizinhaMsg(wrap, ev.key === "ArrowDown");
+    if (proxima === null) return; // ponta da janela: deixa a tecla rolar a lista
+    ev.preventDefault();
+    focusMessage(proxima);
+    return;
+  }
+  // Home/End só quando o foco está no NÓ: num botão da toolbar eles podem
+  // significar outra coisa para quem usa leitor de tela
+  if ((ev.key === "Home" || ev.key === "End") && alvo === wrap) {
+    const ponta = pontaMsg(lista, ev.key === "End");
+    if (ponta === null) return;
+    ev.preventDefault();
+    focusMessage(ponta);
+    return;
+  }
+  const abre = ev.key === "Enter" || (ev.key === "F10" && ev.shiftKey);
+  if (abre && alvo === wrap) {
+    ev.preventDefault();
+    // ancora no "mais ações" quando ele existe (o menu abre onde o olho está);
+    // sem toolbar (mensagem de sistema) não há menu — o openActionMenu recusa
+    const mais = wrap.querySelector<HTMLElement>(".msg-actions .icon-btn:last-of-type");
+    openActionMenu(mais ?? wrap, wrap, ctx, actions);
+  }
+}
+
+function vizinhaMsg(wrap: HTMLElement, adiante: boolean): HTMLElement | null {
+  let n: Element | null = adiante ? wrap.nextElementSibling : wrap.previousElementSibling;
+  while (n !== null) {
+    // pula o que não é mensagem (o botão `.load-retry` do main.ts mora na lista)
+    if (n instanceof HTMLElement && n.classList.contains("msg")) return n;
+    n = adiante ? n.nextElementSibling : n.previousElementSibling;
+  }
+  return null;
+}
+
+function pontaMsg(lista: HTMLElement, fim: boolean): HTMLElement | null {
+  const todas = lista.querySelectorAll<HTMLElement>(":scope > .msg");
+  return (fim ? todas.item(todas.length - 1) : todas.item(0)) ?? null;
+}
+
+function focusMessage(wrap: HTMLElement): void {
+  wrap.focus({ preventScroll: true });
+  // "nearest": mensagem que já está visível não faz a lista pular — quem lê o
+  // histórico não pode ser arrastado por andar uma linha
+  wrap.scrollIntoView({ block: "nearest" });
 }

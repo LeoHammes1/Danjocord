@@ -25,6 +25,18 @@ import "./sounds.test.ts";
 // relógio mockado — mas o bootstrap mexe no config.ownerDiscordId (e o
 // restaura), então ele fica longe das suítes que dependem de env no import
 import "./moderation.test.ts";
+// M11b: o resto do chat. A SSRF vem na frente das outras do marco de
+// propósito — é a suíte que protege a única coisa daqui que, feita errado, é
+// furo de segurança de verdade. Todas usam banco :memory: próprio, nenhuma
+// mexe em relógio nem em config, e as de link sobem servidores HTTP em
+// 127.0.0.1 (fechados no teardown de cada suíte).
+import "./ssrf.test.ts";
+import "./link-preview.test.ts";
+import "./attachment-probe.test.ts";
+import "./attachments.test.ts";
+import "./reactions.test.ts";
+import "./reply.test.ts";
+import "./search.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte

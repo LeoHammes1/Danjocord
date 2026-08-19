@@ -29,3 +29,7 @@ await import("./sound-policy.test.ts");
 await import("./lru.test.ts");
 await import("./markdown.test.ts");
 await import("./unread.test.ts");
+await import("./emoji.test.ts");
+await import("./attachments.test.ts");
+await import("./search.test.ts");
+await import("./messages-core.test.ts");

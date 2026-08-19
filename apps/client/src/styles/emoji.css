@@ -1,0 +1,219 @@
+/* Emoji (M11b, item 88): o botão do composer, o seletor e a listinha do
+   autocomplete `:nome:`. Dono: ui/emoji.ts.
+
+   Os dois painéis são `position: fixed` pendurados no <body> pelo JS, e por
+   isso NÃO têm z-index: eles entram no DOM depois de todo o resto (o append
+   acontece na primeira abertura) e a ordem do documento já os põe por cima.
+   Inventar um z-index aqui só criaria mais um número para desempatar contra o
+   diálogo do M9 no dia em que os dois abrissem juntos — e eles não abrem. */
+
+/* --- botão no composer --------------------------------------------------- */
+/* mesma âncora vertical do "Enviar" do chrome.css: o composer é
+   `align-items: flex-end` e o botão precisa acompanhar a última linha do
+   campo, não flutuar no meio quando a textarea cresce */
+.emoji-btn {
+  align-self: flex-end;
+  margin-bottom: 5px;
+}
+
+/* --- o seletor ----------------------------------------------------------- */
+.emoji-picker {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  /* 9 colunas de 34px + gap + padding — o número de colunas é do CSS, e o
+     ui/emoji.ts NÃO o repete: a navegação por seta lê a geometria real
+     (offsetTop/offsetLeft), então mudar este valor não quebra o teclado */
+  width: 358px;
+  max-width: calc(100vw - var(--sp-4));
+  background: var(--bg-sidebar);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  padding: var(--sp-2);
+  gap: var(--sp-2);
+}
+.emoji-picker[hidden] {
+  display: none;
+}
+
+.ep-search {
+  flex: none;
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-chat);
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+}
+.ep-search::placeholder {
+  color: var(--text-faint);
+}
+
+/* abas de categoria: atalho de rolagem, não filtro (ver ui/emoji.ts) */
+.ep-tabs {
+  flex: none;
+  display: flex;
+  gap: var(--sp-1);
+  padding-bottom: var(--sp-2);
+  border-bottom: 1px solid var(--line);
+}
+.ep-tab {
+  flex: 1;
+  height: 28px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  line-height: 1;
+  /* o glifo da aba é conteúdo, não ícone: ele ignora `color` de propósito.
+     O que reage ao mouse é o fundo. */
+  transition: background-color var(--t-fast);
+}
+.ep-tab:hover {
+  background: var(--bg-elevated);
+}
+
+.ep-grid {
+  /* position: relative faz da grade o offsetParent dos filhos — é isso que o
+     `moverLinha()` e o `rolarPara()` do ui/emoji.ts assumem ao ler offsetTop */
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 2px;
+  height: 280px;
+  overflow-y: auto;
+  /* a barra de rolagem some quando a grade não precisa dela, mas a reserva
+     evita que a grade inteira pule 12px ao trocar de busca para catálogo */
+  scrollbar-gutter: stable;
+}
+
+.ep-cat {
+  grid-column: 1 / -1;
+  padding: var(--sp-2) var(--sp-1) var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  /* gruda no topo ao rolar: sem isto ninguém sabe em que categoria está no
+     meio de 469 glifos */
+  position: sticky;
+  top: 0;
+  background: var(--bg-sidebar);
+}
+
+.ep-emoji {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border-radius: var(--r-sm);
+  font-size: 22px;
+  line-height: 1;
+  transition: background-color var(--t-fast);
+}
+/* uma classe só para hover e teclado: o item "ativo" é o mesmo conceito nos
+   dois caminhos, e o JS marca `.is-active` também no mousemove */
+.ep-emoji:hover,
+.ep-emoji.is-active {
+  background: var(--bg-elevated);
+}
+/* o foco NUNCA sai do campo de busca (aria-activedescendant), então o item
+   ativo precisa de um contorno próprio — é ele que faz o papel do anel de
+   foco para quem navega com as setas */
+.ep-emoji.is-active {
+  outline: 2px solid var(--text-link);
+  outline-offset: -2px;
+}
+
+.ep-preview {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+  min-height: 28px;
+}
+.ep-preview-char {
+  font-size: var(--fs-xl);
+  line-height: 1;
+}
+.ep-preview-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--text-muted);
+  /* nome comprido não pode empurrar a largura do painel */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- autocomplete `:nome:` ----------------------------------------------- */
+.emoji-ac {
+  position: fixed;
+  width: 320px;
+  max-width: calc(100vw - var(--sp-4));
+  background: var(--bg-sidebar);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  padding: var(--sp-1);
+}
+.emoji-ac[hidden] {
+  display: none;
+}
+
+.emoji-ac-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.emoji-ac-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--text-muted);
+}
+.emoji-ac-item:hover,
+.emoji-ac-item.is-active {
+  background: var(--bg-elevated);
+  color: var(--text-normal);
+}
+.emoji-ac-char {
+  flex: none;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+.emoji-ac-name {
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- telas estreitas ------------------------------------------------------
+   O seletor tem largura fixa em px porque a grade é de glifos, não de texto:
+   deixá-la fluida faria os emoji mudarem de tamanho a cada resize. Em tela
+   pequena o que cede é o número de colunas, não o tamanho do alvo do dedo.
+   O seletor em `#app` segue a armadilha do M7 (o @media não soma
+   especificidade), mas aqui não há disputa: estes seletores só existem neste
+   arquivo. */
+@media (max-width: 480px) {
+  .emoji-picker {
+    width: calc(100vw - var(--sp-4));
+  }
+  .ep-grid {
+    grid-template-columns: repeat(7, 1fr);
+    height: 240px;
+  }
+  .emoji-ac {
+    width: calc(100vw - var(--sp-4));
+  }
+}

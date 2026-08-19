@@ -14,6 +14,14 @@ export {
 } from "./mentions.js";
 
 /**
+ * Validação de emoji de reação (M11b, item 87): mesmo padrão do parser de
+ * menções — módulo puro, testável sem subir nada, e a MESMA regra dos dois
+ * lados do fio. Ver `emoji.ts` para o porquê de uma reação precisar de
+ * validação séria.
+ */
+export { isValidReactionEmoji, MAX_EMOJI_BYTES } from "./emoji.js";
+
+/**
  * Protocolo do gateway do Danjocord — versão reduzida do gateway do Discord.
  * Envelope único: { op, d, s?, t? }. Campos em snake_case no fio, como no original.
  *
@@ -229,6 +237,69 @@ export type Channel = z.infer<typeof Channel>;
 export const MessageType = z.enum(["user", "member_join", "member_leave"]);
 export type MessageType = z.infer<typeof MessageType>;
 
+/**
+ * Anexo de imagem (M11b, item 89). Os BYTES não viajam aqui: o cliente pede
+ * `GET /api/attachments/:id`, que é imutável e cacheável para sempre (o id é
+ * snowflake e o conteúdo nunca muda) — exatamente o contrato do `Sound` do M9.
+ *
+ * `width`/`height` vêm LIDOS do cabeçalho do arquivo pelo servidor (nunca
+ * declarados pelo cliente) e existem por um motivo de tela: com eles o cliente
+ * reserva o espaço antes de a imagem carregar, e a lista de mensagens não dá o
+ * "pulo de layout" que joga o texto que a pessoa estava lendo para fora do
+ * campo de visão. null = formato válido cuja dimensão não deu para ler.
+ */
+export const Attachment = z.object({
+  id: z.string(),
+  /** nome ORIGINAL, só para o download — nunca decide tipo nem nada mais */
+  filename: z.string(),
+  /** decidido pelos MAGIC BYTES no upload; é o que o GET devolve */
+  mime: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+  size_bytes: z.number().int(),
+  width: z.number().int().nullable(),
+  height: z.number().int().nullable(),
+});
+export type Attachment = z.infer<typeof Attachment>;
+
+/**
+ * A mensagem citada por um reply (M11b, item 86), já RESOLVIDA pelo servidor.
+ *
+ * Viaja resolvida (autor + trecho) para o cliente desenhar a citação sem uma
+ * segunda requisição — e sem manter um cache paralelo de mensagens antigas que
+ * podem nem estar na janela de DOM da paginação.
+ *
+ * `deleted` é o campo que importa: quando a citada é apagada depois, a citação
+ * NÃO some — ela vira "mensagem apagada". Sumir reescreveria a conversa de quem
+ * respondeu, e o histórico é a única coisa que este projeto promete guardar.
+ */
+export const MessageReference = z.object({
+  message_id: z.string(),
+  channel_id: z.string(),
+  /** null só quando a citada foi apagada (não temos autor para mostrar) */
+  author_id: z.string().nullable(),
+  /** primeiras linhas do conteúdo, aparado pelo servidor; null se apagada */
+  excerpt: z.string().nullable(),
+  deleted: z.boolean(),
+});
+export type MessageReference = z.infer<typeof MessageReference>;
+
+/**
+ * Reações agregadas de UM emoji numa mensagem (M11b, item 87).
+ *
+ * `user_ids` viaja inteiro em vez de um `me: boolean` calculado por
+ * destinatário, e é uma decisão de arquitetura do gateway: o fan-out do
+ * projeto manda o MESMO texto JSON para todas as sessões (é o mesmo `raw` no
+ * ring buffer de cada uma). Um campo "isto é meu" obrigaria a serializar uma
+ * cópia por pessoa — e com ≤10 amigos a lista de ids é menor que o booleano
+ * mais o nome do campo. De quebra, o cliente sabe QUEM reagiu para mostrar no
+ * hover, que é a metade útil da reação.
+ */
+export const MessageReaction = z.object({
+  emoji: z.string(),
+  /** ids de quem reagiu, na ordem em que reagiram */
+  user_ids: z.array(z.string()),
+});
+export type MessageReaction = z.infer<typeof MessageReaction>;
+
 export const Message = z.object({
   id: z.string(),
   channel_id: z.string(),
@@ -256,6 +327,23 @@ export const Message = z.object({
   mentions: z.array(z.string()),
   /** `@todos` — conta separado porque não é uma lista de ids */
   mentions_everyone: z.boolean(),
+  /**
+   * M11b (item 86): a mensagem citada, resolvida. Ausente/null = não é reply.
+   * Só UM nível: a citada não carrega a citação DELA — senão uma corrente de
+   * respostas viajaria inteira em cada mensagem.
+   */
+  reply_to: MessageReference.nullable().optional(),
+  /**
+   * M11b (item 89): imagens da mensagem. Sempre presente (lista vazia é o
+   * normal) para o cliente não precisar de um `?? []` em cada call site.
+   */
+  attachments: z.array(Attachment),
+  /**
+   * M11b (item 87): reações agregadas por emoji, na ordem da PRIMEIRA reação
+   * de cada uma — a barra de reações não pode se reordenar sozinha embaixo do
+   * cursor de quem está clicando.
+   */
+  reactions: z.array(MessageReaction),
 });
 export type Message = z.infer<typeof Message>;
 
@@ -444,6 +532,25 @@ export const TypingStartData = z.object({
 export type TypingStartData = z.infer<typeof TypingStartData>;
 
 /**
+ * Reação posta ou tirada (M11b, item 87). É um DELTA, não o estado — quatro
+ * campos, e o cliente aplica na mensagem que já tem na tela.
+ *
+ * Mandar a mensagem inteira (como faz o MESSAGE_UPDATE) seria mais simples de
+ * consumir e errado aqui: reação é o evento mais frequente do chat, a mensagem
+ * pode ter 4000 caracteres e 10 anexos, e a mensagem reagida quase sempre está
+ * FORA da janela de DOM da paginação — o cliente descartaria o payload inteiro
+ * de qualquer jeito. `channel_id` vem junto para o cliente decidir isso sem
+ * procurar o id em canal nenhum.
+ */
+export const ReactionData = z.object({
+  message_id: z.string(),
+  channel_id: z.string(),
+  user_id: z.string(),
+  emoji: z.string(),
+});
+export type ReactionData = z.infer<typeof ReactionData>;
+
+/**
  * Producer novo num canal de voz (M3; M4 soma vídeo; M5 soma screen share):
  * quem está no canal consome sob demanda. Vai para TODO mundo (broadcast
  * simples); o dono do producer se reconhece pelo user_id e não consome a si
@@ -512,6 +619,9 @@ export const DispatchEvent = z.discriminatedUnion("t", [
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("TYPING_START"), d: TypingStartData }),
   // M11a: leitura reconhecida — só para as outras sessões do MESMO usuário
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MESSAGE_ACK"), d: MessageAckData }),
+  // M11b (item 87): reação posta / tirada — delta, não a mensagem inteira
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("REACTION_ADD"), d: ReactionData }),
+  z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("REACTION_REMOVE"), d: ReactionData }),
   // usuário NOVO criado (dev ou OAuth) — re-login de usuário conhecido não dispara
   z.object({ op: z.literal(Op.Dispatch), s: z.number().int(), t: z.literal("MEMBER_ADD"), d: User }),
   // M10 (item 52): cargo, apelido ou avatar da guild mudaram — d é o User inteiro
@@ -714,19 +824,118 @@ export type VoiceDisconnectUserParams = z.infer<typeof VoiceDisconnectUserParams
 // REST (superfície mínima do M0; cresce no M2)
 // ---------------------------------------------------------------------------
 
-export const CreateMessageBody = z.object({
-  content: z.string().min(1).max(4000),
-  nonce: z.string().max(64).optional(),
-  /**
-   * M11a: só "user" entra por aqui. O campo existe no corpo (em vez de ser
-   * ignorado) para que a recusa seja EXPLÍCITA: um cliente que tentasse
-   * forjar "member_join" leva 400 com o motivo, em vez de ver o servidor
-   * silenciosamente gravar outra coisa. Mensagem de sistema nasce no
-   * servidor, sempre.
-   */
-  type: z.literal("user").optional(),
-});
+export const CreateMessageBody = z
+  .object({
+    /**
+     * M11b: o piso saiu de `min(1)` para 0 porque mensagem só de IMAGEM é
+     * legítima (item 89). O piso não sumiu — virou a regra do `superRefine`
+     * abaixo: ou tem texto, ou tem anexo. Sem isso, um POST vazio criaria uma
+     * linha invisível no histórico de todo mundo.
+     */
+    content: z.string().max(4000),
+    nonce: z.string().max(64).optional(),
+    /**
+     * M11a: só "user" entra por aqui. O campo existe no corpo (em vez de ser
+     * ignorado) para que a recusa seja EXPLÍCITA: um cliente que tentasse
+     * forjar "member_join" leva 400 com o motivo, em vez de ver o servidor
+     * silenciosamente gravar outra coisa. Mensagem de sistema nasce no
+     * servidor, sempre.
+     */
+    type: z.literal("user").optional(),
+    /**
+     * M11b (item 86): id da mensagem citada. O servidor exige que ela seja do
+     * MESMO canal — citação cruzando canal vazaria conteúdo de um canal para
+     * outro pelo trecho resolvido.
+     */
+    reply_to_id: z.string().max(20).optional(),
+    /**
+     * M11b (item 89): ids devolvidos pelo `POST /api/attachments`. O teto de 10
+     * é o mesmo do Discord e existe para que uma mensagem tenha um custo
+     * máximo conhecido; o teto de bytes é por arquivo e por guild, no servidor.
+     */
+    attachment_ids: z.array(z.string().max(20)).max(10).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.content.trim().length === 0 && (v.attachment_ids?.length ?? 0) === 0) {
+      ctx.addIssue({ code: "custom", message: "mensagem vazia: mande texto ou pelo menos um anexo" });
+    }
+  });
 export type CreateMessageBody = z.infer<typeof CreateMessageBody>;
+
+// --- anexos, preview de link e busca (M11b, itens 89–91) ---
+
+/**
+ * `POST /api/attachments?filename=` — como no upload de som do M9, os
+ * metadados vão na QUERY porque o corpo é o arquivo binário CRU. Não é
+ * multipart de propósito: o Fastify 5 não lê multipart sem plugin, e o projeto
+ * não ganha dependência por causa disso.
+ *
+ * O `filename` serve ao download e a mais nada: quem decide o TIPO são os
+ * magic bytes, sempre. Por isso ele é saneado (sem barra, sem caractere de
+ * controle) em vez de validado por extensão.
+ */
+export const CreateAttachmentQuery = z.object({
+  filename: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .refine(
+      (s) => ![...s].some((ch) => (ch.codePointAt(0) ?? 0) < 0x20 || ch.codePointAt(0) === 0x7f),
+      "nome de arquivo com caractere de controle",
+    )
+    .refine((s) => !s.includes("/") && !s.includes("\\"), "nome de arquivo com caminho"),
+});
+export type CreateAttachmentQuery = z.infer<typeof CreateAttachmentQuery>;
+
+/**
+ * O que o `GET /api/link-preview?url=` devolve (M11b, item 90).
+ *
+ * `ok: false` é uma RESPOSTA e não um erro HTTP: "não deu para pré-visualizar"
+ * é o caso comum (site fora do ar, PDF, host interno recusado) e o cliente
+ * trata igual em todos — mostra o link cru. Vem com `error` legível porque a
+ * mesma resposta serve de cache negativo, e um cache negativo sem motivo é
+ * impossível de depurar seis meses depois.
+ *
+ * NÃO existe campo de imagem, de propósito: um `image_url` remoto faria o
+ * navegador de cada amigo buscar o arquivo no site de origem — que é
+ * exatamente o IP que o unfurl server-side existe para não vazar.
+ */
+export const LinkPreview = z.object({
+  /** a URL NORMALIZADA que virou chave de cache (pode diferir da pedida) */
+  url: z.string(),
+  ok: z.boolean(),
+  title: z.string().nullable(),
+  description: z.string().nullable(),
+  site_name: z.string().nullable(),
+  error: z.string().nullable(),
+  fetched_at: z.number().int(),
+});
+export type LinkPreview = z.infer<typeof LinkPreview>;
+
+/**
+ * Marcadores do trecho de busca (M11b, item 91). O `snippet()` do FTS5 recorta
+ * o texto ao redor do acerto e envolve os termos; aqui os delimitadores são
+ * dois caracteres de controle em vez de `<b>`/`</b>` PORQUE o cliente não usa
+ * `innerHTML` em lugar nenhum (regra do M7) — ele parte a string nestes
+ * marcadores e monta os nós do DOM.
+ */
+export const SEARCH_HIT_OPEN = "\u0001";
+export const SEARCH_HIT_CLOSE = "\u0002";
+
+/** Um acerto da busca: a mensagem inteira + o trecho já recortado pelo FTS5. */
+export const SearchHit = z.object({
+  message: Message,
+  snippet: z.string(),
+});
+export type SearchHit = z.infer<typeof SearchHit>;
+
+export const SearchResults = z.object({
+  /** a consulta como o servidor a interpretou (depois de sanear a sintaxe do FTS5) */
+  query: z.string(),
+  hits: z.array(SearchHit),
+});
+export type SearchResults = z.infer<typeof SearchResults>;
 
 /**
  * `POST /api/channels/:id/ack` (M11a, item 81) — "li até aqui".

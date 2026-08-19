@@ -1,0 +1,131 @@
+/* Bandeja de anexos do composer (M11b, item 89) — dono: ui/composer.ts.
+
+   Entra DEPOIS do chrome.css (que desenha o #composer) porque a primeira
+   regra abaixo o modifica: sem `flex-wrap`, a bandeja de miniaturas viraria
+   mais uma coluna ao lado da textarea. É a mesma armadilha anotada no
+   layout.css — regra de arquivo importado depois VENCE o empate, e é a ordem
+   do index.css que garante isso, não um seletor mais específico. */
+
+#composer {
+  flex-wrap: wrap;
+}
+
+/* a bandeja ocupa uma linha inteira ACIMA do campo: `flex-basis: 100%` é o que
+   força a quebra, e a ordem no DOM (o ui/composer.ts a insere antes da
+   textarea) é o que a põe em cima */
+.composer-tray {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--sp-2);
+}
+
+.composer-tray-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.composer-tray-items:empty {
+  display: none;
+}
+
+.composer-tray-msg {
+  color: var(--warn);
+  font-size: var(--fs-xs);
+}
+
+/* --- cartão de uma imagem ------------------------------------------------- */
+.attach-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* largura fixa: com o nome do arquivo mandando na largura, cada cartão
+     teria um tamanho e a fila de miniaturas ficaria serrilhada */
+  width: 220px;
+  padding: var(--sp-2);
+  background: var(--bg-chat);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.attach-thumb {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  background: var(--bg-elevated);
+}
+/* restauração sem miniatura (ver restoreComposerAttachments): um bloco neutro
+   no lugar de uma imagem quebrada */
+.attach-thumb-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.attach-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.attach-name {
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-sub {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.attach-remove {
+  width: 24px;
+  height: 24px;
+}
+
+/* subindo: a miniatura fica esmaecida e PULSA. Não há barra de progresso real
+   porque `fetch` não reporta bytes enviados (só o XHR reportava, e trocar de
+   API por causa disso não vale) — então o sinal é honesto: “está acontecendo”,
+   sem fingir uma porcentagem. */
+.attach-card[data-estado="enviando"] .attach-thumb {
+  opacity: 0.45;
+  animation: attach-pulse 1.2s ease-in-out infinite;
+}
+@keyframes attach-pulse {
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.attach-card.is-error {
+  border-color: var(--danger);
+  cursor: pointer;
+}
+.attach-card.is-error .attach-sub {
+  color: var(--danger);
+}
+
+/* --- arrastar e soltar ----------------------------------------------------- */
+/* o realce é do composer INTEIRO (é ele que aceita o drop), e é um contorno em
+   vez de um overlay: overlay por cima do campo roubaria o `dragleave` e a
+   moldura ficaria acesa depois de soltar */
+#composer.is-dragging {
+  outline: 2px dashed var(--brand);
+  outline-offset: 2px;
+}
+
+.attach-btn {
+  align-self: flex-end;
+  margin-bottom: 5px;
+}

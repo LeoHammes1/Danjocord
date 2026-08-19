@@ -1,0 +1,222 @@
+/* Busca (M11b, item 91) — dono: ui/search.ts.
+
+   O diálogo reusa a casca `.dialog-*` que o voice-settings.css define (a mesma
+   do ui/dialog.ts), então este arquivo entra DEPOIS dele no index.css: as três
+   regras que sobrescrevem a casca (`.sr-body`, a largura do painel) dependem
+   da ordem, não de especificidade inventada. Nenhum z-index novo — o overlay
+   já tem o da casca. */
+
+/* o painel de busca é mais largo e mais alto que o de configurações: aqui o
+   conteúdo é uma LISTA, e 560px cortariam o trecho de cada acerto */
+#search-dialog .dialog-panel {
+  width: min(720px, 100%);
+  height: min(640px, 100%);
+}
+
+/* o corpo da casca é um flex-column com gap; a lista é quem rola, não o corpo
+   inteiro — senão a barra de busca sairia da tela ao rolar os resultados */
+.dialog-body.sr-body {
+  overflow: hidden;
+  gap: var(--sp-3);
+}
+
+/* --- barra de busca ------------------------------------------------------- */
+.sr-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.sr-field {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-input);
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--text-normal);
+  font-size: var(--fs-md);
+}
+.sr-field::placeholder {
+  color: var(--text-faint);
+}
+/* o "x" nativo do input[type=search] no Chromium é cinza-claro e não segue a
+   paleta; o Esc e o próprio backspace já limpam */
+.sr-field::-webkit-search-cancel-button {
+  display: none;
+}
+
+.sr-filter {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  /* o rótulo troca de texto (“só neste canal” → “só em #geral”): sem o
+     max-width um canal de nome longo empurraria o campo de busca */
+  max-width: 200px;
+}
+.sr-filter span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sr-filter:has(input:disabled) {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* --- estados (os quatro são visualmente distintos) ------------------------ */
+.sr-status {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+/* “buscando” não pisca a tela: só o texto esmaece, e a lista velha some antes
+   (quem apaga é o ui/search.ts) */
+.sr-status.is-buscando {
+  color: var(--text-faint);
+}
+.sr-status.is-ok {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+/* erro é a ÚNICA cor forte da tela: “não deu para buscar” não pode ser lido
+   como “não achei nada” */
+.sr-status.is-erro {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--danger);
+}
+
+.sr-hint {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.sr-retry {
+  flex: none;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-normal);
+  font-size: var(--fs-xs);
+  transition: background-color var(--t-fast);
+}
+.sr-retry:hover {
+  background: var(--bg-input);
+}
+
+/* --- resultados ----------------------------------------------------------- */
+.sr-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* a barra reservada evita a lista inteira pular 8px quando o resultado
+     encolhe de doze para três acertos */
+  scrollbar-gutter: stable;
+}
+
+.sr-group {
+  position: sticky;
+  top: 0;
+  padding: var(--sp-2) var(--sp-1);
+  background: var(--bg-chat);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.sr-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+/* mouse e teclado marcam o MESMO estado (o ui/search.ts põe .is-active no
+   mousemove também) — dois destaques diferentes na mesma lista confundem */
+.sr-hit:hover,
+.sr-hit.is-active {
+  background: var(--bg-elevated);
+  border-left-color: var(--brand);
+}
+/* sem pulo ligado: o resultado continua legível, mas não finge ser clicável */
+.sr-hit[aria-disabled="true"] {
+  cursor: default;
+}
+.sr-hit[aria-disabled="true"]:hover {
+  background: none;
+  border-left-color: transparent;
+}
+
+.sr-hit-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: 2px;
+}
+
+.sr-hit-author {
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.sr-hit-time {
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+}
+
+.sr-hit-text {
+  color: var(--text-normal);
+  font-size: var(--fs-sm);
+  /* o trecho do FTS5 já vem recortado; duas linhas bastam e mantêm a lista
+     escaneável — o texto inteiro está no canal, que é para onde o clique leva */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* o realce vem dos marcadores U+0001/U+0002 do protocolo, virados em <mark>
+   pelo ui/search.ts — o <mark> padrão do navegador é amarelo com texto preto,
+   que numa UI escura parece um erro de render */
+.sr-hit-text mark {
+  background: none;
+  color: var(--text-link);
+  font-weight: var(--fw-semibold);
+}
+
+/* --- destaque da mensagem alvo do pulo ------------------------------------
+   Quem põe e tira a classe é o `jumpTo` do main.ts (ver relatório); a regra
+   mora AQUI porque o realce só existe por causa da busca — o chat.css tem
+   outro dono e não precisa saber deste recurso.
+
+   O fundo desaparece sozinho em 2s: depois de rolar até uma mensagem de três
+   meses atrás, sem uma marca a pessoa não sabe QUAL das mensagens da tela era
+   o resultado; com uma marca permanente, o canal fica sujo.
+
+   O alvo é a `.msg-row` (e não a `.msg`) pela MESMA razão anotada no realce de
+   menção do chat.css: a faixa é `box-shadow: inset`, porque um `border-left`
+   entraria na caixa do grid e empurraria avatar e texto 2px para a direita.
+   E vem depois daquele arquivo no index.css, o que resolve o empate de
+   especificidade quando a mensagem procurada também menciona a pessoa. */
+.msg.msg-highlight .msg-row {
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--brand);
+  transition: background-color var(--t-med);
+}

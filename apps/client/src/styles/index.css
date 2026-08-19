@@ -56,3 +56,20 @@
    (chat.css) e `#composer` (chrome.css) — e em dois pontos precisa GANHAR um
    empate de especificidade, que só a ordem resolve. Por isso é o último. */
 @import "./unread.css";
+
+/* emoji (M11b): estende o `.icon-btn` do base.css (o botão do composer) e
+   desenha dois painéis que o JS pendura no <body>. Fica no fim porque os dois
+   flutuam por cima de tudo e a ordem do documento é o que decide o
+   empilhamento — não há z-index em emoji.css, e é de propósito. */
+@import "./emoji.css";
+
+/* anexos no composer (M11b, item 89): a PRIMEIRA regra do arquivo modifica o
+   `#composer` do chrome.css (`flex-wrap`, para a bandeja ganhar uma linha
+   própria). Empate de especificidade resolvido pela ORDEM — por isso depois
+   dele, e depois do emoji.css, cujo botão divide a mesma linha do campo. */
+@import "./attachments.css";
+
+/* busca (M11b, item 91) por último: o diálogo reusa a casca `.dialog-*` que o
+   voice-settings.css define e sobrescreve a largura e o overflow do painel.
+   Sem a ordem, seria preciso inventar especificidade para o mesmo efeito. */
+@import "./search.css";

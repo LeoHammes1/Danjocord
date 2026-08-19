@@ -42,12 +42,53 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
       // o `type` do corpo só aceita "user" (schema): mensagem de sistema nasce
       // no servidor, e a recusa é explícita para não parecer que foi gravada
       const forjado = (req.body as { type?: unknown } | undefined)?.type;
-      return reply.code(400).send({
-        error:
-          forjado !== undefined && forjado !== "user"
-            ? "só o servidor cria mensagem de sistema"
-            : "corpo inválido",
-      });
+      if (forjado !== undefined && forjado !== "user") {
+        return reply.code(400).send({ error: "só o servidor cria mensagem de sistema" });
+      }
+      // M11b: a regra "ou texto ou anexo" é um `superRefine` do schema, e a
+      // frase dela é útil — repetir "corpo inválido" aqui esconderia o motivo
+      // exato para quem está integrando
+      const custom = body.error.issues.find((issue) => issue.code === "custom");
+      return reply.code(400).send({ error: custom?.message ?? "corpo inválido" });
+    }
+
+    // Reply (M11b, item 86). Três recusas, e a do meio é a que importa:
+    // citar mensagem de OUTRO canal vazaria conteúdo entre canais pelo trecho
+    // que o servidor resolve na citação — quem não pode ler o canal #privado
+    // leria um pedaço dele citado no #geral.
+    let replyToId: string | undefined;
+    if (body.data.reply_to_id !== undefined) {
+      const wanted = pathId(body.data.reply_to_id);
+      const info = wanted === null ? null : store.messageRefInfo(wanted);
+      if (wanted === null || info === null) {
+        return reply.code(400).send({ error: "a mensagem citada não existe" });
+      }
+      if (info.channelId !== channelId) {
+        return reply.code(400).send({ error: "não dá para citar mensagem de outro canal" });
+      }
+      if (info.deleted) {
+        // citar algo que JÁ estava apagado no momento do envio é diferente de
+        // a citada ser apagada depois: o segundo caso vira "mensagem apagada"
+        // na tela (e é para isso que a linha continua existindo); o primeiro é
+        // um cliente com a tela desatualizada, e merece o aviso
+        return reply.code(400).send({ error: "a mensagem citada foi apagada" });
+      }
+      replyToId = wanted;
+    }
+
+    // Anexos (M11b, item 89): os ids vêm do `POST /api/attachments`, e cada um
+    // precisa ser MEU e ainda estar solto. Sem as duas checagens, bastaria
+    // adivinhar um id (são snowflakes sequenciais no tempo) para pendurar a
+    // imagem de outra pessoa numa mensagem própria — ou para republicar um
+    // anexo que já está numa mensagem antiga.
+    const attachmentIds: string[] = [];
+    for (const rawId of body.data.attachment_ids ?? []) {
+      const id = pathId(rawId);
+      const owner = id === null ? null : store.attachmentOwnership(id);
+      if (id === null || owner === null || owner.uploaderId !== user.id || owner.attached) {
+        return reply.code(400).send({ error: "anexo inválido, já usado ou de outra pessoa" });
+      }
+      attachmentIds.push(id);
     }
 
     // Menções resolvidas AQUI, no POST (M11a, item 79), e não na leitura: é o
@@ -60,6 +101,8 @@ export function registerRoutes(app: FastifyInstance, store: Store, gateway: Gate
     const message = store.createMessage(channelId, user.id, body.data.content, {
       mentions: parsed.userIds,
       everyone: parsed.everyone,
+      ...(replyToId === undefined ? {} : { replyToId }),
+      ...(attachmentIds.length === 0 ? {} : { attachmentIds }),
     });
     // o nonce só ecoa no evento — o cliente usa para reconciliar o render otimista
     gateway.broadcast("MESSAGE_CREATE", body.data.nonce ? { ...message, nonce: body.data.nonce } : message);

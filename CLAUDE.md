@@ -227,6 +227,42 @@ deixam de ser opcionais.
 - Bloquear (item 54) é 100% local e refaz a janela de mensagens pelo
   `loadLatest` — arrancar nós à mão quebraria o agrupamento do M7.
 
+## Chat completo (M11a e M11b)
+
+- **Estado de leitura** (`read_state`) é a base de badge, divisor e notificação.
+  O ack só sai com a **janela em foco** — marcar lido em segundo plano é o erro
+  que faz perder mensagem. `MESSAGE_ACK` é o primeiro evento do projeto que não
+  é da guild inteira (`dispatchToUser`): duas abas não podem discordar.
+  Quem **entra** na guild nasce com os canais lidos — entrar não é ter perdido
+  as conversas de antes.
+- **Menções** ficam em `message_mentions` (tabela, não JSON): "quantas não lidas
+  me mencionam" é uma query. O parser mora no **protocolo** e roda nos dois
+  lados — o servidor resolve no POST para contar, o cliente pinta com a MESMA
+  função. `contato@leo.com` não menciona; `@leo` não casa dentro de `@leonardo`.
+- **Markdown produz nós do DOM, nunca string.** É isso que torna a sanitização
+  estrutural: o cliente não usa `innerHTML` em lugar nenhum, e montar HTML como
+  texto seria a primeira exceção. `javascript:`/`data:`/`vbscript:` não viram
+  link; `<script>` colado sai como texto.
+- **Preview de link é a superfície mais perigosa do projeto** (`links/guard.ts`):
+  o servidor busca URL que usuário cola. Só http/https, só portas 80/443, DNS
+  resolvido por nós e conexão feita ao **IP já aprovado** (Host e SNI pelo nome
+  — fecha rebinding), faixas internas bloqueadas **antes de conectar** e
+  revalidadas **a cada redirect**, 3 saltos, 5 s, 512 KB, zero header de
+  identidade. Sem campo de imagem de propósito: um `image_url` remoto faria o
+  navegador de cada amigo buscar no site — o IP que o unfurl existe para não
+  vazar. Os testes de SSRF são de primeira classe; o principal prova que o
+  servidor local recebe **zero** requisições.
+- **Anexos**: só imagem, magic bytes, 8 MB, BLOB (um PVC, um arquivo de
+  backup), e as **dimensões lidas do cabeçalho** em TS puro — irmão do
+  `sounds/probe.ts`. Servem para reservar o espaço antes de a imagem carregar,
+  senão a timeline pula. Órfão sem mensagem é limpo em 15 min.
+- **Busca**: FTS5 com `content='messages'` (externo, não contentless — sem isso
+  o `snippet()` não funciona). O trecho vem com marcadores ``/``, não
+  com `<b>`, porque o cliente monta nós.
+- **CORS de dev**: a lista de métodos em `index.ts` já mordeu duas vezes (M2
+  faltavam PATCH/DELETE, M11b faltava PUT). O sintoma engana — `Failed to fetch`
+  sem status, porque o navegador barra no preflight. Método novo entra lá junto.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

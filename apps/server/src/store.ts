@@ -1,4 +1,19 @@
-import type { Channel, ChannelReadState, Message, MessageType, Role, Sound, User } from "@danjocord/protocol";
+import {
+  SEARCH_HIT_CLOSE,
+  SEARCH_HIT_OPEN,
+  type Attachment,
+  type Channel,
+  type ChannelReadState,
+  type LinkPreview,
+  type Message,
+  type MessageReaction,
+  type MessageReference,
+  type MessageType,
+  type Role,
+  type SearchHit,
+  type Sound,
+  type User,
+} from "@danjocord/protocol";
 import type { Db } from "./db/index.js";
 import { idFromString, idToString, nextId } from "./db/snowflake.js";
 
@@ -41,7 +56,47 @@ interface MessageRow {
   type: MessageType;
   /** M11a: 0/1 — o SQLite não tem boolean */
   mentions_everyone: bigint;
+  /** M11b (item 86): mensagem citada; null = não é reply */
+  reply_to_id: bigint | null;
 }
+
+/** M11b: linha de `attachments` sem o BLOB (que só a rota de bytes lê). */
+interface AttachmentRow {
+  id: bigint;
+  message_id: bigint | null;
+  uploader_id: bigint;
+  filename: string;
+  mime: string;
+  size_bytes: bigint;
+  width: bigint | null;
+  height: bigint | null;
+  created_at: bigint;
+}
+
+/** Tudo que a rota de upload já mediu e validou — o Store só grava (M11b). */
+export interface NewAttachment {
+  uploaderId: string;
+  filename: string;
+  mime: Attachment["mime"];
+  bytes: Buffer;
+  /** LIDAS do cabeçalho pelo servidor; null = formato válido sem dimensão legível */
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * Resultado de `addReaction` (M11b, item 87). É uma união e não um booleano
+ * porque a rota precisa distinguir três respostas HTTP diferentes — e porque
+ * "já existia" NÃO é erro: reagir duas vezes com o mesmo emoji é idempotente,
+ * o cliente pode ter mandado duas vezes por causa de um clique duplo.
+ */
+export type AddReactionResult =
+  | { ok: true; created: boolean }
+  | { ok: false; reason: "too_many_emojis" | "too_many_by_user" };
+
+/** Tetos das reações (item 87). Ver a migration 006 para o porquê. */
+export const MAX_REACTIONS_PER_MESSAGE = 20;
+export const MAX_REACTIONS_PER_USER_PER_MESSAGE = 6;
 
 /**
  * M11a: o que a rota já resolveu com `parseMentions` antes de gravar. Vem
@@ -52,6 +107,15 @@ export interface NewMessage {
   /** ids já resolvidos; viram linhas em `message_mentions` */
   mentions?: string[];
   everyone?: boolean;
+  /** M11b (item 86): a rota JÁ conferiu que existe e que é do mesmo canal */
+  replyToId?: string;
+  /**
+   * M11b (item 89): anexos a amarrar. A rota já conferiu que são do próprio
+   * autor e que ainda estão soltos; a amarração acontece na MESMA transação da
+   * mensagem — uma mensagem que existe sem os anexos dela seria uma linha
+   * "vazia" no histórico, e os bytes ficariam órfãos até a faxina passar.
+   */
+  attachmentIds?: string[];
 }
 
 /** M9: linha da tabela `sounds` — `bytes` só é lido na rota de áudio */
@@ -299,26 +363,41 @@ export class Store {
     // parser já não repete — mas o Store não confia em quem o chama
     const mentions = [...new Set(extra.mentions ?? [])];
     const everyone = extra.everyone === true;
+    const attachmentIds = [...new Set(extra.attachmentIds ?? [])];
     this.db.transaction(() => {
       this.db
         .prepare(
-          "INSERT INTO messages (id, channel_id, author_id, content, created_at, type, mentions_everyone)" +
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO messages (id, channel_id, author_id, content, created_at, type, mentions_everyone, reply_to_id)" +
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .run(id, idFromString(channelId), idFromString(authorId), content, createdAt, type, everyone ? 1 : 0);
+        .run(
+          id,
+          idFromString(channelId),
+          idFromString(authorId),
+          content,
+          createdAt,
+          type,
+          everyone ? 1 : 0,
+          extra.replyToId === undefined ? null : idFromString(extra.replyToId),
+        );
       const insert = this.db.prepare("INSERT INTO message_mentions (message_id, user_id) VALUES (?, ?)");
       for (const userId of mentions) insert.run(id, idFromString(userId));
+      // M11b: a amarração dos anexos é da MESMA transação. O `message_id IS
+      // NULL` no WHERE é a trava contra roubo de anexo alheio já publicado —
+      // a rota também confere, e aqui o banco confere de novo.
+      const attach = this.db.prepare(
+        "UPDATE attachments SET message_id = ? WHERE id = ? AND message_id IS NULL AND uploader_id = ?",
+      );
+      for (const attachmentId of attachmentIds) {
+        attach.run(id, idFromString(attachmentId), idFromString(authorId));
+      }
     })();
-    return {
-      id: idToString(id),
-      channel_id: channelId,
-      author_id: authorId,
-      content,
-      created_at: createdAt,
-      type,
-      mentions,
-      mentions_everyone: everyone,
-    };
+    // relê pelo caminho normal: assim reply_to, anexos e reações saem do MESMO
+    // código que os monta na paginação — montá-los à mão aqui é como o evento
+    // de MESSAGE_CREATE passa a divergir do que o histórico mostra
+    const created = this.getMessage(channelId, idToString(id));
+    if (!created) throw new Error("store: mensagem recém-criada sumiu");
+    return created;
   }
 
   /** Paginação por cursor (doc §6): WHERE id < :before ORDER BY id DESC. */
@@ -337,10 +416,10 @@ export class Store {
             )
             .all(idFromString(channelId), idFromString(before), cappedLimit)
     ) as MessageRow[];
-    // menções da PÁGINA inteira numa query só: com limite de 100 linhas, uma
-    // consulta por mensagem seriam 100 idas ao banco para pintar uma tela
-    const mentions = this.mentionsOf(rows.map((r) => r.id));
-    return rows.map((r) => this.messageToWire(r, mentions.get(r.id) ?? []));
+    // menções, anexos, reações e citações da PÁGINA inteira em quatro queries:
+    // com limite de 100 linhas, uma consulta por mensagem por aresta seriam
+    // 400 idas ao banco para pintar uma tela
+    return this.hydrate(rows);
   }
 
   /**
@@ -351,7 +430,23 @@ export class Store {
     const row = this.db
       .prepare("SELECT * FROM messages WHERE id = ? AND channel_id = ? AND deleted_at IS NULL")
       .get(idFromString(messageId), idFromString(channelId)) as MessageRow | undefined;
-    return row ? this.messageToWire(row, this.mentionsOf([row.id]).get(row.id) ?? []) : null;
+    return row ? (this.hydrate([row])[0] ?? null) : null;
+  }
+
+  /**
+   * Mensagem pelo id, SEM o escopo do canal e SEM filtrar apagada (M11b).
+   *
+   * Existe para o reply: quem valida um `reply_to_id` precisa saber se a
+   * mensagem existe, em QUAL canal ela está e se foi apagada — três respostas
+   * que o `getMessage` acima funde num 404 de propósito. Devolve a linha crua
+   * porque quem chama decide o que fazer com cada caso.
+   */
+  messageRefInfo(messageId: string): { channelId: string; deleted: boolean } | null {
+    const row = this.db.prepare("SELECT channel_id, deleted_at FROM messages WHERE id = ?").get(
+      idFromString(messageId),
+    ) as { channel_id: bigint; deleted_at: bigint | null } | undefined;
+    if (row === undefined) return null;
+    return { channelId: idToString(row.channel_id), deleted: row.deleted_at !== null };
   }
 
   /** Autor/canal são checados nas rotas; o deleted_at fica também aqui por defesa. */
@@ -364,14 +459,33 @@ export class Store {
     // desnotifica, e quem entrou no texto depois entra pelo próximo POST. É
     // uma escolha (a alternativa é reabrir a contagem de todo mundo) e está
     // fixada em teste.
-    return this.messageToWire(row, this.mentionsOf([row.id]).get(row.id) ?? []);
+    const hydrated = this.hydrate([row])[0];
+    if (!hydrated) throw new Error("store: mensagem recém-editada sumiu");
+    return hydrated;
   }
 
-  /** Soft delete (doc §6): a linha fica, listagens e getMessage filtram por deleted_at. */
+  /**
+   * Soft delete (doc §6): a linha fica, listagens e getMessage filtram por
+   * `deleted_at`. A linha precisa ficar porque um reply aponta para ela — é o
+   * que permite a citação virar "mensagem apagada" em vez de sumir.
+   *
+   * O que NÃO fica (M11b): reações e anexos, apagados de verdade na mesma
+   * transação.
+   *
+   *   - Reação de mensagem apagada não tem onde aparecer, e a contagem
+   *     continuaria pesando na barra de reações de uma mensagem que ninguém vê.
+   *   - Anexo é BLOB: 10 imagens de 8 MB numa mensagem apagada seriam 80 MB de
+   *     PVC ocupados PARA SEMPRE — o soft delete guarda o histórico, não o
+   *     armazenamento. Depois disto, o `GET /api/attachments/:id` da imagem
+   *     responde 404, que é o certo: a mensagem não existe mais.
+   */
   softDeleteMessage(messageId: string): void {
-    this.db
-      .prepare("UPDATE messages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-      .run(Date.now(), idFromString(messageId));
+    const id = idFromString(messageId);
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE messages SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL").run(Date.now(), id);
+      this.db.prepare("DELETE FROM reactions WHERE message_id = ?").run(id);
+      this.db.prepare("DELETE FROM attachments WHERE message_id = ?").run(id);
+    })();
   }
 
   /**
@@ -600,18 +714,267 @@ export class Store {
     return info.changes > 0;
   }
 
-  private messageToWire(r: MessageRow, mentions: string[]): Message {
+  // ---------------------------------------------------------------------------
+  // Reações (M11b, item 87). Dados simples, muitos eventos: a PK composta da
+  // tabela É a regra de "um emoji por pessoa por mensagem", e os tetos são de
+  // aplicação porque o SQLite não expressa "conte o grupo antes de inserir".
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Põe uma reação. Idempotente: reagir de novo com o mesmo emoji devolve
+   * `created: false` e NÃO é erro (um clique duplo não pode virar 409 na cara
+   * de quem clicou) — o call site usa o `created` para decidir se emite evento.
+   *
+   * Os dois tetos são checados na MESMA transação do INSERT: fora dela, dois
+   * pedidos simultâneos passariam os dois pela contagem e o 21º emoji entraria.
+   *
+   * O emoji já vem VALIDADO pelo protocolo (`isValidReactionEmoji`) — este
+   * método não olha o conteúdo da string, só conta linhas.
+   */
+  addReaction(messageId: string, userId: string, emoji: string): AddReactionResult {
+    const mid = idFromString(messageId);
+    const uid = idFromString(userId);
+    return this.db.transaction((): AddReactionResult => {
+      const already = this.db
+        .prepare("SELECT 1 FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?")
+        .get(mid, uid, emoji);
+      if (already !== undefined) return { ok: true, created: false };
+
+      const distinct = this.db
+        .prepare("SELECT COUNT(DISTINCT emoji) AS n FROM reactions WHERE message_id = ?")
+        .get(mid) as { n: bigint };
+      const isNewEmoji =
+        this.db.prepare("SELECT 1 FROM reactions WHERE message_id = ? AND emoji = ?").get(mid, emoji) === undefined;
+      if (isNewEmoji && Number(distinct.n) >= MAX_REACTIONS_PER_MESSAGE) {
+        return { ok: false, reason: "too_many_emojis" };
+      }
+
+      const mine = this.db
+        .prepare("SELECT COUNT(*) AS n FROM reactions WHERE message_id = ? AND user_id = ?")
+        .get(mid, uid) as { n: bigint };
+      if (Number(mine.n) >= MAX_REACTIONS_PER_USER_PER_MESSAGE) {
+        return { ok: false, reason: "too_many_by_user" };
+      }
+
+      this.db
+        .prepare("INSERT INTO reactions (message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?)")
+        .run(mid, uid, emoji, Date.now());
+      return { ok: true, created: true };
+    })();
+  }
+
+  /** Tira a reação. false = não existia (o call site não emite evento). */
+  removeReaction(messageId: string, userId: string, emoji: string): boolean {
+    const info = this.db
+      .prepare("DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?")
+      .run(idFromString(messageId), idFromString(userId), emoji);
+    return info.changes > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Anexos (M11b, item 89). Os BYTES ficam em BLOB pelo mesmo motivo dos sons:
+  // um PVC só, e backup continua sendo UM arquivo.
+  // ---------------------------------------------------------------------------
+
+  /** Nasce SOLTO (message_id null): quem amarra é o POST da mensagem. */
+  createAttachment(input: NewAttachment): Attachment {
+    const id = nextId();
+    this.db
+      .prepare(
+        "INSERT INTO attachments (id, message_id, uploader_id, filename, mime, bytes, size_bytes, width, height, created_at)" +
+          " VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        id,
+        idFromString(input.uploaderId),
+        input.filename,
+        input.mime,
+        input.bytes,
+        input.bytes.length,
+        input.width,
+        input.height,
+        Date.now(),
+      );
     return {
-      id: idToString(r.id),
-      channel_id: idToString(r.channel_id),
-      author_id: idToString(r.author_id),
-      content: r.content,
-      created_at: Number(r.created_at),
-      edited_at: r.edited_at === null ? null : Number(r.edited_at),
-      type: r.type,
-      mentions,
-      mentions_everyone: r.mentions_everyone !== 0n,
+      id: idToString(id),
+      filename: input.filename,
+      mime: input.mime,
+      size_bytes: input.bytes.length,
+      width: input.width,
+      height: input.height,
     };
+  }
+
+  /** Metadados + dono + se já está amarrado — o que a rota do POST precisa saber. */
+  attachmentOwnership(attachmentId: string): { uploaderId: string; attached: boolean } | null {
+    const row = this.db.prepare("SELECT uploader_id, message_id FROM attachments WHERE id = ?").get(
+      idFromString(attachmentId),
+    ) as { uploader_id: bigint; message_id: bigint | null } | undefined;
+    if (row === undefined) return null;
+    return { uploaderId: idToString(row.uploader_id), attached: row.message_id !== null };
+  }
+
+  /**
+   * Bytes + mime GUARDADO (nunca o do request) + o nome original. Mesma regra
+   * do `getSoundAudio`: servir um content-type escolhido por quem sobe, na
+   * mesma origem do app, seria XSS de graça.
+   */
+  getAttachmentBytes(attachmentId: string): { mime: Attachment["mime"]; filename: string; bytes: Buffer } | null {
+    const row = this.db.prepare("SELECT mime, filename, bytes FROM attachments WHERE id = ?").get(
+      idFromString(attachmentId),
+    ) as { mime: string; filename: string; bytes: Buffer } | undefined;
+    if (!row) return null;
+    return { mime: row.mime as Attachment["mime"], filename: row.filename, bytes: row.bytes };
+  }
+
+  /** Soma de TODOS os anexos (o teto da guild). Inclui os soltos: eles ocupam PVC igual. */
+  totalAttachmentBytes(): number {
+    const row = this.db.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS n FROM attachments").get() as { n: bigint };
+    return Number(row.n);
+  }
+
+  /**
+   * Faxina dos órfãos (item 89): anexo que subiu e nunca virou mensagem.
+   *
+   * Sem isto, quem escolhe uma imagem e desiste de mandar deixa 8 MB no PVC
+   * para sempre — e ninguém nunca vai olhar uma tabela de anexos procurando
+   * linhas sem `message_id`. Roda no boot e a cada 5 minutos (`index.ts`).
+   * Devolve quantos saíram, para o log dizer que a faxina está viva.
+   */
+  deleteOrphanAttachments(olderThanMs: number, now: number = Date.now()): number {
+    const info = this.db
+      .prepare("DELETE FROM attachments WHERE message_id IS NULL AND created_at < ?")
+      .run(now - olderThanMs);
+    return info.changes;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cache de preview de link (M11b, item 90). O cache é parte da SEGURANÇA:
+  // sem ele cada render viraria uma ida do servidor à internet, e uma URL que
+  // falha seria retentada para sempre. Por isso guarda o fracasso também.
+  // ---------------------------------------------------------------------------
+
+  /** Entrada VÁLIDA do cache (positiva ou negativa); null = não tem, ou venceu. */
+  getLinkPreview(url: string, now: number = Date.now()): LinkPreview | null {
+    const row = this.db.prepare("SELECT * FROM link_previews WHERE url = ? AND expires_at > ?").get(url, now) as
+      | {
+          url: string;
+          ok: bigint;
+          title: string | null;
+          description: string | null;
+          site_name: string | null;
+          error: string | null;
+          fetched_at: bigint;
+        }
+      | undefined;
+    if (row === undefined) return null;
+    return {
+      url: row.url,
+      ok: row.ok !== 0n,
+      title: row.title,
+      description: row.description,
+      site_name: row.site_name,
+      error: row.error,
+      fetched_at: Number(row.fetched_at),
+    };
+  }
+
+  /** Grava (ou substitui) a entrada. `ttlMs` é curto no caso negativo. */
+  saveLinkPreview(preview: Omit<LinkPreview, "fetched_at">, ttlMs: number, now: number = Date.now()): LinkPreview {
+    this.db
+      .prepare(
+        "INSERT INTO link_previews (url, ok, title, description, site_name, error, fetched_at, expires_at)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?)" +
+          " ON CONFLICT (url) DO UPDATE SET ok = excluded.ok, title = excluded.title," +
+          " description = excluded.description, site_name = excluded.site_name, error = excluded.error," +
+          " fetched_at = excluded.fetched_at, expires_at = excluded.expires_at",
+      )
+      .run(
+        preview.url,
+        preview.ok ? 1 : 0,
+        preview.title,
+        preview.description,
+        preview.site_name,
+        preview.error,
+        now,
+        now + ttlMs,
+      );
+    return { ...preview, fetched_at: now };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Busca (M11b, item 91) — FTS5 com conteúdo externo; ver a migration 006.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Busca no histórico. A `query` já vem SANEADA (`sanitizeFtsQuery`): esta
+   * camada não conserta sintaxe de FTS5, e mandar texto cru daqui seria erro de
+   * SQL na cara do usuário no primeiro `"` que alguém digitasse.
+   *
+   * Os dois filtros do WHERE não são redundantes com os triggers, são a
+   * cinta-e-suspensório: os triggers mantêm apagada e de sistema FORA do
+   * índice, e o WHERE garante que uma mensagem que escapou (índice reconstruído
+   * à mão, migration futura) não vaze mesmo assim.
+   */
+  searchMessages(query: string, options: { channelId?: string; limit?: number } = {}): SearchHit[] {
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 25), 1), 50);
+    const params: unknown[] = [query];
+    let sql =
+      "SELECT m.*, snippet(messages_fts, 0, ?, ?, '…', 12) AS snip" +
+      " FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid" +
+      " WHERE messages_fts MATCH ? AND m.deleted_at IS NULL AND m.type = 'user'";
+    // os marcadores entram como parâmetro (e não no literal) para o único lugar
+    // que os define continuar sendo o protocolo
+    params.unshift(SEARCH_HIT_OPEN, SEARCH_HIT_CLOSE);
+    if (options.channelId !== undefined) {
+      sql += " AND m.channel_id = ?";
+      params.push(idFromString(options.channelId));
+    }
+    // do mais novo para o mais velho: numa conversa, o acerto recente é quase
+    // sempre o procurado — e o id é o próprio relógio (snowflake)
+    sql += " ORDER BY m.id DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = this.db.prepare(sql).all(...params) as (MessageRow & { snip: string })[];
+    const messages = this.hydrate(rows);
+    return rows.map((row, index) => ({
+      // o hydrate preserva a ordem das linhas — é map sobre o mesmo array
+      message: messages[index] as Message,
+      snippet: row.snip,
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hidratação (M11a + M11b): linha(s) de `messages` → entidade(s) do fio, com
+  // menções, anexos, reações e a citação resolvida. SEMPRE em lote — cada
+  // aresta é UMA query para a página inteira, não uma por mensagem.
+  // ---------------------------------------------------------------------------
+
+  private hydrate(rows: MessageRow[]): Message[] {
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const mentions = this.mentionsOf(ids);
+    const attachments = this.attachmentsOf(ids);
+    const reactions = this.reactionsOf(ids);
+    const references = this.referencesOf(rows);
+
+    return rows.map((r) => {
+      const message: Message = {
+        id: idToString(r.id),
+        channel_id: idToString(r.channel_id),
+        author_id: idToString(r.author_id),
+        content: r.content,
+        created_at: Number(r.created_at),
+        edited_at: r.edited_at === null ? null : Number(r.edited_at),
+        type: r.type,
+        mentions: mentions.get(r.id) ?? [],
+        mentions_everyone: r.mentions_everyone !== 0n,
+        attachments: attachments.get(r.id) ?? [],
+        reactions: reactions.get(r.id) ?? [],
+        reply_to: r.reply_to_id === null ? null : (references.get(r.reply_to_id) ?? null),
+      };
+      return message;
+    });
   }
 
   /** message_id → ids mencionados, para um lote de mensagens (M11a). */
@@ -629,6 +992,109 @@ export class Store {
     }
     return out;
   }
+
+  /** message_id → anexos, em ordem de upload (M11b). Sem o BLOB, sempre. */
+  private attachmentsOf(ids: bigint[]): Map<bigint, Attachment[]> {
+    const out = new Map<bigint, Attachment[]>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        "SELECT id, message_id, uploader_id, filename, mime, size_bytes, width, height, created_at" +
+          ` FROM attachments WHERE message_id IN (${placeholders}) ORDER BY id`,
+      )
+      .all(...ids) as AttachmentRow[];
+    for (const row of rows) {
+      if (row.message_id === null) continue;
+      const list = out.get(row.message_id) ?? [];
+      list.push({
+        id: idToString(row.id),
+        filename: row.filename,
+        mime: row.mime as Attachment["mime"],
+        size_bytes: Number(row.size_bytes),
+        width: row.width === null ? null : Number(row.width),
+        height: row.height === null ? null : Number(row.height),
+      });
+      out.set(row.message_id, list);
+    }
+    return out;
+  }
+
+  /**
+   * message_id → reações agregadas por emoji (M11b). A ordem é a da PRIMEIRA
+   * reação de cada emoji (`MIN(created_at)` na prática, aqui garantido pelo
+   * ORDER BY de leitura): a barra de reações não pode se reordenar sozinha
+   * embaixo do cursor de quem está clicando.
+   */
+  private reactionsOf(ids: bigint[]): Map<bigint, MessageReaction[]> {
+    const out = new Map<bigint, MessageReaction[]>();
+    if (ids.length === 0) return out;
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT message_id, user_id, emoji FROM reactions WHERE message_id IN (${placeholders})` +
+          " ORDER BY message_id, created_at, rowid",
+      )
+      .all(...ids) as { message_id: bigint; user_id: bigint; emoji: string }[];
+    for (const row of rows) {
+      const list = out.get(row.message_id) ?? [];
+      const existing = list.find((entry) => entry.emoji === row.emoji);
+      if (existing) existing.user_ids.push(idToString(row.user_id));
+      else list.push({ emoji: row.emoji, user_ids: [idToString(row.user_id)] });
+      out.set(row.message_id, list);
+    }
+    return out;
+  }
+
+  /**
+   * id da citada → citação RESOLVIDA (M11b, item 86).
+   *
+   * O trecho é aparado aqui, no servidor, e não no cliente: mandar 4000
+   * caracteres para desenhar uma linha de citação é desperdício em cada
+   * mensagem de cada página. Mensagem apagada vem marcada como tal, SEM autor e
+   * SEM conteúdo — a citação vira "mensagem apagada" e não vaza o que foi
+   * apagado por baixo dela.
+   */
+  private referencesOf(rows: MessageRow[]): Map<bigint, MessageReference> {
+    const out = new Map<bigint, MessageReference>();
+    const wanted = [...new Set(rows.map((r) => r.reply_to_id).filter((id): id is bigint => id !== null))];
+    if (wanted.length === 0) return out;
+    const placeholders = wanted.map(() => "?").join(", ");
+    const found = this.db
+      .prepare(
+        `SELECT id, channel_id, author_id, content, deleted_at FROM messages WHERE id IN (${placeholders})`,
+      )
+      .all(...wanted) as {
+      id: bigint;
+      channel_id: bigint;
+      author_id: bigint;
+      content: string;
+      deleted_at: bigint | null;
+    }[];
+    for (const row of found) {
+      const deleted = row.deleted_at !== null;
+      out.set(row.id, {
+        message_id: idToString(row.id),
+        channel_id: idToString(row.channel_id),
+        author_id: deleted ? null : idToString(row.author_id),
+        excerpt: deleted ? null : excerpt(row.content),
+        deleted,
+      });
+    }
+    return out;
+  }
+}
+
+/** Comprimento do trecho da citação: uma linha de UI, não meia mensagem. */
+const EXCERPT_MAX = 120;
+
+/**
+ * Trecho de uma mensagem citada. Quebra de linha vira espaço porque a citação
+ * é UMA linha na tela — um `\n` no meio dela só quebraria o layout.
+ */
+function excerpt(content: string): string {
+  const flat = content.replace(/\s+/g, " ").trim();
+  return flat.length > EXCERPT_MAX ? `${flat.slice(0, EXCERPT_MAX - 1).trimEnd()}…` : flat;
 }
 
 /**
