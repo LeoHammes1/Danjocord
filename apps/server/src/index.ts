@@ -254,6 +254,17 @@ if (config.devAuth) {
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, async () => {
     clearInterval(orphanSweeper);
+    // Avisa ANTES de derrubar qualquer coisa (roadmap 120): o op 7 diz ao
+    // cliente que a saída é planejada, e ele volta imediatamente em vez de
+    // escalar o backoff achando que a rede caiu. O pequeno atraso existe para o
+    // frame sair pelo socket — sem ele, `voice.close()` e `gateway.close()`
+    // rodariam no mesmo tick e o aviso morreria na fila.
+    //
+    // 250 ms cabe folgado no `terminationGracePeriodSeconds` padrão do k8s (30 s)
+    // e é imperceptível num deploy; não é uma janela de drenagem de verdade,
+    // porque com `replicas: 1` não há para onde drenar.
+    gateway.notifyReconnect();
+    await new Promise((r) => setTimeout(r, 250));
     voice.close();
     gateway.close();
     await app.close();

@@ -273,6 +273,27 @@ test("invisível no Identify não pisca verde para a guild", async () => {
   }
 });
 
+// --- saída planejada avisa antes -----------------------------------------------
+
+test("o servidor manda op 7 antes de sair — o deploy deixa de parecer queda de rede", async () => {
+  // O op 7 existia no protocolo E no cliente desde o M2; o servidor é que nunca
+  // o mandava (roadmap 120). Todo deploy chegava como uma queda qualquer, e o
+  // cliente escalava o backoff até 30 s — mais que a própria janela do deploy.
+  const c = await abrir();
+  try {
+    await identificar(c, "avisado");
+    c.recebidos.length = 0;
+
+    gateway.notifyReconnect();
+    const aviso = await c.esperar((m) => m.op === 7, 2000);
+    assert.ok(aviso, "a sessão tem de receber o op 7");
+    // e é só isso: nada de `s`/`t`, que são de Dispatch
+    assert.equal((aviso as { t?: string }).t, undefined);
+  } finally {
+    c.ws.terminate();
+  }
+});
+
 // --- ring buffer com teto em bytes -------------------------------------------
 
 test("ring buffer corta por BYTES, não só por contagem de entradas", async () => {

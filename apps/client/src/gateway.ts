@@ -38,6 +38,8 @@ export class GatewayClient {
   private ackPending = false;
   private reconnectAttempts = 0;
   private closedByUser = false;
+  /** o servidor anunciou saida planejada (op 7) — a proxima reconexao e curta */
+  private plannedRestart = false;
   /** correlação da sinalização de voz (M3): `req` incremental → promise pendente */
   private reqSeq = 0;
   private readonly pendingRequests = new Map<
@@ -190,6 +192,12 @@ export class GatewayClient {
         return;
       }
       case Op.Reconnect: {
+        // Saída PLANEJADA do servidor (roadmap 120). Zerar as tentativas é o
+        // ponto: sem isto, um deploy que pegasse o cliente já com backoff
+        // acumulado o deixaria esperando até 30 s DEPOIS de o servidor voltar —
+        // e um deploy leva menos que isso. Aqui sabemos que não é a rede.
+        this.reconnectAttempts = 0;
+        this.plannedRestart = true;
         this.ws?.close(4900); // != 1000 para preservar a sessão e tentar Resume
         return;
       }
@@ -261,6 +269,16 @@ export class GatewayClient {
   }
 
   private scheduleReconnect(): void {
+    // Reinício ANUNCIADO pelo servidor (op 7): a primeira tentativa é curta e
+    // fixa. O backoff existe para não martelar um servidor que caiu de verdade;
+    // aqui ele avisou que ia sair, então esperar é só atraso. Vale UMA vez — se
+    // essa tentativa falhar, o backoff normal assume, porque aí a hipótese
+    // "planejado e rápido" já se provou errada.
+    if (this.plannedRestart) {
+      this.plannedRestart = false;
+      setTimeout(() => this.connect(), 500 + Math.random() * 500);
+      return;
+    }
     const base = Math.min(30_000, 1000 * 2 ** this.reconnectAttempts);
     const delay = base * (0.5 + Math.random() / 2); // jitter
     this.reconnectAttempts += 1;

@@ -19,9 +19,9 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | M11b | chat: reply, reações, anexos, busca — 84, 86–91 | ✅ |
 | M12 | troca dos sons de UI — 7 e 8 (reabertos) | ✅ |
 
-Fora de marco, mas **antes do primeiro release público**: 106 (versão travada em
-`0.0.1` quebra o auto-update), 115 (parse sem `try/catch` quebra cliente antigo
-no primeiro deploy) e 118 (backup — é irreversível quando falta).
+Fora de marco, mas **antes do primeiro release público**: ~~106~~ e ~~115~~ foram
+fechados no M12 (auditoria de segurança); resta **118** (backup — é irreversível
+quando falta), dispensado por ora a pedido do Leonardo.
 
 ## 1. Sons — pesquisa e assets ✅ M8
 
@@ -155,7 +155,7 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 103. `P` Rascunho por canal + lembrar o último canal aberto.
 104. `M` UI de administração de canais (criar, renomear, apagar, reordenar).
 105. `M` Onboarding + tela "Sobre" com versão.
-106. `P` **Sincronizar a versão do `apps/desktop/package.json` com a tag** — está em `0.0.1` e o workflow não bumpa: o electron-updater nunca enxerga atualização.
+106. ✅ `P` **Sincronizar a versão do `apps/desktop/package.json` com a tag** — está em `0.0.1` e o workflow não bumpa: o electron-updater nunca enxerga atualização.
 107. `P` Checagem periódica de update + aviso de reiniciar.
 108. `P` Iniciar com o Windows, minimizado na bandeja.
 109. `P` Persistir tamanho/posição da janela.
@@ -167,12 +167,12 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 ## 9. Buracos reais encontrados no levantamento
 
 114. ✅ `M` **Kickado continua dentro** — o gateway valida o token uma única vez, no Identify; a sessão WS aberta segue lendo o chat e ouvindo a voz.
-115. `P` **Um evento novo derruba o cliente antigo** — `ServerMessage.parse()` sem `try/catch` no listener.
+115. ✅ `P` **Um evento novo derruba o cliente antigo** — `ServerMessage.parse()` sem `try/catch` no listener. (M12: try/catch + cão de guarda do handshake, porque engolir o READY travava o cliente em "Conectando…" para sempre.)
 116. ✅ `M` **Deploy limpo nasce trancado** — allowlist vazia + `is_admin` default 0. Falta bootstrap do primeiro dono.
-117. `M` Zero rate limit no REST e no gateway.
+117. 🟡 `M` Zero rate limit no REST e no gateway. (M12: o GATEWAY tem — op 20 a 60/s e op 3 a 10/s por sessão, mais tetos de sessão e de ring buffer; os uploads e o GET público de convite também. O REST em geral — postar, reagir, editar — continua sem.)
 118. `M` **Zero backup do SQLite** — PVC local-path preso a um nó, sem snapshot.
 119. `M` Nada é purgado nunca (`sessions` acumula todas as gerações de refresh).
-120. `P` Deploy mata a call sem aviso — o op 7 (Reconnect) existe no protocolo e no cliente, mas o servidor nunca o envia.
+120. ✅ `P` Deploy mata a call sem aviso — o op 7 (Reconnect) existe no protocolo e no cliente, mas o servidor nunca o envia.
 121. `P` Regressão de relógio quebra o snowflake (`nextId()` só compara `now === lastMs`).
 122. ✅ `P` CI roda os testes (`pnpm test`: 105 do servidor + 23 do cliente) — entrou junto do M9, porque a validação de upload é onde um erro é furo de segurança.
 123. `M` `mediasoup-client` inteiro carrega antes da tela de login.

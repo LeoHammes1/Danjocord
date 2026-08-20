@@ -166,6 +166,25 @@ export class Gateway {
     });
   }
 
+  /**
+   * Avisa todo mundo que o servidor vai sair (roadmap 120). O op 7 existia no
+   * protocolo E no cliente desde o M2 — o servidor é que nunca o mandava, então
+   * todo deploy chegava aos clientes como uma queda de rede qualquer.
+   *
+   * O que isto NÃO faz, e é honesto dizer: com `replicas: 1` e `strategy:
+   * Recreate`, o pod some inteiro e o worker do mediasoup vai junto. A chamada
+   * cai de qualquer jeito. O ganho é o cliente SABER que é planejado — ele
+   * fecha com 4900 (preserva a sessão), não pinta a faixa de erro e volta
+   * imediatamente, em vez de escalar o backoff até 30 s achando que a rede
+   * caiu. Numa janela de deploy de ~20 s, isso é a diferença entre "voltou
+   * sozinho" e "ficou meio minuto parado depois de o servidor já estar de pé".
+   */
+  notifyReconnect(): void {
+    for (const session of this.sessions.values()) {
+      if (session.ws?.readyState === WebSocket.OPEN) this.send(session.ws, { op: Op.Reconnect });
+    }
+  }
+
   close(): void {
     clearInterval(this.sweeper);
     for (const session of this.sessions.values()) session.ws?.close(1001);
