@@ -94,6 +94,40 @@ test("usuário de dev (discord_id NULL) continua entrando — a correção não 
 });
 
 // ---------------------------------------------------------------------------
+// ALTA — ReDoS no parser de <meta> do preview de link
+// ---------------------------------------------------------------------------
+
+test("ALTA: página hostil de 512 KB não trava o event loop no parser de <meta>", async () => {
+  const { extractMeta } = await import("../src/links/html.js");
+  // É o que um atacante serve: só inícios de tag, nenhum `>`, nenhum </head>.
+  // Cabe inteiro no teto de 512 KB do fetch. Com o regex antigo
+  // (`/<meta\s+([^>]*)>/gi`) isto levava ~40 s de event loop TRAVADO — e o
+  // Node é single-thread, então era o servidor inteiro parado.
+  const hostil = "<meta ".repeat((512 * 1024) / 6);
+  const t0 = process.hrtime.bigint();
+  extractMeta(hostil);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  // 500 ms é folgado: o medido depois da correção é sub-milissegundo. O teto
+  // existe para pegar a VOLTA do comportamento quadrático, não para cronometrar
+  // a máquina de quem roda o teste.
+  assert.ok(ms < 500, `parser levou ${ms.toFixed(0)} ms — o comportamento quadrático voltou`);
+});
+
+test("o parser de <meta> continua lendo o que precisa ler", async () => {
+  const { extractMeta } = await import("../src/links/html.js");
+  const pagina =
+    "<html><head><title>Titulo</title>" +
+    "<META NAME='description' CONTENT='desc'>" + // maiúscula e aspas simples
+    '<meta property="og:title" content="OG">' +
+    '<meta property="og:title" content="duplicata">' + // a primeira vence
+    "<metadata foo=bar>" + // NÃO é meta tag
+    "</head></html>";
+  const meta = extractMeta(pagina);
+  assert.equal(meta.title, "OG", "og:title vence o <title>");
+  assert.equal(meta.description, "desc");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 

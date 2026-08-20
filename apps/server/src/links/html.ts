@@ -58,10 +58,35 @@ export function extractMeta(html: string): PageMeta {
  */
 function readMetaTags(head: string): Map<string, string> {
   const out = new Map<string, string>();
-  const tag = /<meta\s+([^>]*)>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = tag.exec(head)) !== null) {
-    const attrs = readAttributes(match[1] ?? "");
+  // Varredura com indexOf, e NÃO `/<meta\s+([^>]*)>/gi` (auditoria M12).
+  //
+  // Aquele regex era QUADRÁTICO em página hostil: sem nenhum `>`, cada `<meta`
+  // fazia o `[^>]*` varrer até o fim e retroceder posição a posição. Medido com
+  // `'<meta '.repeat(n)`, que é o que o atacante serve:
+  //
+  //     8 KB →     10 ms      128 KB →  2 655 ms
+  //    32 KB →    172 ms      512 KB → 39 866 ms   ← o teto do fetch
+  //
+  // 40 s de event loop travado, e o Node é single-thread: nesse tempo o
+  // heartbeat de todo mundo, a sinalização de voz e o REST inteiro congelam.
+  // O gatilho é postar um link para uma página que você controla.
+  //
+  // O `indexOf` é linear porque as regiões varridas não se sobrepõem: a busca
+  // do `>` vai de `after` até `end`, e a próxima busca de `<meta` começa em
+  // `end + 1`. Cada caractere é visitado um número limitado de vezes.
+  const lower = head.toLowerCase(); // o `i` do regex antigo, sem regex
+  let i = 0;
+  while ((i = lower.indexOf("<meta", i)) !== -1) {
+    const after = i + "<meta".length;
+    // `\s+` do regex antigo: sem isto `<metadata>` viraria uma meta tag
+    if (!/\s/.test(lower[after] ?? "")) {
+      i = after;
+      continue;
+    }
+    const end = lower.indexOf(">", after);
+    if (end === -1) break; // tag que nunca fecha: não há mais nada legível
+    const attrs = readAttributes(head.slice(after, end));
+    i = end + 1;
     const key = (attrs.get("property") ?? attrs.get("name") ?? "").toLowerCase();
     const value = attrs.get("content");
     if (key === "" || value === undefined) continue;
