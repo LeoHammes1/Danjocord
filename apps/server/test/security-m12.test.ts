@@ -103,9 +103,19 @@ test("ALTA: página hostil de 512 KB não trava o event loop no parser de <meta>
   // Cabe inteiro no teto de 512 KB do fetch. Com o regex antigo
   // (`/<meta\s+([^>]*)>/gi`) isto levava ~40 s de event loop TRAVADO — e o
   // Node é single-thread, então era o servidor inteiro parado.
-  const hostil = "<meta ".repeat((512 * 1024) / 6);
+  // Os DOIS payloads, porque são regexes diferentes e eu já caí nessa: medir só
+  // um deu "linear" para um parser que levava 4 minutos no outro.
+  //   (a) muitos inícios de tag  -> quebrava o `readMetaTags`  (40 s)
+  //   (b) um RUN de nome sem `=` -> quebrava o `readAttributes` (250 s)
+  // O (b) é o pior, e sobreviveu à primeira correção justamente porque o teste
+  // dele usava `'a="'.repeat(n)` — que TEM `=`, então nada retrocede.
+  const hostis = [
+    "<meta ".repeat((512 * 1024) / 6),
+    "<meta " + "a".repeat(512 * 1024) + ">",
+    '<meta ' + 'a="'.repeat((512 * 1024) / 3) + ">",
+  ];
   const t0 = process.hrtime.bigint();
-  extractMeta(hostil);
+  for (const h of hostis) extractMeta(h);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   // 500 ms é folgado: o medido depois da correção é sub-milissegundo. O teto
   // existe para pegar a VOLTA do comportamento quadrático, não para cronometrar

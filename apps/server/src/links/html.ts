@@ -95,15 +95,66 @@ function readMetaTags(head: string): Map<string, string> {
   return out;
 }
 
-/** Atributos de uma tag: aspas duplas, simples ou sem aspas — os três casos. */
+const NOME_ATTR = /[\w:.-]/;
+const ESPACO = /\s/;
+const FIM_VALOR_NU = /[\s"'>]/;
+
+/**
+ * Atributos de uma tag: aspas duplas, simples ou sem aspas — os três casos.
+ *
+ * Varredura manual, e NÃO
+ * `/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g` (auditoria M12).
+ *
+ * Aquele regex era o PIOR dos dois ReDoS deste arquivo, e sobreviveu à primeira
+ * correção porque eu o medi com o payload errado: `'a="'.repeat(n)` TEM `=`,
+ * então `[\w:.-]+` casa uma letra, o `=` vem logo e nada retrocede — deu 4 ms e
+ * eu conclui "linear". O payload hostil é um RUN de caracteres de nome SEM `=`:
+ * aí `[\w:.-]+` engole tudo, falha no `\s*=`, e devolve caractere por caractere
+ * — em cada posição de início. Medido com `'<meta ' + 'a'.repeat(n) + '>'`:
+ *
+ *     16 KB →    218 ms      64 KB →  3 650 ms
+ *     32 KB →    871 ms     512 KB → ~250 000 ms   ← o teto do fetch
+ *
+ * Quatro minutos de event loop travado, contra os 40 s do outro. E pior: a
+ * livenessProbe reprova em ~45 s e o pod é morto — mas nem o SIGTERM é
+ * atendido, porque atendê-lo também precisa do event loop.
+ *
+ * A varredura abaixo é linear: cada caractere é visitado um número limitado de
+ * vezes e `i` nunca anda para trás.
+ */
 function readAttributes(raw: string): Map<string, string> {
   const out = new Map<string, string>();
-  const attr = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
-  let match: RegExpExecArray | null;
-  while ((match = attr.exec(raw)) !== null) {
-    const name = (match[1] ?? "").toLowerCase();
-    const value = match[2] ?? match[3] ?? match[4] ?? "";
-    if (!out.has(name)) out.set(name, decodeEntities(value));
+  const n = raw.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && !NOME_ATTR.test(raw[i] ?? "")) i++;
+    const iniNome = i;
+    while (i < n && NOME_ATTR.test(raw[i] ?? "")) i++;
+    if (i === iniNome) break; // nada de nome até o fim
+    const nome = raw.slice(iniNome, i).toLowerCase();
+
+    let j = i;
+    while (j < n && ESPACO.test(raw[j] ?? "")) j++;
+    // atributo sem valor (`<meta hidden>`): o antigo também o ignorava. `i` já
+    // passou do nome, então a próxima volta progride — não há laço infinito.
+    if (raw[j] !== "=") continue;
+    j++;
+    while (j < n && ESPACO.test(raw[j] ?? "")) j++;
+
+    let valor: string;
+    const aspas = raw[j];
+    if (aspas === '"' || aspas === "'") {
+      const fim = raw.indexOf(aspas, j + 1);
+      if (fim === -1) break; // aspas que nunca fecham: acabou o que dá para ler
+      valor = raw.slice(j + 1, fim);
+      i = fim + 1;
+    } else {
+      const iniValor = j;
+      while (j < n && !FIM_VALOR_NU.test(raw[j] ?? "")) j++;
+      valor = raw.slice(iniValor, j);
+      i = j;
+    }
+    if (!out.has(nome)) out.set(nome, decodeEntities(valor));
   }
   return out;
 }
