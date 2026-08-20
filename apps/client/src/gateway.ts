@@ -53,11 +53,24 @@ export class GatewayClient {
   private readonly url: string;
   private readonly token: string;
   private readonly events: GatewayEvents;
+  /**
+   * De onde sai o status DECLARADO no Identify (auditoria M12).
+   *
+   * Callback e não valor porque o status muda entre a construção e cada
+   * reconexão — uma foto tirada aqui reapareceria errada na terceira queda.
+   *
+   * Sem isto a sessão nascia "online" no servidor, e ele anunciava isso à guild
+   * ANTES de o op 3 poder chegar: quem estava invisível piscava verde a cada
+   * reconexão. O `syncPresence` já corrigia depois do READY, mas por construção
+   * era uma corrida perdida de um RTT — e o comentário dele dizia isso.
+   */
+  private readonly statusAtIdentify: (() => PresenceStatus) | undefined;
 
-  constructor(url: string, token: string, events: GatewayEvents) {
+  constructor(url: string, token: string, events: GatewayEvents, statusAtIdentify?: () => PresenceStatus) {
     this.url = url;
     this.token = token;
     this.events = events;
+    this.statusAtIdentify = statusAtIdentify;
   }
 
   connect(): void {
@@ -160,7 +173,7 @@ export class GatewayClient {
         if (this.sessionId && this.seq !== null) {
           this.send({ op: Op.Resume, d: { token: this.token, session_id: this.sessionId, seq: this.seq } });
         } else {
-          this.send({ op: Op.Identify, d: { token: this.token } });
+          this.send({ op: Op.Identify, d: { token: this.token, status: this.statusAtIdentify?.() } });
         }
         this.startHeartbeat(msg.d.heartbeat_interval);
         return;
@@ -173,7 +186,7 @@ export class GatewayClient {
         // sessão morreu no servidor: esquece e re-Identifica na mesma conexão
         this.sessionId = null;
         this.seq = null;
-        if (!msg.d.resumable) this.send({ op: Op.Identify, d: { token: this.token } });
+        if (!msg.d.resumable) this.send({ op: Op.Identify, d: { token: this.token, status: this.statusAtIdentify?.() } });
         return;
       }
       case Op.Reconnect: {

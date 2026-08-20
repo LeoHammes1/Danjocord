@@ -122,6 +122,14 @@ export class Gateway {
     Gateway.VOICE_OPS_PER_SESSION,
     Gateway.VOICE_OPS_WINDOW_MS,
   );
+
+  /**
+   * Freio da presença (op 3). Mesma família do op 20: um frame de 30 bytes
+   * vira um dispatch POR SESSÃO, com `seq`, `JSON.stringify` e entrada no ring
+   * de cada uma. Presença muda no ritmo de quem sai para o café — 10/s é folga
+   * de sobra e ainda tira o multiplicador de quem manda em laço.
+   */
+  private readonly presenceOps = new SlidingWindow(10, 1_000);
   private readonly sweeper: NodeJS.Timeout;
 
   /**
@@ -377,8 +385,26 @@ export class Gateway {
           ws.close(CloseCode.NotAuthenticated);
           return;
         }
+        // Só anuncia se a presença EFETIVA mudou (auditoria M12). O handler
+        // era `status = ...; broadcastPresence(...)` incondicional, e o
+        // broadcast percorre TODAS as sessões incrementando `seq`, fazendo
+        // `JSON.stringify` e empurrando no ring de cada uma. Medido com 121
+        // sessões: um frame de 30 bytes gerava 121 dispatches, e 50 frames
+        // IDÊNTICOS (status já era o mesmo) geravam 6050.
+        //
+        // "Efetiva" e não "desta sessão" porque o STATUS_RANK faz o mais
+        // presente vencer: quem tem duas abas e põe UMA como ausente não muda
+        // nada para os outros — e não deve gerar evento nenhum.
+        // A checagem de mudança sozinha não basta: alternar online/idle força
+        // broadcast a cada frame. Presença é humana — 10/s já é absurdo — e o
+        // silêncio no estouro é deliberado: negar em silêncio um op que não tem
+        // resposta no protocolo é melhor que inventar um erro para ele.
+        if (this.presenceOps.retryAfterMs(session.id) > 0) return;
+        this.presenceOps.record(session.id);
+
+        const antes = this.presenceOf(session.user.id);
         session.status = msg.d.status;
-        this.broadcastPresence(session.user.id);
+        if (this.presenceOf(session.user.id) !== antes) this.broadcastPresence(session.user.id);
         return;
       }
 
@@ -433,7 +459,12 @@ export class Gateway {
           ws,
           lastHeartbeatAt: Date.now(),
           disconnectedAt: null,
-          status: "online", // op 3 muda depois; conectar já é estar online
+          // Status DECLARADO no Identify quando o cliente manda (auditoria
+          // M12): sem isso a sessão nascia "online" e o broadcast logo abaixo
+          // contava isso à guild ANTES de o op 3 poder chegar — quem estava
+          // invisível piscava verde a cada reconexão. Ausente = "online",
+          // que é o comportamento de sempre.
+          status: msg.d.status ?? "online",
         };
 
         // presença ANTES de a sessão entrar no mapa: é a comparação com o

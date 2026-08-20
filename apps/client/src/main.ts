@@ -956,7 +956,11 @@ function startGateway(): void {
       if (code === CloseCode.AuthenticationFailed) void onGatewayAuthFailed(gw);
       else if (code === CloseCode.NotAMember) void onNoLongerMember();
     },
-  });
+  },
+  // status já no Identify: sem isto o servidor anunciava "online" à guild antes
+  // de o op 3 poder chegar, e quem estava invisível piscava verde a cada
+  // reconexão. Getter e não valor — o status muda entre uma reconexão e outra.
+  () => myStatus());
   currentGateway = gw;
   gw.connect();
 }

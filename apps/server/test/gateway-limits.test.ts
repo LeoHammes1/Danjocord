@@ -214,6 +214,65 @@ test("op 20 em laço leva freio em vez de virar trabalho no worker", async () =>
   }
 });
 
+// --- presença: sem eco e sem multiplicador -----------------------------------
+
+test("op 3 repetido com o MESMO status não gera dispatch nenhum", async () => {
+  // O handler era `status = ...; broadcastPresence(...)` incondicional, e o
+  // broadcast percorre TODAS as sessões incrementando seq, serializando JSON e
+  // empurrando no ring de cada uma. Medido pela auditoria com 121 sessões: um
+  // frame de 30 bytes = 121 dispatches; 50 frames IDÊNTICOS = 6050.
+  const c = await abrir();
+  const vizinho = await abrir();
+  try {
+    await identificar(c, "presenca");
+    await identificar(vizinho, "presencavizinho");
+    await dormir(300);
+    vizinho.recebidos.length = 0;
+
+    // primeira mudança: deve anunciar UMA vez
+    c.ws.send(JSON.stringify({ op: 3, d: { status: "idle" } }));
+    await dormir(300);
+    const apos1 = vizinho.recebidos.filter((m) => m.t === "PRESENCE_UPDATE").length;
+    assert.equal(apos1, 1, "a mudança real tem de ser anunciada");
+
+    // e agora 20 frames IGUAIS: nenhum evento novo
+    for (let i = 0; i < 20; i++) c.ws.send(JSON.stringify({ op: 3, d: { status: "idle" } }));
+    await dormir(500);
+    const apos20 = vizinho.recebidos.filter((m) => m.t === "PRESENCE_UPDATE").length;
+    assert.equal(apos20, 1, `status repetido gerou ${apos20 - 1} dispatches a mais`);
+  } finally {
+    c.ws.terminate();
+    vizinho.ws.terminate();
+  }
+});
+
+test("invisível no Identify não pisca verde para a guild", async () => {
+  // O `IdentifyData` só levava `token`; a sessão nascia "online" e o servidor
+  // anunciava isso ANTES de o op 3 poder chegar — o op 3 só existe depois do
+  // READY. Quem estava invisível reaparecia verde a cada reconexão, e o
+  // `syncPresence` do cliente corrigia um RTT tarde demais.
+  const vizinho = await abrir();
+  try {
+    await identificar(vizinho, "olheiro");
+    await dormir(300);
+    vizinho.recebidos.length = 0;
+
+    const invisivel = await abrir();
+    await invisivel.esperar((m) => m.op === 10);
+    invisivel.ws.send(JSON.stringify({ op: 2, d: { token: "dev.fantasma", status: "offline" } }));
+    await invisivel.esperar((m) => m.t === "READY");
+    await dormir(400);
+
+    const vazou = vizinho.recebidos.filter(
+      (m) => m.t === "PRESENCE_UPDATE" && (m.d as { status?: string })?.status === "online",
+    );
+    assert.equal(vazou.length, 0, "invisível não pode anunciar 'online' nem por um instante");
+    invisivel.ws.terminate();
+  } finally {
+    vizinho.ws.terminate();
+  }
+});
+
 // --- ring buffer com teto em bytes -------------------------------------------
 
 test("ring buffer corta por BYTES, não só por contagem de entradas", async () => {

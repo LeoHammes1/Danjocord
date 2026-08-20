@@ -449,17 +449,6 @@ export const HelloData = z.object({
 });
 export type HelloData = z.infer<typeof HelloData>;
 
-export const IdentifyData = z.object({
-  token: z.string().min(1),
-});
-
-export const ResumeData = z.object({
-  /** o token é revalidado no Resume — sem ele, session_id viraria credencial */
-  token: z.string().min(1),
-  session_id: z.string(),
-  seq: z.number().int().nonnegative(),
-});
-
 /**
  * Status de presença (M10, item 56) — substitui o booleano `online`.
  *
@@ -471,6 +460,30 @@ export const ResumeData = z.object({
  */
 export const PresenceStatus = z.enum(["online", "idle", "dnd", "offline"]);
 export type PresenceStatus = z.infer<typeof PresenceStatus>;
+
+export const IdentifyData = z.object({
+  token: z.string().min(1),
+  /**
+   * Status DESEJADO já no Identify (auditoria M12). Sem este campo a sessão
+   * nascia sempre "online" e o servidor anunciava isso à guild ANTES de o
+   * cliente poder falar: o op 3 só chega depois do READY, então quem estava
+   * invisível piscava verde para todo mundo a cada reconexão — uma corrida
+   * perdida por um RTT, e o comentário do `syncPresence` do cliente já
+   * reconhecia a mitigação como incompleta.
+   *
+   * Opcional para não quebrar cliente antigo: ausente = "online", que é o que
+   * o servidor já fazia.
+   */
+  status: PresenceStatus.optional(),
+});
+
+export const ResumeData = z.object({
+  /** o token é revalidado no Resume — sem ele, session_id viraria credencial */
+  token: z.string().min(1),
+  session_id: z.string(),
+  seq: z.number().int().nonnegative(),
+});
+
 
 export const PresenceUpdateData = z.object({
   user_id: z.string(),

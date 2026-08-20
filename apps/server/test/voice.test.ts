@@ -1512,6 +1512,44 @@ test("disconnect_user tira o alvo da voz e não encosta em quem está junto", as
   }
 });
 
+test("ARMADILHA (auditoria M12): a MESMA sessão não consome o mesmo producer duas vezes", async () => {
+  // O único freio era o teto de 64 por sessão, e nada impedia pedir 64 cópias
+  // do MESMO stream. Cada consumer é um encaminhamento REAL no worker, com ssrc
+  // próprio: numa transmissão de tela isso multiplica a saída do nó por 64 para
+  // uma entrada só. Repetir o consume nunca foi uso legítimo — o cliente guarda
+  // o consumer que recebeu, e o `producerclose` limpa o mapa sozinho.
+  const erin = store.findOrCreateDevUser("erin");
+  const dono: Ctx = { userId: dave.id, sessionId: "s-dedupe-dono" };
+  const espiao: Ctx = { userId: erin.id, sessionId: "s-dedupe-espiao" };
+  try {
+    await join(dono, "2");
+    const joinE = await join(espiao, "2");
+    const td = await createTransport(dono, "send");
+    const prod = await produceScreen(dono, td.transport_id);
+    const te = await createTransport(espiao, "recv");
+
+    const pedir = (): Promise<unknown> =>
+      voice.handleRequest(espiao, "consume", {
+        transport_id: te.transport_id,
+        producer_id: prod.producer_id,
+        rtp_capabilities: joinE.rtp_capabilities,
+      });
+
+    const primeiro = (await pedir()) as { consumer_id: string };
+    assert.ok(primeiro.consumer_id, "o primeiro consume é legítimo");
+    await assert.rejects(pedir, /já consome este producer/, "o segundo tem de ser recusado");
+
+    // e depois de fechar, pode consumir de novo — o dedupe não pode virar
+    // prisão para quem legitimamente reabre a transmissão
+    await voice.handleRequest(espiao, "close_consumer", { consumer_id: primeiro.consumer_id });
+    const denovo = (await pedir()) as { consumer_id: string };
+    assert.ok(denovo.consumer_id, "depois do close, consumir de novo é legítimo");
+  } finally {
+    await leaveQuietly(espiao);
+    await leaveQuietly(dono);
+  }
+});
+
 test("ARMADILHA (auditoria M12): dois admins se desconectando NÃO travam as filas", async () => {
   // O `disconnect_user` rodava dentro da fila do ATOR e esperava a fila do
   // ALVO. Dois staff cruzados fechavam o ciclo: a fila A espera a B, que espera

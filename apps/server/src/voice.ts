@@ -623,6 +623,19 @@ export class Voice {
     // fechado) simplesmente não está aqui → erro
     const producer = session.room.producers.get(p.producer_id);
     if (!producer) throw new Error("producer inexistente neste canal");
+    // UM consumer por producer por sessão (auditoria M12). Sem isto o único
+    // freio era o teto de 64 da sessão, e nada impedia pedir 64 cópias do MESMO
+    // stream: cada uma é um encaminhamento REAL no worker, com ssrc próprio, e
+    // a saída do nó é multiplicada por 64 para uma entrada só. Numa transmissão
+    // de tela isso é a diferença entre alguns Mbps e centenas.
+    //
+    // Repetir o consume nunca foi uso legítimo: o cliente guarda o consumer que
+    // recebeu, e o `producerclose` já limpa o mapa quando o producer morre.
+    for (const existente of session.consumers.values()) {
+      if (existente.producerId === producer.id && !existente.closed) {
+        throw new Error("esta sessão já consome este producer");
+      }
+    }
     const rtpCapabilities = p.rtp_capabilities as types.RtpCapabilities;
     if (!session.room.router.canConsume({ producerId: producer.id, rtpCapabilities })) {
       throw new Error("rtp_capabilities incompatíveis com o producer");
