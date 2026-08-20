@@ -114,8 +114,16 @@ kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout=300s || {
 # healthz sozinho não prova nada útil: o gateway é WebSocket e é ele que carrega
 # o app. O 101 é a diferença entre "o pod respondeu" e "dá para usar".
 passo "Conferindo"
+# As tres provas abaixo AVISAM e nao abortam, de proposito: cada uma diz uma
+# coisa diferente, e parar na primeira esconderia as outras duas justo quando se
+# quer o quadro inteiro. Mas o script tem de SAIR MAL se alguma reprovar — antes
+# ele imprimia "gateway devolveu 000" em amarelo e terminava com exit 0, e um
+# laco de deploy que devolve SUCESSO com o app quebrado no ar e pior do que um
+# que nao verifica nada: quem chamar isto de outro script ou da CI nao ve a cor
+# do aviso, ve o codigo de saida.
+falhou=0
 codigo=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$URL/healthz" || echo 000)
-[[ "$codigo" == "200" ]] && ok "healthz 200" || aviso "healthz devolveu $codigo"
+if [[ "$codigo" == "200" ]]; then ok "healthz 200"; else aviso "healthz devolveu $codigo"; falhou=1; fi
 
 # Duas armadilhas, as duas já mordidas na estreia deste script:
 #
@@ -129,13 +137,20 @@ upgrade=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
   -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" \
   -H "Sec-WebSocket-Key: Qx7HmKw97hUluZSA72PuMQ==" "$URL/gateway" 2>/dev/null || true)
 upgrade="${upgrade:0:3}"; [[ -z "$upgrade" ]] && upgrade=000
-[[ "$upgrade" == "101" ]] && ok "gateway aceitou o upgrade (101)" || aviso "gateway devolveu $upgrade (esperado 101)"
+if [[ "$upgrade" == "101" ]]; then ok "gateway aceitou o upgrade (101)"; else aviso "gateway devolveu $upgrade (esperado 101)"; falhou=1; fi
 
 oauth=$(curl -s -o /dev/null -w '%{redirect_url}' --max-time 20 "$URL/auth/discord/start" || true)
 case "$oauth" in
   *discord.com*) ok "OAuth redireciona para o Discord" ;;
-  *)             aviso "/auth/discord/start não redirecionou (503 = credencial faltando no Secret)" ;;
+  *)             aviso "/auth/discord/start não redirecionou (503 = credencial faltando no Secret)"; falhou=1 ;;
 esac
 
 estado
 printf '\n%s%s%s\n' "$verde" "$URL" "$fim"
+
+# O estado e a URL saem ANTES deste bloco: mesmo reprovando, quem rodou quer ver
+# o pod e o endereco para ir depurar.
+if (( falhou )); then
+  aviso "o rollout completou, mas alguma prova acima reprovou — o codigo novo esta no ar e NAO esta saudavel"
+  exit 1
+fi

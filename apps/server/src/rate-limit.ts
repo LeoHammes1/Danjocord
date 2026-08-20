@@ -46,7 +46,7 @@ import type { Store } from "./store.js";
  */
 
 /** Classes de custo. `isento` e `proprio` não passam por janela nenhuma aqui. */
-export type LimitClass = "isento" | "proprio" | "leitura" | "escrita" | "typing" | "moderacao";
+export type LimitClass = "isento" | "proprio" | "leitura" | "midia" | "escrita" | "typing" | "moderacao";
 
 /**
  * A tabela. Chave = `METODO padrão-da-rota`.
@@ -81,13 +81,23 @@ const TABELA: Record<string, LimitClass> = {
   // Única rota sem auth nenhuma. Mantém a janela própria dela (por IP, global
   // neste ambiente — assumido e documentado lá).
   "GET /api/invites/:code": "isento",
+  // TIRAR a própria reação. Estava marcado `proprio`, e era mentira: a janela
+  // do `reactions.ts` só é consultada no PUT. Fica isento com o motivo escrito,
+  // que já está lá desde o M11b — prender o DELETE deixaria alguém preso a uma
+  // reação que quer desfazer, e o balde `escrita` (90/min) é MENOR que as 120
+  // reações/min que o próprio limitador do PUT autoriza criar.
+  //
+  // E é barato de verdade, não por suposição: medido, 800 DELETEs que não casam
+  // linha nenhuma fazem o `-wal` crescer ZERO byte (o SQLite abre a transação,
+  // não suja página e commita sem frame), e o broadcast só sai quando removeu
+  // de fato — 800 chamadas, 1 evento.
+  "DELETE /api/channels/:channelId/messages/:messageId/reactions/:emoji/@me": "isento",
 
   // --- rotas com limitador próprio ---
   "POST /api/attachments": "proprio",
   "POST /api/sounds": "proprio",
   "POST /api/voice/soundboard": "proprio",
   "PUT /api/channels/:channelId/messages/:messageId/reactions/:emoji/@me": "proprio",
-  "DELETE /api/channels/:channelId/messages/:messageId/reactions/:emoji/@me": "proprio",
 
   // --- leitura ---
   // O preview é o único caso de cobrança dupla DELIBERADA: a janela própria
@@ -101,12 +111,20 @@ const TABELA: Record<string, LimitClass> = {
   "GET /api/search": "leitura",
   "GET /api/users/:userId": "leitura",
   "GET /api/sounds": "leitura",
-  "GET /api/sounds/:soundId/audio": "leitura",
-  "GET /api/attachments/:attachmentId": "leitura",
   "GET /api/invites": "leitura",
   "GET /api/bans": "leitura",
   "GET /api/mod-log": "leitura",
   "POST /api/channels/:channelId/ack": "leitura",
+
+  // --- mídia (bytes de BLOB) ---
+  // Separadas da `leitura` porque o download de anexo NÃO é lazy: ele sai no
+  // render (`renderAttachment` → `attachmentObjectUrl`), e cada mensagem carrega
+  // até 10 anexos — uma página de 50 mensagens pode disparar centenas de GETs
+  // de uma vez, não 50. No mesmo balde da
+  // paginação, rolar um canal com fotos estouraria a cota lendo o histórico —
+  // um limite que o próprio cliente estoura em uso normal é um bug.
+  "GET /api/attachments/:attachmentId": "midia",
+  "GET /api/sounds/:soundId/audio": "midia",
 
   // --- escrita ---
   "POST /api/channels/:channelId/messages": "escrita",
@@ -139,13 +157,30 @@ export const ORCAMENTOS: Record<string, { limite: number; janelaMs: number; fras
   // 500 ms mais rajada ao trocar de canal, ~30/min) + busca (debounce de 250
   // ms, ~20/min) + diversos ~10/min = ~120/min legítimo. Folga 2×.
   leitura: { limite: 240, janelaMs: 60_000, frase: "muitas leituras seguidas" },
+  // Conta REQUISIÇÕES, não bytes — e isso é uma limitação declarada, não um
+  // descuido. Pior caso legítimo: arrastar a barra sem parar (~60 páginas/min)
+  // num canal em que boa parte das mensagens tem foto dá algumas centenas de
+  // GETs/min, e o cache de 48 blobs do cliente só cobre a cauda. 900 acomoda
+  // isso e ainda corta o laço automatizado.
+  //
+  // O QUE ISTO NÃO DEFENDE: banda. 900 requisições podem ser 900 arquivos de
+  // 8 MB. Cobrir isso exige cobrar por MB no `onResponse` (a checagem é antes,
+  // a cobrança depois — uma rajada única passa inteira), e essa é a próxima
+  // rodada, não esta. O que segura hoje é o teto de 512 MB de anexos da guild
+  // inteira e o fato de a rota exigir credencial de membro.
+  midia: { limite: 900, janelaMs: 60_000, frase: "muitos downloads seguidos" },
   // ~49/min de teto legítimo pessimista (edições, apagamentos, perfil, sons).
   // Folga ~1,8×.
   escrita: { limite: 90, janelaMs: 60_000, frase: "muitas escritas seguidas" },
-  // `TYPING_THROTTLE_MS` do cliente é 8 s e enviar zera o cursor: pior caso
-  // ~15 POSTs/min. Folga 2×. O valor não é para o cliente honesto — é para
-  // tirar o multiplicador de fan-out da mão de um cliente modificado.
-  typing: { limite: 30, janelaMs: 60_000, frase: "muitos avisos de digitação" },
+  // A conta de "~15/min" que estava aqui esquecia metade do mecanismo: o
+  // throttle é de 8 s, MAS enviar a mensagem ZERA o cursor (é deliberado — sem
+  // isso, recomeçar a digitar logo depois de enviar deixaria os outros sem
+  // indicador). Ou seja, cada mensagem enviada custa um POST de typing a mais,
+  // e o pior caso legítimo é a taxa de mensagens: os ~30 msg/min que o
+  // MENSAGEM_LIMITE logo abaixo declara como humano rápido. Com 30 aqui a folga
+  // era 1,0× — a única classe do arquivo sem margem, e um papo rápido raspava
+  // no teto. 60 põe a folga em 2×, igual às outras.
+  typing: { limite: 60, janelaMs: 60_000, frase: "muitos avisos de digitação" },
   // Frequência legítima muito abaixo de 1/min, e o ator é sempre staff. A folga
   // é absurda de propósito: o valor aqui é capar o `evict()` — a chamada mais
   // cara do REST inteiro (banco + WebSocket + mediasoup + mensagem de sistema +
@@ -197,10 +232,21 @@ export function classeDaRota(method: string, url: string, config: ConfigComClass
   return classe;
 }
 
+/** Classes que NÃO passam por janela. Todo o resto precisa de orçamento. */
+const SEM_JANELA: LimitClass[] = ["isento", "proprio"];
+
 export function registerRateLimit(app: FastifyInstance, store: Store): void {
   const janelas = new Map<string, SlidingWindow>();
   for (const [nome, o] of Object.entries(ORCAMENTOS)) {
     janelas.set(nome, new SlidingWindow(o.limite, o.janelaMs));
+  }
+  // O mesmo buraco que a tabela fecha para ROTAS, fechado para CLASSES: sem
+  // isto, acrescentar uma classe ao `LimitClass` e esquecer o orçamento fazia o
+  // hook cair num `return` silencioso e a rota nascer ilimitada — exatamente o
+  // modo de falha que o resto do arquivo existe para impedir, uma camada acima.
+  for (const classe of Object.keys(TABELA).map((k) => TABELA[k]!)) {
+    if (SEM_JANELA.includes(classe) || janelas.has(classe)) continue;
+    throw new Error(`rate-limit: a classe "${classe}" é contada mas não tem orçamento em ORCAMENTOS.`);
   }
   const janelaMensagem = new SlidingWindow(MENSAGEM_LIMITE, MENSAGEM_JANELA_MS);
 
@@ -214,7 +260,7 @@ export function registerRateLimit(app: FastifyInstance, store: Store): void {
     const classes = metodos.map((m) => classeDaRota(m, rota.url, config));
     // Método diferente com classe diferente na mesma rota não existe hoje; se
     // um dia existir, a MAIS CARA vence — nunca a mais frouxa.
-    const ordem: LimitClass[] = ["moderacao", "escrita", "typing", "leitura", "proprio", "isento"];
+    const ordem: LimitClass[] = ["moderacao", "escrita", "typing", "leitura", "midia", "proprio", "isento"];
     const escolhida = ordem.find((c) => classes.includes(c)) ?? "isento";
     rota.config = { ...(rota.config ?? {}), limitClass: escolhida };
   });

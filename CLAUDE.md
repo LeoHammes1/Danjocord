@@ -348,6 +348,11 @@ ilimitados — e quase todos terminam em `gateway.broadcast`, que faz
 - **Os números saem das constantes do CLIENTE** (throttle de digitação, debounce
   de ack e de busca, tamanho de página), cada um com a conta no comentário: um
   limite que o próprio cliente estoura em uso normal é um bug, não uma defesa.
+- **Mídia tem balde próprio.** O download de anexo **não é lazy** — sai no
+  render, e cada mensagem carrega até 10 anexos — uma página de 50 mensagens
+  pode disparar centenas de GETs de uma vez. No mesmo balde da paginação, rolar um canal com fotos estouraria a cota
+  lendo o histórico. A classe conta REQUISIÇÕES e não bytes, e isso é limitação
+  declarada: cobrir banda exige cobrar por MB no `onResponse`, e não foi feito.
 - **O hook vai DEPOIS do `register(cors)`.** Antes dele, contaria o preflight —
   e como o renderer do desktop é `app://bundle`, toda ação dele gastaria duas
   unidades, com o sintoma `Failed to fetch` sem status.

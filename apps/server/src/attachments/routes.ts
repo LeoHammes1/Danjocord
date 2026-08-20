@@ -61,12 +61,21 @@ export function registerAttachmentRoutes(app: FastifyInstance, store: Store): vo
       onRequest: async (req, reply) => {
         const user = authFromHeader(req.headers.authorization, store);
         if (!user) return reply.code(401).send({ error: "não autenticado" });
-        const used = store.totalAttachmentBytes();
-        if (used + MAX_ATTACHMENT_BYTES > MAX_ATTACHMENTS_TOTAL_BYTES) {
-          return storageFull(reply, used);
-        }
+        // A JANELA VEM ANTES DA SOMA, e a ordem importa: `totalAttachmentBytes`
+        // é a parte CARA desta rota (ver o comentário dela no store), e deixá-la
+        // acima da janela fazia toda tentativa recusada pagar o preço integral.
+        // Um laço de uploads de 4 bytes levava 429 em todos e ainda assim
+        // travava o event loop a cada um — o freio virava o vetor. Medido: com
+        // 200 MB no banco, uma enxurrada de um único usuário levava o /healthz
+        // de 2 ms para 4 s, o que mata o pod pelo liveness em ~45 s.
         const wait = uploadWindow.retryAfterMs(user.id);
         if (wait > 0) return tooManyRequests(reply, wait, "muitos envios seguidos");
+        const used = store.totalAttachmentBytes();
+        if (used + MAX_ATTACHMENT_BYTES > MAX_ATTACHMENTS_TOTAL_BYTES) {
+          // o 507 sai SEM consumir a janela: quem esbarra no teto da guild não
+          // fez nada errado, e gastar a cota dele seria punir o disco cheio
+          return storageFull(reply, used);
+        }
         // CONSOME A COTA AQUI, no mesmo passo síncrono da checagem (auditoria
         // M12). Antes o `record` morava no handler, e entre os dois o Fastify
         // LIA O CORPO — um await. N requisições disparadas juntas passavam

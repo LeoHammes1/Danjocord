@@ -828,8 +828,32 @@ export class Store {
   }
 
   /** Soma de TODOS os anexos (o teto da guild). Inclui os soltos: eles ocupam PVC igual. */
+  /**
+   * `length(bytes)` e NÃO `size_bytes`, e isso inverte o que a migration 006
+   * afirma na coluna ("redundante com length(bytes), evita ler o BLOB").
+   *
+   * É o contrário, e a razão é o formato de registro do SQLite: as colunas de
+   * uma linha ficam em ordem, e `bytes BLOB` foi declarado ANTES de
+   * `size_bytes` — para chegar ao inteiro é preciso atravessar a cadeia de
+   * páginas de overflow do BLOB. Já `length(bytes)` sai do serial type no
+   * CABEÇALHO do registro, sem tocar no payload.
+   *
+   * MEDIDO, banco em arquivo com 50 anexos de 4 MB (200 MB):
+   *   SUM(size_bytes)    191,576 ms
+   *   SUM(length(bytes))   0,007 ms   (mesmo resultado, conferido)
+   *   COUNT(*)             0,005 ms
+   *
+   * ~1 ms por MB guardado, e no teto de 512 MB da guild seriam ~0,5 s. O
+   * better-sqlite3 é SÍNCRONO: cada chamada dessas trava o event loop inteiro —
+   * gateway, heartbeat, sinalização de voz e o /healthz junto. E esta função é
+   * chamada no `onRequest` de todo upload, inclusive nos recusados.
+   *
+   * O caminho legítimo bastava para doer: arrastar 10 fotos no composer dispara
+   * 10 POSTs em PARALELO (`void subir(item)` num for), e com 200 MB no banco
+   * isso era o processo parado por segundos, sem ninguém agindo de má-fé.
+   */
   totalAttachmentBytes(): number {
-    const row = this.db.prepare("SELECT COALESCE(SUM(size_bytes), 0) AS n FROM attachments").get() as { n: bigint };
+    const row = this.db.prepare("SELECT COALESCE(SUM(length(bytes)), 0) AS n FROM attachments").get() as { n: bigint };
     return Number(row.n);
   }
 

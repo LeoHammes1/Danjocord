@@ -14,6 +14,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { register } from "tsx/esm/api";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Attachment, Message } from "@danjocord/protocol";
 
 register();
@@ -299,4 +302,81 @@ test("faxina de órfãos: o solto e velho vai embora; o amarrado fica", async ()
   assert.ok(removidos >= 1, `a faxina deveria ter apagado algo, apagou ${removidos}`);
   assert.equal(store.attachmentOwnership(orfao.id), null, "o órfão tinha que sumir");
   assert.notEqual(store.attachmentOwnership(usado.id), null, "o amarrado não pode ser tocado");
+});
+
+// ---------------------------------------------------------------------------
+// M12: o preco de recusar (revisao adversarial do roadmap 117)
+// ---------------------------------------------------------------------------
+
+test("a tentativa RECUSADA não paga a soma dos bytes da guild", async () => {
+  // `totalAttachmentBytes` é a parte cara desta rota, e ela rodava ANTES da
+  // janela: toda tentativa recusada pagava o preço integral, então o freio
+  // virava o vetor — um laço de uploads de 4 bytes levava 429 em todos e ainda
+  // assim travava o event loop a cada um.
+  const dbLocal = openDb(":memory:");
+  const storeLocal = new Store(dbLocal);
+  const appLocal = Fastify();
+  registerAttachmentRoutes(appLocal, storeLocal);
+
+  let chamadas = 0;
+  const original = storeLocal.totalAttachmentBytes.bind(storeLocal);
+  storeLocal.totalAttachmentBytes = (): number => {
+    chamadas += 1;
+    return original();
+  };
+
+  const extras = 15;
+  for (let i = 0; i < UPLOAD_LIMIT + extras; i++) {
+    await appLocal.inject({
+      method: "POST",
+      url: "/api/attachments?filename=x.png",
+      headers: { ...auth("recusado"), "content-type": "application/octet-stream" },
+      payload: Buffer.from("lixo"),
+    });
+  }
+  assert.ok(
+    chamadas <= UPLOAD_LIMIT,
+    `a soma rodou ${chamadas} vezes para ${UPLOAD_LIMIT + extras} tentativas — as ${extras} recusadas não podiam pagá-la`,
+  );
+  await appLocal.close();
+});
+
+test("somar os bytes da guild não atravessa os BLOBs", async () => {
+  // Asserção de TEMPO, e ela é legítima aqui porque a diferença é de quatro
+  // ordens de grandeza, não de porcentagem: com `SUM(size_bytes)` o SQLite tem
+  // de caminhar a cadeia de overflow de cada BLOB (a coluna foi declarada
+  // DEPOIS dele na migration 006), e com `SUM(length(bytes))` ele lê o tamanho
+  // do cabeçalho do registro. Medido em 200 MB: 191 ms contra 0,007 ms.
+  //
+  // BANCO EM ARQUIVO, e não ":memory:" como o resto da suíte — isto não é
+  // capricho: em memória não existe cadeia de páginas de overflow para
+  // atravessar, e a versão RUIM da query passa neste teste. (Descoberto
+  // quebrando a implementação de propósito: com ":memory:" o teste passava dos
+  // dois jeitos, ou seja, não valia nada.)
+  const arquivo = join(mkdtempSync(join(tmpdir(), "danjo-anexos-")), "b.db");
+  const dbLocal = openDb(arquivo);
+  const storeLocal = new Store(dbLocal);
+  const uploader = storeLocal.findOrCreateDevUser("pesado");
+  const pedaco = Buffer.alloc(2 * 1024 * 1024, 7);
+  const N = 10; // 20 MB: ~20 ms na versão ruim, ~0,01 ms na boa
+  for (let i = 0; i < N; i++) {
+    storeLocal.createAttachment({
+      uploaderId: uploader.id,
+      filename: `f${i}.png`,
+      mime: "image/png",
+      bytes: pedaco,
+      width: null,
+      height: null,
+    });
+  }
+
+  const esperado = N * pedaco.length;
+  assert.equal(storeLocal.totalAttachmentBytes(), esperado, "sanidade: a conta tem de bater");
+
+  const t = process.hrtime.bigint();
+  for (let i = 0; i < 5; i++) storeLocal.totalAttachmentBytes();
+  const ms = Number(process.hrtime.bigint() - t) / 1e6 / 5;
+  dbLocal.close();
+  rmSync(dirname(arquivo), { recursive: true, force: true });
+  assert.ok(ms < 5, `a soma levou ${ms.toFixed(2)} ms em ${esperado / 1024 / 1024} MB — está lendo os BLOBs`);
 });

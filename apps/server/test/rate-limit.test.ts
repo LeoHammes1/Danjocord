@@ -106,6 +106,14 @@ test("as rotas que existem hoje estão TODAS classificadas", async () => {
   const { registerSoundRoutes } = await import("../src/sounds/routes.js");
   const { registerModerationRoutes } = await import("../src/moderation.js");
   const { registerAuthRoutes } = await import("../src/auth-routes.js");
+  const { registerOAuthRoutes } = await import("../src/oauth.js");
+  const { registerStaticClient } = await import("../src/static-client.js");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dirEstatico = mkdtempSync(join(tmpdir(), "danjo-rl-"));
+  writeFileSync(join(dirEstatico, "index.html"), "<!doctype html>");
+  writeFileSync(join(dirEstatico, "app.js"), "//");
   const { Sessions } = await import("../src/sessions.js");
   const { Guild } = await import("../src/guild.js");
 
@@ -121,9 +129,16 @@ test("as rotas que existem hoje estão TODAS classificadas", async () => {
   registerAttachmentRoutes(app, store);
   registerSearchRoutes(app, store);
   registerLinkRoutes(app, store);
-  registerSoundRoutes(app, store, gateway, { voiceChannelOf: () => null, isServerMuted: () => false });
-  registerModerationRoutes(app, store, guild, gateway, sessions, { evict: () => undefined });
+  // as assinaturas são as do `moderation.test.ts`/`sounds.test.ts`: o
+  // `pnpm typecheck` NÃO olha test/, então argumento errado aqui passaria
+  // silenciosamente e enfraqueceria justamente a garantia deste teste
+  registerSoundRoutes(app, store, gateway, { voiceChannelOf: () => null });
+  registerModerationRoutes(app, store, gateway, guild, { disconnectFromVoice: async () => undefined });
   registerAuthRoutes(app, store, sessions);
+  // oauth e cliente estático entram porque as rotas deles existem em produção:
+  // sem isto o teste dizia "todas as rotas" cobrindo só uma parte delas
+  registerOAuthRoutes(app, store, sessions, guild);
+  registerStaticClient(app, dirEstatico);
 
   await assert.doesNotReject(() => app.ready(), "alguma rota do projeto não está na tabela de classes");
   await app.close();
@@ -297,6 +312,40 @@ test("classes diferentes têm baldes separados", async () => {
     headers: auth("digitador"),
   });
   assert.equal(l.statusCode, 200);
+  await app.close();
+});
+
+test("ler o histórico não come a cota de carregar as imagens dele", async () => {
+  // O download de anexo NÃO é lazy: sai no render. Uma página de 50 mensagens
+  // com foto dispara até 50 GETs de uma vez, então no MESMO balde da paginação
+  // rolar um canal com fotos estouraria a cota — o limite viraria um bug, e não
+  // uma defesa. Este teste é o que impede alguém de "simplificar" juntando as
+  // duas classes de novo.
+  const { registerAttachmentRoutes } = await import("../src/attachments/routes.js");
+  const db = openDb(":memory:");
+  const store = new Store(db);
+  const gateway = new Gateway(store);
+  const app = Fastify({ trustProxy: 1 });
+  registerRateLimit(app, store);
+  registerRoutes(app, store, gateway);
+  registerAttachmentRoutes(app, store);
+
+  // estoura a leitura (rolando o histórico)
+  const limite = ORCAMENTOS.leitura!.limite;
+  for (let i = 0; i <= limite; i++) {
+    await app.inject({ method: "GET", url: `/api/channels/${CANAL}/messages?limit=1`, headers: auth("rolador") });
+  }
+  const historico = await app.inject({
+    method: "GET",
+    url: `/api/channels/${CANAL}/messages?limit=1`,
+    headers: auth("rolador"),
+  });
+  assert.equal(historico.statusCode, 429, "sanidade: a leitura estourou mesmo");
+
+  // e a imagem da última página ainda carrega (404 porque o anexo não existe —
+  // o que importa é que NÃO é 429)
+  const imagem = await app.inject({ method: "GET", url: "/api/attachments/123", headers: auth("rolador") });
+  assert.notEqual(imagem.statusCode, 429, "a mídia tem balde próprio: as fotos não podem morrer junto com o scroll");
   await app.close();
 });
 
