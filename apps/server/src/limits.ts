@@ -17,10 +17,37 @@
 export class SlidingWindow {
   private readonly hits = new Map<string, number[]>();
 
+  /**
+   * Teto de chaves rastreadas (auditoria M12).
+   *
+   * O `prune` só apaga uma chave quando ela é TOCADA de novo — e as duas rotas
+   * anônimas do servidor (`GET /api/invites/:code` e `/auth/discord/start`) são
+   * chaveadas por IP. Numa enxurrada distribuída, cada IP aparece uma vez e
+   * nunca mais: medido, 70 000 IPs únicos deixam 70 000 chaves vivas para
+   * sempre (~17 MB). Não derruba o pod de 1 GiB sozinho, mas é crescimento sem
+   * fim num processo que fica semanas no ar.
+   *
+   * 20 000 é folgadíssimo para dez amigos e ainda barato em memória.
+   */
+  private static readonly MAX_KEYS = 20_000;
+
   constructor(
     private readonly limit: number,
     private readonly windowMs: number,
   ) {}
+
+  /**
+   * Faxina das chaves sem nenhum evento vivo. Roda só quando o mapa passa do
+   * teto, então o custo O(n) é amortizado por n inserções — na operação normal
+   * (dez pessoas) ela nunca acontece.
+   */
+  private sweep(now: number): void {
+    for (const [key, times] of this.hits) {
+      if (times.length === 0 || (times[times.length - 1] ?? 0) <= now - this.windowMs) {
+        this.hits.delete(key);
+      }
+    }
+  }
 
   /** 0 = liberado; > 0 = quantos ms faltam para a vaga mais antiga expirar. */
   retryAfterMs(key: string, now: number = Date.now()): number {
@@ -33,6 +60,18 @@ export class SlidingWindow {
 
   /** Consome uma vaga. Chame só depois de TODAS as janelas liberarem. */
   record(key: string, now: number = Date.now()): void {
+    // faxina ANTES de crescer: é aqui que o mapa ganha chave nova
+    if (!this.hits.has(key) && this.hits.size >= SlidingWindow.MAX_KEYS) {
+      this.sweep(now);
+      // ainda cheio depois da faxina = enxurrada de verdade, com todas as
+      // chaves vivas. Não rastrear a nova seria FALHAR ABERTO justo no momento
+      // do ataque; recusar é o contrário do que se quer num limitador.
+      // Descartar a mais antiga mantém o teto e continua freando quem insiste.
+      if (this.hits.size >= SlidingWindow.MAX_KEYS) {
+        const maisAntiga = this.hits.keys().next();
+        if (!maisAntiga.done) this.hits.delete(maisAntiga.value);
+      }
+    }
     const recent = this.prune(key, now);
     recent.push(now);
     this.hits.set(key, recent);

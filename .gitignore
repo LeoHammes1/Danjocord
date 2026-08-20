@@ -27,4 +27,4 @@ apps/desktop/release/
 # achado. Já entraram num commit por um `git add -A` distraído.
 __audit_*
 __refute_*
-**/zz-poc-*
+**/zz-*

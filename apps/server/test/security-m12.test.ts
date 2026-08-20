@@ -128,6 +128,37 @@ test("o parser de <meta> continua lendo o que precisa ler", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// O limitador não pode ser o próximo vazamento
+// ---------------------------------------------------------------------------
+
+test("SlidingWindow não cresce sem fim com chaves que nunca repetem", async () => {
+  const { SlidingWindow } = await import("../src/limits.js");
+  // As duas rotas anônimas do servidor são chaveadas por IP, e numa enxurrada
+  // distribuída cada IP aparece UMA vez. Como o `prune` só apaga a chave que é
+  // tocada de novo, sem teto o mapa nunca encolhia: medido, 70 000 IPs = 70 000
+  // chaves vivas para sempre. Foi encontrado tentando refutar a correção do
+  // OAuth — o limitador que eu tinha acabado de acrescentar era o vazamento.
+  const w = new SlidingWindow(20, 60_000);
+  for (let i = 0; i < 60_000; i++) {
+    const ip = `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`;
+    if (w.retryAfterMs(ip) === 0) w.record(ip);
+  }
+  const chaves = (w as unknown as { hits: Map<string, number[]> }).hits.size;
+  assert.ok(chaves <= 20_000, `mapa cresceu para ${chaves} chaves — o teto não segurou`);
+});
+
+test("...e continua limitando quem insiste do mesmo IP", async () => {
+  const { SlidingWindow } = await import("../src/limits.js");
+  const w = new SlidingWindow(3, 60_000);
+  let bloqueadas = 0;
+  for (let i = 0; i < 10; i++) {
+    if (w.retryAfterMs("mesmo-ip") > 0) bloqueadas++;
+    else w.record("mesmo-ip");
+  }
+  assert.equal(bloqueadas, 7, "3 deveriam passar e 7 apanhar");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 
