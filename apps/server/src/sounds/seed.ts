@@ -14,9 +14,13 @@ import type { Store } from "../store.js";
  * o seed, o embutido é só um som cujo `uploader_id` é null; o cliente tem um
  * caminho só, e o admin pode até apagar um embutido que ninguém usa.
  *
- * Procedência: CC0 dos packs da Kenney, os mesmos do M8 (ATTRIBUTIONS.md). Os
- * ganhos abaixo já vêm calculados pelo critério do M8 (~-20 dBFS de RMS, teto
- * de pico 0.89) — nada é reencodado, a normalização é dado.
+ * Procedência: CC0 dos packs da Kenney (ATTRIBUTIONS.md). Estes 9 não foram
+ * tocados pelo M12 — o que mudou lá foi o catálogo de sons de INTERFACE, que é
+ * outro conjunto e outra licença. Os ganhos abaixo já vêm calculados pelo
+ * critério do M8 (~-20 dBFS de RMS, teto de pico 0.89) — nada é reencodado, a
+ * normalização é dado. Diferença que vale saber: aqui o RMS é do arquivo
+ * inteiro; do lado do cliente ele passou a ser da região ativa (docs/som.md
+ * §3.9), porque lá entraram clipes com silêncio nas pontas.
  */
 
 // Vive em <pacote>/assets/soundboard — mesmo truque do migrationsDir: o caminho

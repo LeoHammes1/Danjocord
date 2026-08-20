@@ -40,6 +40,21 @@ jobs:
       # o build do cliente (dentro do dist, via bundle-renderer) importa o
       # dist do protocol — compilar antes
       - run: pnpm --filter @danjocord/protocol build
+      # TRAVA DE DISTRIBUIÇÃO (M12). 12 dos 14 sons de UI são assets
+      # proprietários do Discord (ATTRIBUTIONS.md), e ESTE workflow é o momento
+      # exato em que o app sai daqui — instalador publicado num Release. A
+      # advertência do ATTRIBUTIONS.md não pode depender de alguém lembrar dela
+      # na hora de rodar `git tag`.
+      # Para destravar: `pnpm --filter @danjocord/client sounds --all` repõe os
+      # 14 sintetizados; troque as extensões no catalog.ts/assets.ts e re-meça.
+      - name: sem asset nao-redistribuivel no catalogo de sons
+        shell: bash
+        run: |
+          if grep -q '\.mp3"' apps/client/src/sound/catalog.ts; then
+            echo "::error::catalog.ts aponta para .mp3 — os sons do Discord (ATTRIBUTIONS.md)."
+            echo "Instalador nao pode ser gerado com eles. Rode: pnpm --filter @danjocord/client sounds --all"
+            exit 1
+          fi
       # --publish always: determinístico, sem depender da detecção de tag do
       # electron-builder (o pnpm anexa os args extras ao fim do script "dist",
       # ou seja, na chamada do electron-builder)

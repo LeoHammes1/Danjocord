@@ -1,135 +1,159 @@
 # Atribuições — assets de terceiros
 
-Todo asset de terceiro que entra no Danjocord é registrado aqui.
+Todo asset de terceiro que entra no Danjocord é registrado aqui: procedência,
+licença e o que ela permite. "De onde veio este arquivo" é exatamente a pergunta
+que aparece quando alguém questiona uma licença, e um ano depois ninguém lembra.
 
-**Por que este arquivo existe.** Os 14 clipes de som são CC0, e CC0 **não exige**
-atribuição — nada aqui é obrigação legal. O arquivo existe por dois motivos
-práticos: registrar **procedência** (daqui a um ano ninguém lembra de onde veio
-`self-deafen.ogg`, e "de onde veio" é exatamente a pergunta que aparece quando
-alguém questiona a licença), e ter o lugar pronto para o dia em que entrar um
-asset **CC-BY** — que exige crédito e sem este arquivo viraria uma linha solta
-num README qualquer.
+---
+
+## ⚠️ ESTE REPOSITÓRIO NÃO PODE SER DISTRIBUÍDO
+
+**12 dos 14 sons de interface são assets proprietários do Discord** (§ abaixo).
+Enquanto eles estiverem em `apps/client/assets/sounds/`, valem três limites, e
+eles não são formalidade:
+
+1. **O repositório fica privado.** Torná-lo público publica os arquivos.
+2. **O instalador não sai daqui.** Nada de GitHub Release público, nada de
+   mandar o `.exe` para fora do grupo de amigos da allowlist.
+3. **A instância fica fechada** — allowlist e convite, como já é hoje.
+
+O caminho de volta existe e é curto, e foi construído justamente para que esta
+decisão seja reversível em minutos: `pnpm --filter @danjocord/client sounds --all`
+regenera os 14 sons sintetizados (`apps/client/scripts/gen-sounds.mjs`, código
+deste repositório, sem licença de ninguém), e aí bastam trocar as extensões no
+`catalog.ts`/`assets.ts` e rodar o medidor. **Faça isso ANTES de qualquer coisa
+que seja distribuição.** O `.github/workflows/desktop-release.yml` tem uma trava
+que reprova o build de release enquanto houver `.mp3` no catálogo — ela existe
+para que este parágrafo não dependa de alguém lembrar dele.
+
+---
 
 ## Regras do projeto para assets
 
-- **Só CC0.** É a única licença que sobrevive a um app empacotado e
-  redistribuído sem que ninguém precise ler contrato.
+- **Só CC0 para o que é redistribuído.** É a única licença que sobrevive a um
+  app empacotado e copiado para a máquina de outra pessoa sem ninguém precisar
+  ler contrato — inclusive quem fizer fork.
 - **CC-BY-NC é proibido.** "NC" = non-commercial, e o limite do que conta como
   comercial é indefinido o bastante para não valer a discussão.
 - **Pixabay, Mixkit e ZapSplat estão fora**, mesmo com clipes gratuitos: as três
   licenças proíbem redistribuir o arquivo *sem modificação significativa* — que
-  é precisamente o que um instalador faz ao copiar o `.ogg` para o disco do
+  é precisamente o que um instalador faz ao copiar o arquivo para o disco do
   usuário.
-- **Nenhum som do Discord pode ser reusado.** As brand guidelines deles vedam
-  explicitamente o reuso de "sounds"; o clone é didático, a semelhança para no
-  comportamento.
-- Asset novo → uma linha nova nesta tabela, no mesmo commit.
+- **Os sons do Discord são a exceção consciente**, tomada pelo Leonardo para
+  esta instância privada. As brand guidelines deles vedam o reuso de "sounds",
+  com essa palavra na cláusula — o que a regra proíbe é justamente **espalhar**,
+  e é por isso que a exceção vem amarrada aos três limites do topo. Não é
+  "descobriram que podia": é uma escolha registrada, com o custo escrito ao
+  lado e o desfazer pronto.
+- Asset novo → uma linha nova neste arquivo, no mesmo commit.
 
-## Sons de interface (M8)
+## Sons de interface — 12 do Discord (M12)
 
-Todos os 14 arquivos em `apps/client/assets/sounds/`. Ogg Vorbis, entram no
-repositório **exatamente como saíram do pack** — sem reencode, sem corte, sem
-normalização destrutiva (o nivelamento é um ganho aplicado no playback; veja a
-seção seguinte).
+Em `apps/client/assets/sounds/`, **byte a byte como o Discord serve** (o md5 de
+cada arquivo é o próprio hash da URL de origem — é assim que o CDN deles nomeia
+os assets, e é o que torna a procedência verificável).
+
+- **Origem**: `https://discordapp.com/assets/<hash>.mp3`
+- **Licença**: proprietária, do Discord. **Não redistribuível.**
+- **Baixados em**: 20/08/2026
+- **Formato**: MP3, 48 kHz estéreo, exatamente como baixados — sem reencode,
+  sem corte, sem normalização (o nivelamento é ganho no playback, § seguinte)
+
+| Nome no Danjocord | Arquivo no repo      | Nome no Discord     | Hash de origem (= md5 do arquivo) |
+| ----------------- | -------------------- | ------------------- | --------------------------------- |
+| `voice-join`      | `voice-join.mp3`     | User Join           | `5dd43c946894005258d85770f0d10cff` |
+| `voice-leave`     | `voice-leave.mp3`    | User Leave          | `4fcfeb2cba26459c4750e60f626cebdc` |
+| `message`         | `message.mp3`        | Message             | `dd920c06a01e5bb8b09678581e29d56f` |
+| `mention`         | `mention.mp3`        | Audio device changed / mention3 | `84c9fa3d07da865278bd77c97d952db4` |
+| `self-mute`       | `self-mute.mp3`      | Mute                | `429d09ee3b86e81a75b5e06d3fb482be` |
+| `self-unmute`     | `self-unmute.mp3`    | Unmute              | `43805b9dd757ac4f6b9b58c1a8ee5f0d` |
+| `self-deafen`     | `self-deafen.mp3`    | Deafen              | `e4d539271704b87764dc465b1a061abd` |
+| `self-undeafen`   | `self-undeafen.mp3`  | Undeafen            | `5a000a0d4dff083d12a1d4fc2c7cbf66` |
+| `ptt-on`          | `ptt-on.mp3`         | PTT Activate        | `8b63833c8d252fedba6b9c4f2517c705` |
+| `ptt-off`         | `ptt-off.mp3`        | PTT Deactivate      | `74ab980d6890a0fa6aa0336182f9f620` |
+| `disconnected`    | `disconnected.mp3`   | Voice Disconnected  | `7e125dc075ec6e5ae796e4c3ab83abb3` |
+| `reconnected`     | `reconnected.mp3`    | User Moved          | `e81d11590762728c1b811eadfa5be766` |
+
+Duas escolhas de mapeamento que não são óbvias:
+
+- **`mention` ← "Audio device changed / mention3"**: o nome duplo é do próprio
+  Discord, que reusa o clipe nos dois lugares. É o som de menção deles.
+- **`reconnected` ← "User Moved"**: a lista traz "Voice Disconnected" mas
+  **não** traz o par de reconexão. "User Moved" é o que mais se aproxima —
+  transição de estado de voz, ascendente, mesma família tímbrica do
+  disconnected. Se soar errado no uso, é o primeiro candidato a virar
+  sintetizado.
+
+## Sons de interface — 2 sintetizados (M12)
+
+`stream-start.wav` e `error.wav` são saída de
+[`apps/client/scripts/gen-sounds.mjs`](apps/client/scripts/gen-sounds.mjs) —
+código deste repositório, **sem licença de terceiro**.
+
+Eles existem porque a lista de origem **não tem** equivalente: não há som de
+"alguém começou a transmitir" nem de erro entre os arquivos do Discord
+disponíveis. O que sobrava eram toques de chamada (5,3 s e 22,7 s) e navegação
+de menu de atalhos (1,3 s) — nenhum serve para um evento de 400 ms.
+
+O gerador guarda receita para os **14**, não só para estes dois: é o conjunto
+completo que existia antes da troca, e é o caminho de volta da advertência do
+topo. O `sound-assets.test.ts` reprova se alguma receita sumir.
+
+## Sons do soundboard (M9) — CC0 da Kenney
+
+Os 9 clipes de `apps/server/assets/soundboard/*.ogg` são **seed** da tabela
+`sounds`, não catálogo: entram no banco no primeiro boot e a partir daí a fonte
+da verdade é o banco.
 
 - **Autor**: Kenney (Kenney Vleugels — <https://kenney.nl>)
 - **Licença**: CC0 1.0 Universal — <https://creativecommons.org/publicdomain/zero/1.0/>
-- **Baixado em**: 18/08/2026
+- **Arquivos**: `fanfarra`, `deu-ruim`, `buzina`, `cristal`, `scratch`, `hein`,
+  `subiu`, `caiu`, `ping` (entram no repo exatamente como saíram do pack)
 
-| Nome no Danjocord | Arquivo no repo     | Arquivo de origem | Pack de origem                                   |
-| ----------------- | ------------------- | ----------------- | ------------------------------------------------ |
-| `voice-join`      | `voice-join.ogg`    | `maximize_002`    | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `voice-leave`     | `voice-leave.ogg`   | `minimize_002`    | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `stream-start`    | `stream-start.ogg`  | `maximize_004`    | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `message`         | `message.ogg`       | `pluck_001`       | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `mention`         | `mention.ogg`       | `question_003`    | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `self-mute`       | `self-mute.ogg`     | `toggle_003`      | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `self-unmute`     | `self-unmute.ogg`   | `toggle_002`      | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `self-deafen`     | `self-deafen.ogg`   | `close_002`       | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `self-undeafen`   | `self-undeafen.ogg` | `open_002`        | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `disconnected`    | `disconnected.ogg`  | `error_003`       | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `reconnected`     | `reconnected.ogg`   | `open_004`        | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `error`           | `error.ogg`         | `error_002`       | [Interface Sounds](https://kenney.nl/assets/interface-sounds) |
-| `ptt-on`          | `ptt-on.ogg`        | `mouseclick1`     | [UI Audio](https://kenney.nl/assets/ui-audio)                 |
-| `ptt-off`         | `ptt-off.ogg`       | `mouserelease1`   | [UI Audio](https://kenney.nl/assets/ui-audio)                 |
+O mapeamento arquivo-do-repo → arquivo-de-origem **não foi registrado** no M9 e
+não vai ser inventado agora: pack e licença estão identificados, que é o que
+responde à pergunta de licença. Asset novo não repete esse buraco.
 
-Os pares não são coincidência: `maximize`/`minimize` e `open`/`close` são
-**espelhados pela própria Kenney** — o segundo é o primeiro ao contrário, e é
-daí que sai a semântica de entrar/sair e de ensurdecer/voltar-a-ouvir sem que
-ninguém precise aprender o som.
+---
 
-## Como trocar um som
+## Como trocar um som de interface
 
-O nivelamento dos clipes **não está nos arquivos** — é um ganho por som,
-aplicado no `GainNode` na hora de tocar (`apps/client/src/sound/catalog.ts`).
-Isso mantém os `.ogg` intactos, deixa o nivelamento auditável como dado, e
-significa que trocar um som é trocar o arquivo **e recalcular o número**.
+O nivelamento **não está nos arquivos** — é um ganho por som aplicado no
+`GainNode` na hora de tocar (`apps/client/src/sound/catalog.ts`). Isso mantém os
+arquivos intactos e deixa o nivelamento auditável como dado. O preço é que
+trocar um som é trocar o arquivo **e** recalcular o número:
 
-1. Substitua o `.ogg` em `apps/client/assets/sounds/`, **mantendo o nome**
-   (o `assets.ts` importa cada arquivo estaticamente — é assim que o Vite
-   enxerga a dependência e a copia para o bundle).
-2. Meça o novo clipe com o trecho abaixo e anote o `ganho`.
-3. Ponha o valor em `CATALOG` no `catalog.ts`, no campo `gain` daquele som.
-4. Acrescente a linha na tabela acima: origem, autor, licença, data. Licença
-   diferente de CC0 → veja as regras do projeto antes.
+1. ponha o arquivo em `apps/client/assets/sounds/`, **mantendo o nome** do
+   catálogo (`assets.ts` importa cada um estaticamente — é assim que o Vite os
+   enxerga e copia para o bundle). Extensão nova? Atualize `catalog.ts` e
+   `assets.ts` juntos;
+2. `pnpm --filter @danjocord/client sounds:measure` — decodifica no Chromium do
+   Electron, escreve `assets/sounds/measured.json` e imprime o ganho;
+3. copie o ganho para o `CATALOG` do `catalog.ts`;
+4. `pnpm --filter @danjocord/client test` — o `sound-assets.test.ts` confere o
+   sha256 de cada arquivo contra a medição e o ganho do catálogo contra ela.
+   O passo 3 deixou de ser esquecível.
 
 O alvo é **RMS de ~-20 dBFS** (som de UI tem que ficar **abaixo** da voz da
-chamada — se ele competir com a pessoa falando, está alto demais) com **teto de
-pico em 0.89** (margem para o `linearRamp` do envelope e para a soma com a voz
-sem clipar na saída). Quando o teto de pico ganha, o clipe fica *de propósito*
-mais baixo que o alvo — é o caso de `message`, `ptt-on`, `ptt-off` e
-`disconnected` hoje. Ganho maior que 1.0 não é erro: quer dizer só que o clipe
-original é baixo.
+chamada) com **teto de pico em 0.89** (margem para o `linearRamp` do envelope no
+`player.ts` e para a soma com a voz sem clipar):
 
-Cole no console do navegador com o cliente aberto (`pnpm dev`; em dev o Vite
-serve `apps/client/assets/` direto na raiz). Foi assim que os 14 atuais foram
-calibrados — por medição, não pelo nome do arquivo:
-
-```js
-// mede um clipe e devolve o ganho de playback
-async function medir(url) {
-  const ctx = new AudioContext();
-  const buf = await ctx.decodeAudioData(await (await fetch(url)).arrayBuffer());
-  let soma = 0, pico = 0, n = 0;
-  for (let c = 0; c < buf.numberOfChannels; c++) {
-    const d = buf.getChannelData(c);
-    for (let i = 0; i < d.length; i++) {
-      const v = d[i];
-      soma += v * v;
-      if (Math.abs(v) > pico) pico = Math.abs(v);
-      n++;
-    }
-  }
-  await ctx.close();
-  const rms = Math.sqrt(soma / n);
-  const porRms = 0.1 / rms;   // 0.1 = -20 dBFS, o alvo
-  const porPico = 0.89 / pico; // teto de pico
-  return {
-    arquivo: url.split("/").pop(),
-    duracao: +buf.duration.toFixed(3),
-    rms: +rms.toFixed(4),
-    pico: +pico.toFixed(3),
-    // qual dos dois limitou: "rms" é o caso normal, "pico" é o clipe que não
-    // chega a -20 dBFS sem clipar
-    limitado_por: porRms <= porPico ? "rms" : "pico",
-    ganho: +Math.min(porRms, porPico).toFixed(3),
-  };
-}
-
-// um arquivo:
-console.table([await medir("/assets/sounds/message.ogg")]);
-
-// a bateria inteira, para comparar (útil quando se troca um som só e quer-se
-// ver se ele destoa dos vizinhos):
-const nomes = ["voice-join","voice-leave","stream-start","message","mention",
-  "self-mute","self-unmute","self-deafen","self-undeafen","ptt-on","ptt-off",
-  "disconnected","reconnected","error"];
-console.table(await Promise.all(nomes.map((n) => medir(`/assets/sounds/${n}.ogg`))));
+```
+gain = min(0.1 / rms_ativo, 0.89 / pico) × 10^(quieterDb / 20)
+        └── alvo -20 dBFS ─┘  └─ teto ─┘   └── intenção declarada ──┘
 ```
 
-Um detalhe que já mordeu: **não deixe um clipe cair abaixo de 4 KB sem olhar o
-`vite.config.ts`**. O default do Vite embutiria o arquivo como `data:` URI, e
-`data:` é barrado pelas CSPs do projeto (`media-src`/`connect-src`, tanto no
-`<meta>` do `index.html` quanto no header do servidor) — o som sumiria só em
-produção. O `assetsInlineLimit` de lá já protege contra isso; o comentário no
-arquivo explica por quê, e é para ficar.
+Duas sutilezas que a troca pelos arquivos do Discord obrigou a acertar:
+
+- **`rms_ativo` é medido só na região acima de -60 dBFS**, não no arquivo
+  inteiro. Os clipes do Discord trazem silêncio nas pontas (o `disconnected` tem
+  1216 ms de arquivo para 911 ms de som); RMS do arquivo todo contaria esse
+  silêncio, o número desceria e o ganho subiria **para compensar um silêncio** —
+  o clipe tocaria acima do alvo justamente por ter cauda vazia. O **pico** segue
+  sendo do arquivo inteiro: ele é sobre não clipar, e pico fora da região ativa
+  clipa igual.
+- **`quieterDb`** (em `scripts/measure-sounds.mjs`) é a única porta por onde
+  gosto entra no ganho. Está vazio hoje.
+
+Ganho maior que 1.0 não é erro — quer dizer só que o clipe é mais frio que o
+alvo. Metade dos do Discord está aí.

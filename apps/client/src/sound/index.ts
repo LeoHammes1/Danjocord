@@ -1,6 +1,12 @@
 /**
- * Som (M8) — a fachada que o resto do cliente usa. Substitui o sounds.ts do
- * M6 (dois osciladores sine) pelos clipes CC0 da Kenney em assets/sounds.
+ * Som (M8) — a fachada que o resto do cliente usa. Substituiu o sounds.ts do
+ * M6 (dois osciladores sine tocados ao vivo) por clipes em assets/sounds.
+ *
+ * Curiosidade que é quase uma lição: no M12 dois dos 14 voltaram a ser síntese —
+ * mas OFFLINE, num gerador versionado (`scripts/gen-sounds.mjs`), com envelope,
+ * parciais e filtro. O M6 errava por sintetizar POBRE e no lugar errado (dentro
+ * do app, sem como medir nem versionar), não por sintetizar. Os outros 12 vêm
+ * do Discord — leia a advertência de distribuição no ATTRIBUTIONS.md.
  *
  * Divisão de trabalho: `catalog.ts` é a tabela, `assets.ts` são as URLs,
  * `policy.ts` decide, `player.ts` toca, `prefs.ts` lembra. Aqui só se junta

@@ -17,6 +17,7 @@ Esforço: `P` horas · `M` ~1 dia · `G` vários dias.
 | M10 | convites + moderação — §5 + 114, 116 | ✅ |
 | M11a | chat: leitura, markdown, menções — 78–83, 85, 92, 93 | ✅ |
 | M11b | chat: reply, reações, anexos, busca — 84, 86–91 | ✅ |
+| M12 | troca dos sons de UI — 7 e 8 (reabertos) | ✅ |
 
 Fora de marco, mas **antes do primeiro release público**: 106 (versão travada em
 `0.0.1` quebra o auto-update), 115 (parse sem `try/catch` quebra cliente antigo
@@ -32,10 +33,10 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 4. ✅ `P` Baixar [512 Sound Effects 8-bit](https://opengameart.org/content/512-sound-effects-8-bit-style) (CC0) — matéria-prima do soundboard.
 5. ✅ `M` Curar busca no Freesound com filtro CC0 — sons gravados combinam mais com app de call que os 8-bit. Exige cadastro. **Só CC0**: CC-BY-NC é proibido no projeto.
 6. ✅ `P` Documentar a exclusão de **Pixabay, Mixkit e ZapSplat** — as três proíbem redistribuir o arquivo sem modificação significativa, que é exatamente o que um soundboard faz.
-7. ✅ `P` Documentar que nenhum som do Discord será reusado — as brand guidelines vedam copiar "sounds", com essa palavra na cláusula.
-8. `M` (dispensado — os 14 vieram de pack CC0) Gerar os sons que faltarem com jfxr/Bfxr em vez de garimpar mais pack.
-9. ✅ `P` Definir o formato canônico: OGG/Opus, 48 kHz, mono, ~64 kbps (3–8 KB por clipe; casa com o clock do mediasoup).
-10. `M` (dispensado — a normalização virou ganho no playback, ver docs/som.md) Script ffmpeg de normalização em lote — loudnorm EBU R128 entre −20 e −16 LUFS (abaixo da voz), fade de 5 ms, trim de silêncio.
+7. ✅ `P` (M12 — **decisão revista**) Documentar a posição sobre os sons do Discord. As brand guidelines vedam copiar "sounds", com essa palavra na cláusula, e a regra vale para o que é **distribuído**. Como esta instância é privada (repo privado, allowlist, sem instalador para fora), o Leonardo optou por usá-los: 12 dos 14 são deles hoje. A exceção vem com advertência no ATTRIBUTIONS.md, trava no `desktop-release.yml` e conjunto sintetizado de reserva — ver docs/som.md §3.8.
+8. ✅ `M` (M12 — reaberto e feito por inteiro) Gerar os sons com síntese em vez de garimpar mais pack. Dispensado no M8 por os 14 terem vindo de pack CC0; reaberto quando o timbre de pack de JOGO virou a queixa. `apps/client/scripts/gen-sounds.mjs` tem receita para os 14; **2 estão em uso** (`stream-start` e `error`, que a fonte do Discord não tem) e os outros 12 são a reserva/caminho de volta — ver docs/som.md §3.8.1.
+9. ✅ `P` Definir o formato canônico. Ficou Ogg/Vorbis no M8 (é como o pack vem) e, no M12, **duas extensões de propósito**: MP3 nos 12 do Discord (intactos — o md5 é o hash da URL de origem, o que torna a procedência verificável) e WAV PCM nos 2 sintetizados (sem encoder na máquina, e sem codec com perda num transiente de 3 ms). Ver docs/som.md §3.3.
+10. `M` (dispensado — a normalização virou ganho no playback, ver docs/som.md; no M12 a medição virou ferramenta própria, `scripts/measure-sounds.mjs`, no Chromium do Electron, e o silêncio das pontas passou a ser ignorado na conta em vez de cortado do arquivo) Script ffmpeg de normalização em lote — loudnorm EBU R128 entre −20 e −16 LUFS (abaixo da voz), fade de 5 ms, trim de silêncio.
 11. ✅ `P` Criar `ATTRIBUTIONS.md` com procedência e licença de cada arquivo.
 
 ## 2. Sons — sistema no cliente ✅ M8

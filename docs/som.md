@@ -3,9 +3,12 @@
 Este arquivo é o **porquê** do sistema de som. Os outros dois lugares onde o
 assunto mora:
 
-- [`ATTRIBUTIONS.md`](../ATTRIBUTIONS.md) — o **quê**: procedência, licença e
-  arquivo de origem de cada um dos 14 clipes, mais a receita de medição para
-  quem for trocar um som.
+- [`ATTRIBUTIONS.md`](../ATTRIBUTIONS.md) — o **quê**: as regras de licença do
+  projeto, a procedência dos assets que ainda são de terceiros (os seeds do
+  soundboard) e o passo a passo de trocar um som.
+- [`apps/client/scripts/`](../apps/client/scripts/) — `gen-sounds.mjs` (os sons
+  sintetizados: cada um uma receita de notas, envelope, timbre e filtro) e
+  `measure-sounds.mjs` (o medidor que produz os ganhos do catálogo, §3.9).
 - [`apps/client/src/sound/`](../apps/client/src/sound/) — o **como**: o
   catálogo (`catalog.ts`), a política (`policy.ts`), o player (`player.ts`),
   as preferências (`prefs.ts`) e a fachada (`index.ts`).
@@ -299,18 +302,27 @@ teste, ele elimina o caminho acústico e isola o digital. **B** em outra máquin
 
 ### 3.1 Ganho no playback, não reencode
 
-Os clipes da Kenney vêm com níveis muito diferentes entre si. Nivelar tem dois
-caminhos: reescrever os arquivos (o `loudnorm` do ffmpeg, item 10 do ROADMAP)
-ou aplicar um ganho por som na hora de tocar.
+Os clipes da Kenney vinham com níveis muito diferentes entre si. Nivelar tinha
+dois caminhos: reescrever os arquivos (o `loudnorm` do ffmpeg, item 10 do
+ROADMAP) ou aplicar um ganho por som na hora de tocar.
 
 O motivo circunstancial é que **não há ffmpeg nesta máquina**. O motivo que
-importa é outro: com ganho no playback, o `.ogg` fica **intacto** e o
-nivelamento vira **dado** — 14 números num `Record` versionado
-(`catalog.ts`), auditáveis num diff, ajustáveis sem reprocessar nada e sem
-perder a rastreabilidade até o arquivo original do pack. Reencode é
-irreversível: a partir dele, "o arquivo do repo" e "o arquivo do pack" deixam
-de ser a mesma coisa, e a linha do `ATTRIBUTIONS.md` vira uma promessa em vez
-de uma verificação (é literalmente `fc /b` contra o pack baixado).
+importa é outro: com ganho no playback, o nivelamento vira **dado** — 14 números
+num `Record` versionado (`catalog.ts`), auditáveis num diff e ajustáveis sem
+reprocessar nada. Reencode é irreversível: a partir dele, "o arquivo do repo" e
+"o arquivo de origem" deixam de ser a mesma coisa.
+
+**O M12 não derrubou esta decisão — cobrou o dividendo dela.** Ao trocar os 14
+clipes de uma vez (§3.8), o que teria sido um reprocessamento em lote foi uma
+coluna de números num diff. E o argumento de "manter o arquivo intacto" ficou
+mais forte, não mais fraco: os 12 arquivos do Discord entram byte a byte como o
+CDN serve, e é isso que faz o md5 de cada um **ser** o hash da URL de origem —
+a linha do `ATTRIBUTIONS.md` vira conferência, não promessa.
+
+O resto vale por si: separar o SOM do seu NÍVEL mantém as duas perguntas
+independentes. Mudar quanto o `mention` incomoda não exige mexer no `mention`, e
+a diferença entre "este som está alto" e "este som está errado" continua visível
+no diff.
 
 Há um bônus didático: o ganho é **invertível**. A tabela foi produzida por
 
@@ -326,8 +338,12 @@ respeito do pico, não do RMS: são clipes que não chegam a -20 dBFS sem clipar
 ficam **de propósito** um pouco mais baixos. No caso do PTT isso é até
 desejável — ele dispara o tempo todo.
 
-O custo dessa escolha é um só, e está escrito no `ATTRIBUTIONS.md`: trocar um
-som é trocar o arquivo **e** recalcular o número.
+O custo dessa escolha é um só: trocar um som é trocar o arquivo **e** recalcular
+o número. No M8 isso era uma instrução no `ATTRIBUTIONS.md` e ninguém a executava
+sem querer; no M12 virou ferramenta (`scripts/measure-sounds.mjs`, §3.9) mais
+teste (`test/sound-assets.test.ts`, que amarra medição e arquivo por sha256 e
+recusa o commit em que o catálogo discorda). A instrução virou um teste — que é
+a única forma de instrução que não se esquece.
 
 ### 3.2 Alvo de -20 dBFS de RMS
 
@@ -347,33 +363,48 @@ clipe inteiro é uma medida honesta nessa escala, e é reprodutível em quinze
 linhas de WebAudio (a receita está no `ATTRIBUTIONS.md`), sem depender de
 ferramenta externa nenhuma.
 
-### 3.3 Ogg Vorbis
+### 3.3 Formato: MP3 nos 12, WAV nos 2 — e por que conviver
 
-O item 9 do ROADMAP propunha OGG/**Opus** 48 kHz mono como formato canônico.
-Ficou Ogg **Vorbis** — que é como os packs da Kenney vêm —, e a razão é a mesma
-do §3.1: **não transcodificar**. Reencodar de um formato com perda para outro
-formato com perda acumula artefato para não ganhar nada aqui. Os 14 clipes
-somam ~140 KB; o alvo de "3–8 KB por clipe" do item 9 fazia sentido para um
-catálogo grande, não para isto.
+O item 9 do ROADMAP propunha OGG/**Opus** 48 kHz mono como formato canônico. No
+M8 ficou Ogg **Vorbis**, que é como os packs da Kenney vêm, pela razão do §3.1:
+**não transcodificar**. Essa razão sobreviveu a tudo, e é ela que explica o
+arranjo de hoje.
 
-O argumento a favor do Opus/48 kHz era casar com o clock do mediasoup — e ele
-volta a valer **se e quando** o som precisar entrar no SFU (o spike do item 32,
-injeção via PlainTransport). Não é o caso do playback local: o
-`decodeAudioData` entrega PCM e o `AudioContext` reamostra para a taxa dele de
-qualquer jeito. Codec de arquivo e codec de transporte são problemas
-diferentes; misturá-los custaria qualidade sem comprar nada.
+Os 12 clipes do Discord entram **exatamente como o CDN serve**: MP3, 48 kHz,
+estéreo. Houve a tentação de convertê-los para WAV — o Node lê WAV, e isso
+deixaria a medição rodar em `node --test` sem Electron. Três coisas mataram a
+ideia:
 
-Vorbis serve porque o alvo de entrega é **Chromium**: o Electron do app e os
-navegadores de dev decodificam nativamente, via `decodeAudioData`, sem
-biblioteca nenhuma.
+- **transcodificar destrói a verificação de procedência.** Com o arquivo
+  intacto, o md5 dele **é** o hash da URL de origem (é assim que o CDN do
+  Discord nomeia assets): a linha do `ATTRIBUTIONS.md` deixa de ser promessa e
+  vira conferência de um comando. Depois de um transcode, "o arquivo do repo" e
+  "o arquivo da origem" são coisas diferentes;
+- **o estéreo é real.** A diferença entre canais chega a 0,94 no `mute` e no
+  `reconnected` — misturar para mono jogaria conteúdo fora, e manter estéreo em
+  WAV custava **1,3 MB** contra os ~340 KB dos MP3;
+- **quem vai tocar decodifica MP3 nativamente.** O alvo é Chromium (Electron e
+  os navegadores de dev). Transcodificar seria trabalho para resolver um
+  problema que só o *nosso medidor* tinha — e o medidor foi para dentro do
+  Chromium (§3.9), que era onde ele já devia estar.
 
-**A ressalva do Safari.** Ogg/Vorbis é o ponto cego do Safari — o suporte é
-recente, irregular entre versões de macOS e historicamente ausente no iOS. Não
-afeta nada hoje (o cliente web é ferramenta de desenvolvimento; o produto é o
-Electron), mas se um dia o cliente web precisar rodar lá, o caminho é
-**detectar e ter uma segunda cópia** em `.m4a`/AAC, escolhida por
-`canPlayType`/feature-detect — e não trocar o formato base, que penalizaria o
-alvo real por causa de um navegador que ninguém usa aqui.
+Os 2 sintetizados são **WAV PCM** pelo mesmo princípio invertido: nós os
+produzimos, não há origem a preservar, não há ffmpeg nesta máquina para gerar
+Ogg/Opus, e um WAV se escreve em vinte linhas sem codec. De brinde, não há
+codec com perda no caminho — transiente de 3 ms é o pior caso de um codec por
+transformada (pré-eco), e metade daqueles sons é exatamente isso.
+
+**Duas extensões no mesmo catálogo não custam nada**: o `assets.ts` importa por
+nome, o Vite trata os dois igual (com a ressalva do `assetsInlineLimit`, §3.10)
+e o `decodeAudioData` também. Uniformidade de extensão seria estética; a
+procedência verificável de um lado e a ausência de codec do outro são
+propriedades.
+
+O argumento a favor do Opus/48 kHz continua valendo **se e quando** o som
+precisar entrar no SFU (o spike do item 32, injeção via PlainTransport). Não é o
+caso do playback local: o `decodeAudioData` entrega PCM e o `AudioContext`
+reamostra para a taxa dele de qualquer jeito. Codec de arquivo e codec de
+transporte são problemas diferentes.
 
 ### 3.4 Por que `self` e `system` escapam do deafen
 
@@ -399,7 +430,7 @@ que dispara com mais frequência no app inteiro, então é também o que mais
 precisa ser discreto (§3.1) e o que mais óbvio ficaria se sumisse ao ensurdecer
 — o usuário continua **falando** enquanto está ensurdecido.
 
-### 3.5 Licença: só CC0
+### 3.5 Licença: só CC0 para o que é distribuído
 
 A regra e as exclusões estão no [`ATTRIBUTIONS.md`](../ATTRIBUTIONS.md); aqui
 fica o raciocínio.
@@ -409,6 +440,20 @@ pergunta de licença: não é "posso usar este som no meu projeto", é "posso
 copiar este arquivo para o disco de outra pessoa". CC0 é a única resposta que
 sobrevive a essa pergunta sem ninguém precisar ler contrato — inclusive quem
 fizer fork.
+
+**O M12 mexeu nesta regra de um jeito que vale ler com atenção** (§3.8): 12 dos
+14 sons de interface passaram a ser os do Discord — assets proprietários, **não
+redistribuíveis**. A regra não foi revogada; ela foi **escopada**, e o escopo é
+o que a torna sustentável: vale para o que sai daqui. Como esta instância é
+privada (repo privado, allowlist, convite) e o app não é distribuído, o que a
+cláusula proíbe — espalhar — não acontece.
+
+O custo dessa escolha é real e está escrito onde não dá para não ver: a
+advertência no topo do `ATTRIBUTIONS.md`, uma trava no
+`.github/workflows/desktop-release.yml` que **reprova o build do instalador**
+enquanto houver `.mp3` no catálogo, e um conjunto sintetizado completo guardado
+no gerador como caminho de volta. Uma exceção sem desfazer pronto não é
+exceção, é dívida.
 
 - **CC-BY ficaria de fora por atrito, não por proibição:** exige crédito
   visível, e um app sem tela "Sobre" (item 105) não tem onde pôr. Quando a tela
@@ -420,11 +465,19 @@ fizer fork.
   proíbem redistribuir o arquivo *sem modificação significativa*. Copiar o
   `.ogg` para o disco do usuário é exatamente isso — e um soundboard (M9) é
   literalmente redistribuir o arquivo para ser tocado.
-- **Nenhum som do Discord.** As brand guidelines vedam o reuso de "sounds", com
-  essa palavra na cláusula. Independentemente disso: copiar o som do Discord
-  não ensina nada. Escolher um som por medição, ensina — que é o §3.6.
+- **Os sons do Discord são exceção declarada, não descuido.** As brand
+  guidelines vedam o reuso de "sounds", com essa palavra na cláusula — e o que
+  a cláusula protege é a distribuição. Numa instância privada que não distribui,
+  a decisão é do dono do projeto, e foi tomada. O que a regra continua exigindo,
+  e o M12 entregou: que a exceção seja **visível** (§3.8), **travada** no ponto
+  em que viraria distribuição, e **reversível** num comando.
 
-### 3.6 Como os 14 clipes foram escolhidos: por medição
+### 3.6 Como os 14 clipes foram escolhidos: por medição (M8)
+
+> Esta seção descreve o M8, quando os clipes eram **garimpados**. O critério
+> continua valendo — mudou de lado: o que era filtro de seleção virou parâmetro
+> de projeto no gerador (§3.8). Vale ler antes do §3.8, porque é aqui que está o
+> **porquê** da direção.
 
 O pack da Kenney tem uma centena de arquivos com nomes como `maximize_002` e
 `error_003`. Escolher **pelo nome** seria escolher pela intenção de quem
@@ -473,8 +526,8 @@ ensurdecer/voltar-a-ouvir (`self-deafen`/`self-undeafen`). Par espelhado é
 melhor que dois sons "parecidos": a assimetria entre eles é audível e é o
 próprio significado.
 
-A tabela final — qual arquivo de origem virou qual som — está no
-`ATTRIBUTIONS.md`, junto com o script que recalcula o ganho de um clipe novo.
+A tabela final — qual arquivo de origem virou qual som — viveu no
+`ATTRIBUTIONS.md` até o M12, quando os arquivos de origem deixaram de existir.
 
 ### 3.7 O que fica para o M9 (soundboard)
 
@@ -502,3 +555,139 @@ não é validação), e o §2.3 deste documento **amplificado**: som de soundboa
 alto e frequente por natureza, então quem estiver transmitindo com áudio de
 sistema vai despejar cada pad no ouvido dos espectadores. A mitigação 2 do
 §2.4, se implementada antes, já cobre o pad junto.
+
+### 3.8 M12 — os sons do Discord, e o conjunto sintetizado que ficou de reserva
+
+**O gatilho foi uma queixa simples: os sons eram ruins.** E o diagnóstico
+confirmou. Não era volume nem escolha de arquivo — o §3.6 tinha feito esse
+trabalho direito. Era procedência: `maximize_002`, `pluck_001`, `mouseclick1`
+são sons de **jogo**, com harmônico alto, ataque em degrau e timbre
+deliberadamente "8-bit" porque é isso que um pack de jogo vende. Num app de call
+eles competem com a voz na mesma faixa e soam a brinquedo. Havia um segundo
+defeito, mais fácil de medir que de ouvir: os 14 **não formavam conjunto**. Eram
+quatorze gravações sem relação, e os ganhos do `catalog.ts` denunciavam — iam de
+**0.324 a 1.101**, uma faixa de 10,6 dB.
+
+O pedido junto com a queixa era usar **os sons do Discord**. A regra do §3.5
+vedava, e a primeira resposta foi a terceira via: **sintetizar** — que era o
+item 8 do ROADMAP, dispensado no M8 por o pack ter aparecido. Essa via foi até o
+fim e produziu um conjunto completo e coerente (a §3.8.1 registra o que ela
+ensinou, porque nada disso se perdeu). Aí veio a informação que faltava: **a
+instância é privada — repositório privado, allowlist, convite — e o app não é
+distribuído.** É essa a premissa que a cláusula de brand guidelines protege, e
+sem distribuição ela não é acionada. A decisão é do dono do projeto, e foi
+tomada de olhos abertos.
+
+**O que ficou, então:** 12 dos 14 sons são os do Discord, byte a byte como o CDN
+serve. Os outros 2 são sintetizados porque **a fonte não os tem**: não existe
+som de "alguém começou a transmitir" nem de erro na lista; o que sobrava eram
+toques de chamada (5,3 s e 22,7 s) e navegação de menu de atalhos (1,3 s), e
+nenhum serve para um evento de 400 ms.
+
+Dois mapeamentos não são óbvios e ficam registrados: `mention` sai do clipe que
+o Discord chama de *"Audio device changed / mention3"* (o nome duplo é deles, o
+clipe é reusado nos dois lugares), e `reconnected` sai de *"User Moved"* — a
+lista traz "Voice Disconnected" mas **não** traz o par de reconexão, e "User
+Moved" é a transição de estado de voz mais próxima. Se soar errado no uso, é o
+primeiro candidato a voltar a ser sintetizado.
+
+**O que a troca custou, e onde o custo está escrito.** Assets proprietários não
+podem sair daqui, e "não pode sair daqui" é uma promessa que ninguém cumpre por
+memória seis meses depois. Então ela virou três coisas materiais: a advertência
+no topo do `ATTRIBUTIONS.md`, uma **trava no
+`.github/workflows/desktop-release.yml`** que reprova o build do instalador
+enquanto houver `.mp3` no catálogo — o workflow é o momento exato em que o app
+sairia daqui —, e o conjunto sintetizado **inteiro** guardado no gerador, com um
+teste que reprova se alguma receita sumir. `pnpm --filter @danjocord/client
+sounds --all` repõe os 14, e o caminho de volta leva minutos.
+
+**E uma correção que a realidade impôs.** O teste escrito para o conjunto
+sintetizado cravava "nenhum som de UI passa de 700 ms". Os do Discord passam:
+`voice-join` tem 1086 ms, `reconnected` tem 1384 ms. Ou o Discord está errado ou
+a regra de bolso era estreita — e entre uma opinião e um conjunto de sons que
+milhões de pessoas ouvem todo dia sem reclamar, quem cede é a opinião. O teto
+virou 2 s, e o que ficou específico é o que tem razão específica: o par de PTT
+abaixo de 200 ms, porque ele toca **no meio da fala**.
+
+#### 3.8.1 O que o conjunto sintetizado ensinou (e por isso não foi apagado)
+
+A via da síntese não é ramo morto: as 14 receitas continuam no
+`scripts/gen-sounds.mjs`, e três coisas dela sobreviveram à troca.
+
+- **Um conjunto coerente se reconhece por um número.** Sintetizados a partir da
+  mesma escala (pentatônica em Dó), do mesmo formato de envelope e da mesma
+  família de parciais, os 14 ganhos caíram numa faixa de **0,9 dB** — contra os
+  10,6 dB dos clipes garimpados. Ninguém mirou nisso; é sintoma. Serve como
+  régua: um conjunto cujos ganhos se espalham por uma década de dB é um conjunto
+  que não foi desenhado junto.
+- **Par espelhado pode ser propriedade do código.** No M8 o par entrar/sair
+  existia porque *a Kenney* gravou `maximize`/`minimize` como o mesmo som
+  invertido — um achado feliz (§3.6). Nas receitas, `voice-leave` **é**
+  `voice-join` com as notas trocadas e o timbre fechado. A simetria deixa de
+  depender de sorte.
+- **Intenção tem que ter nome.** O M8 registrava que o PTT era mais baixo
+  "porque o clipe não chega a -20 dBFS sem clipar", com a observação de que era
+  desejável — ou seja, um acidente que ajudava. Virou `quieterDb`, campo com o
+  motivo escrito ao lado. Hoje está vazio (os clipes do Discord já vêm
+  equilibrados entre si), mas o campo fica: é onde a próxima decisão desse tipo
+  vai morar em vez de virar folclore.
+
+### 3.9 O medidor foi para dentro do Chromium
+
+O contrato do §3.1 sempre teve uma metade frágil: *"trocar um som é trocar o
+arquivo **e** recalcular o ganho"*. A conta é trivial; o problema era **onde
+rodá-la**. Ela vivia como uma receita de quinze linhas para colar no console do
+navegador (`ATTRIBUTIONS.md`). Ninguém roda isso sem querer, e esquecer produz o
+pior tipo de defeito: o som toca, não há erro nenhum, e o nível fica errado até
+alguém reclamar.
+
+Medir exige **decodificar**, e aí estava o nó. O Node não decodifica áudio, não
+há ffmpeg nesta máquina, e o projeto não instala dependência para isto — a mesma
+regra que fez o upload do soundboard ser corpo binário cru em vez de multipart.
+Com `.ogg` e `.wav` dava para contornar (WAV é PCM, o Node lê); com `.mp3` não
+dá de jeito nenhum.
+
+A saída estava no repositório o tempo todo: **o Chromium do Electron** de
+`apps/desktop`. O `scripts/measure-sounds.mjs` sobe uma janela oculta,
+decodifica cada clipe com `decodeAudioData` e devolve a medição. Isso não é uma
+aproximação do que vai tocar o som — **é o que vai tocar o som**, no app
+empacotado. Some a classe inteira de "no meu medidor deu outro número".
+
+Duas decisões dentro dele valem saber:
+
+- **O sha256 é o que dá dente à medição.** `assets/sounds/measured.json` guarda,
+  por som, o hash do arquivo medido. O `sound-assets.test.ts` confere que a
+  medição descreve os arquivos que estão no disco **agora**. Sem isso o JSON
+  seria uma promessa: trocar um clipe sem re-medir passaria batido, e o ganho do
+  catálogo continuaria "batendo" com a medição de um arquivo que não existe
+  mais. Com isso, a instrução do §3.1 virou condição de commit.
+- **O RMS é da REGIÃO ATIVA, não do arquivo inteiro.** Foi a troca pelos
+  arquivos do Discord que obrigou a corrigir isto: eles trazem silêncio nas
+  pontas — o `disconnected` tem 1216 ms de arquivo para 911 ms de som. RMS do
+  arquivo todo conta o silêncio, o número desce, e o ganho sobe **para compensar
+  um silêncio**; o clipe acabaria tocando acima do alvo justamente por ter cauda
+  vazia. O **pico** continua sendo do arquivo inteiro: ele é sobre não clipar, e
+  pico fora da região ativa clipa igual.
+
+O ganho ainda é copiado **à mão** para o `catalog.ts`. É de propósito: o
+nivelamento é dado versionado e revisável num diff (§3.1), não um artefato que
+aparece sozinho. O teste é que garante que a cópia aconteceu.
+
+### 3.10 O `data:` URI deixou de ser hipótese
+
+O `vite.config.ts` existe desde o M8 por uma falha que **ainda não tinha
+acontecido**: asset abaixo de 4096 B o Vite embute como `data:` URI, e `data:`
+não passa em nenhuma das duas CSPs do projeto (`media-src` no `<meta>` do
+`index.html`, `connect-src` no header do servidor). O som sumiria **só em
+produção**, com um erro de CSP que ninguém liga a arquivo de som. O comentário
+de lá dizia, no futuro, que um dia alguém trocaria um som por um mais curto.
+
+Esse dia foi o M12: **`ptt-on.mp3` e `ptt-off.mp3` têm ~1,6 KB** — menos da
+metade do limite. O clipe mais curto do M8 tinha 4686 B, a 590 bytes de cair.
+
+Vale como caso: a config foi escrita por raciocínio, sem sintoma, sobre uma
+falha distante e silenciosa — o tipo de trabalho que costuma ser cortado por
+"não está quebrando". Quatro milestones depois, ela pagou. O que mudou agora é
+que o `sound-assets.test.ts` **procura** os clipes abaixo do limite e exige que
+a regra do `vite.config.ts` cubra a extensão deles: a proteção deixou de
+depender de alguém reler o comentário.

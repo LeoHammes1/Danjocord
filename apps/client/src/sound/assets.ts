@@ -5,25 +5,28 @@
  * `app://` a partir de renderer-dist). Um `import.meta.glob` ou uma URL
  * montada por string funcionaria no dev e sumiria no build.
  *
- * Este módulo existe SEPARADO do catálogo porque ele é o único que toca em
- * .ogg: assim `policy.ts` importa só dados e roda no Node, sob `node --test`.
+ * Este módulo existe SEPARADO do catálogo porque ele é o único que toca nos
+ * arquivos: assim `policy.ts` importa só dados e roda no Node, sob
+ * `node --test`. As extensões são duas de propósito (12 .mp3 do Discord + 2
+ * .wav sintetizados, ver catalog.ts) — o que muda aqui é só o nome do arquivo;
+ * o Vite trata os dois formatos igual, e o `decodeAudioData` também.
  */
 import { CATALOG, SOUND_NAMES, type SoundName } from "./catalog.js";
 
-import disconnectedUrl from "../../assets/sounds/disconnected.ogg";
-import errorUrl from "../../assets/sounds/error.ogg";
-import mentionUrl from "../../assets/sounds/mention.ogg";
-import messageUrl from "../../assets/sounds/message.ogg";
-import pttOffUrl from "../../assets/sounds/ptt-off.ogg";
-import pttOnUrl from "../../assets/sounds/ptt-on.ogg";
-import reconnectedUrl from "../../assets/sounds/reconnected.ogg";
-import selfDeafenUrl from "../../assets/sounds/self-deafen.ogg";
-import selfMuteUrl from "../../assets/sounds/self-mute.ogg";
-import selfUndeafenUrl from "../../assets/sounds/self-undeafen.ogg";
-import selfUnmuteUrl from "../../assets/sounds/self-unmute.ogg";
-import streamStartUrl from "../../assets/sounds/stream-start.ogg";
-import voiceJoinUrl from "../../assets/sounds/voice-join.ogg";
-import voiceLeaveUrl from "../../assets/sounds/voice-leave.ogg";
+import disconnectedUrl from "../../assets/sounds/disconnected.mp3";
+import errorUrl from "../../assets/sounds/error.wav";
+import mentionUrl from "../../assets/sounds/mention.mp3";
+import messageUrl from "../../assets/sounds/message.mp3";
+import pttOffUrl from "../../assets/sounds/ptt-off.mp3";
+import pttOnUrl from "../../assets/sounds/ptt-on.mp3";
+import reconnectedUrl from "../../assets/sounds/reconnected.mp3";
+import selfDeafenUrl from "../../assets/sounds/self-deafen.mp3";
+import selfMuteUrl from "../../assets/sounds/self-mute.mp3";
+import selfUndeafenUrl from "../../assets/sounds/self-undeafen.mp3";
+import selfUnmuteUrl from "../../assets/sounds/self-unmute.mp3";
+import streamStartUrl from "../../assets/sounds/stream-start.wav";
+import voiceJoinUrl from "../../assets/sounds/voice-join.mp3";
+import voiceLeaveUrl from "../../assets/sounds/voice-leave.mp3";
 
 export const SOUND_URL: Record<SoundName, string> = {
   "voice-join": voiceJoinUrl,
@@ -53,7 +56,7 @@ if (import.meta.env.DEV) {
     // clipe pequeno o bastante vira data: URI e perde o nome — aí não há o que
     // conferir (não acontece no dev server, mas a checagem não pode ser frágil)
     if (url.startsWith("data:")) continue;
-    if (!url.includes(expected.replace(/\.ogg$/, ""))) {
+    if (!url.includes(expected.replace(/\.(mp3|wav)$/, ""))) {
       throw new Error(`sound/assets: "${name}" não aponta para ${expected}`);
     }
   }

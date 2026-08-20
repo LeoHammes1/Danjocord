@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 
 /**
  * Config do cliente (M8). Até aqui o Vite rodava só no default — o que bastava.
- * O que criou a necessidade deste arquivo foram os .ogg de `assets/sounds/`.
+ * O que criou a necessidade deste arquivo foram os clipes de `assets/sounds/`.
  *
  * POR QUE o assetsInlineLimit customizado
  * --------------------------------------
@@ -17,11 +17,13 @@ import { defineConfig } from "vite";
  *   - o header de produção (`apps/server/src/index.ts`): `default-src 'self'`
  *     sem media-src, e `connect-src 'self'`. Idem.
  *
- * Nenhum clipe atual cai no limite (o menor, ptt-on.ogg, tem 4686 B), mas a
- * margem é de centenas de bytes: um dia alguém troca um som por um mais curto,
- * o build inlina, e o áudio some SÓ em produção — com um erro de CSP no
- * console que ninguém liga ao arquivo de som. O limite explícito troca essa
- * falha silenciosa e distante por uma garantia no build.
+ * Isto DEIXOU DE SER HIPÓTESE no M12: `ptt-on.mp3` e `ptt-off.mp3` (do Discord)
+ * têm ~1,6 KB, menos da metade do limite de 4096 B. Sem esta config eles
+ * viravam `data:` URI e sumiam SÓ em produção — com um erro de CSP no console
+ * que ninguém liga a arquivo de som. Antes disso a margem era de centenas de
+ * bytes e o comentário aqui falava no futuro; hoje fala no presente, e o
+ * `test/sound-assets.test.ts` confere que a regra abaixo cobre a extensão de
+ * todo clipe pequeno.
  *
  * A forma de FUNÇÃO (em vez de zerar o número) é de propósito: `undefined`
  * devolve a decisão ao default do Vite, então SVG e PNG pequenos continuam

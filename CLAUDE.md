@@ -139,25 +139,46 @@ trim corta nas **duas pontas**, toda inserção e todo trim precisa chamar
 `regroupAt`/`regroupAll` — e, onde há compensação de scroll, **antes** de medir
 a altura. Os comentários nos call sites do `main.ts` dizem em quais.
 
-## Som (M8)
+## Som (M8; catálogo trocado no M12)
 
-14 clipes em `apps/client/assets/sounds/*.ogg` (~140 KB), **CC0 dos packs da
-Kenney** — procedência e regras de licença em [ATTRIBUTIONS.md](ATTRIBUTIONS.md),
-decisões em [docs/som.md](docs/som.md). Regra do projeto: **só CC0**; nada de
-Pixabay/Mixkit/ZapSplat (proíbem redistribuir sem modificação significativa) e
-nenhum som do Discord (as brand guidelines vedam "sounds" na cláusula).
+14 clipes em `apps/client/assets/sounds/` — decisões em
+[docs/som.md](docs/som.md), procedência em [ATTRIBUTIONS.md](ATTRIBUTIONS.md).
+
+> ⚠️ **12 deles são assets proprietários do Discord** (`.mp3`, byte a byte como o
+> CDN serve), por decisão explícita do Leonardo para esta instância **privada**.
+> Enquanto estiverem aqui: repo privado, sem instalador para fora, instância
+> fechada. O `desktop-release.yml` tem uma trava que reprova o build de release
+> enquanto houver `.mp3` no catálogo. O desfazer é
+> `pnpm --filter @danjocord/client sounds --all` (repõe os 14 sintetizados) +
+> trocar as extensões no `catalog.ts`/`assets.ts` + re-medir. Ler a advertência
+> no topo do ATTRIBUTIONS.md antes de qualquer coisa que seja distribuição.
+
+Os outros 2 (`stream-start`, `error`) são `.wav` sintetizados por
+`scripts/gen-sounds.mjs`, porque a fonte não tem equivalente para Go Live nem
+para erro. O gerador guarda receita para os **14** de propósito: é o caminho de
+volta, e um teste reprova se alguma sumir.
 
 - **Nada é reencodado.** A normalização é um **ganho por som** no `catalog.ts`,
   aplicado no playback pelo GainNode (alvo ~−20 dBFS de RMS, teto de pico 0.89).
-  O asset fica intacto e o nivelamento vira dado. Os fades de 5 ms também são no
-  envelope, não no arquivo.
+  Arquivo intacto, nivelamento como dado versionado. Os fades de 5 ms também são
+  no envelope, não no arquivo. O RMS é medido na **região ativa** (acima de −60
+  dBFS), não no arquivo inteiro — senão silêncio nas pontas vira ganho a mais.
+- **O medidor roda dentro do Chromium do Electron**
+  (`scripts/measure-sounds.mjs` → `assets/sounds/measured.json`): o Node não
+  decodifica `.mp3`, não há ffmpeg e o projeto não instala dependência. Quem
+  mede é o mesmo decodificador que vai tocar.
+- **Trocar um som é trocar o arquivo E recalcular o ganho** — e isso deixou de
+  ser instrução: o `test/sound-assets.test.ts` amarra medição e arquivo pelo
+  **sha256** e reprova se o `catalog.ts` discordar.
 - `src/sound/` separa por um motivo: `catalog.ts` é **dado puro** e `assets.ts` é
-  o único que importa `.ogg` — sem isso o teste do Node não conseguiria importar
-  a política (o Node não carrega `.ogg`).
+  o único que importa asset — sem isso o teste do Node não conseguiria importar
+  a política (o Node não resolve import de asset do Vite).
 - `policy.ts` é **pura e testada**: quem decide se um som toca é ela, nunca o
   call site. Regra nova de contexto entra lá, não num `if` espalhado.
 - **`vite.config.ts` existe por causa da CSP**: asset < 4 KB viraria `data:` URI,
-  que `media-src` bloqueia nas duas CSPs. `ptt-on.ogg` tem 4686 bytes.
+  que `media-src` bloqueia nas duas CSPs. Deixou de ser hipótese no M12 —
+  `ptt-on.mp3` tem ~1,6 KB, e o teste confere que a regra cobre a extensão de
+  todo clipe pequeno.
 - Deafen silencia `voice` e `notify`; `self` e `system` continuam — senão o
   próprio som de "voltar a ouvir" não tocaria.
 - O evento próprio de join/leave sai do `voice.onChange` (local, imediato, e o

@@ -1,0 +1,85 @@
+<meta charset="utf-8" />
+<!--
+  O renderer do medidor (M12). Ver scripts/measure-sounds.mjs para o porquê de
+  isto rodar dentro do Electron. Aqui só se decodifica e se mede: quem lê o
+  disco, calcula sha256 e escreve o measured.json é o launcher, em Node.
+-->
+<script>
+  const { ipcRenderer } = require("electron");
+  const fs = require("node:fs");
+  const path = require("node:path");
+
+  /** 48 kHz é a taxa canônica do projeto — e a do AudioContext do app. */
+  const SR = 48000;
+  /** piso da "região ativa": abaixo disto é silêncio para efeito de RMS */
+  const FLOOR = 10 ** (-60 / 20);
+
+  /**
+   * O RMS é medido sobre a REGIÃO ATIVA, não sobre o arquivo inteiro.
+   *
+   * Foi o que a troca pelos arquivos do Discord obrigou a corrigir: eles trazem
+   * silêncio nas pontas (o `disconnected` tem 1216 ms de arquivo para 911 ms de
+   * som). RMS do arquivo inteiro conta esse silêncio, o número desce, e o ganho
+   * sobe para compensar um silêncio — o clipe acabaria tocando ACIMA do alvo
+   * justamente por ter cauda vazia. O pico continua sendo do arquivo inteiro:
+   * ele é sobre não clipar, e um pico fora da região ativa clipa igual.
+   */
+  function measure(buf) {
+    const n = buf.length;
+    const chans = [];
+    for (let c = 0; c < buf.numberOfChannels; c++) chans.push(buf.getChannelData(c));
+    const loud = (i) => {
+      let m = 0;
+      for (const d of chans) m = Math.max(m, Math.abs(d[i]));
+      return m;
+    };
+
+    let ini = 0;
+    let fim = n - 1;
+    while (ini < n && loud(ini) < FLOOR) ini++;
+    while (fim > ini && loud(fim) < FLOOR) fim--;
+
+    let soma = 0;
+    let amostras = 0;
+    let pico = 0;
+    for (let i = 0; i < n; i++) {
+      for (const d of chans) {
+        const v = d[i];
+        if (Math.abs(v) > pico) pico = Math.abs(v);
+        if (i >= ini && i <= fim) {
+          soma += v * v;
+          amostras++;
+        }
+      }
+    }
+    const rms = Math.sqrt(soma / Math.max(1, amostras));
+    return {
+      canais: buf.numberOfChannels,
+      taxa: buf.sampleRate,
+      ms: Math.round(buf.duration * 1000),
+      msAtivos: Math.round(((fim - ini + 1) / SR) * 1000),
+      rms: +rms.toFixed(4),
+      pico: +pico.toFixed(3),
+      porRms: 0.1 / rms,
+      porPico: 0.89 / pico,
+    };
+  }
+
+  (async () => {
+    try {
+      const { dir, files } = await ipcRenderer.invoke("plano");
+      const report = [];
+      for (const f of files) {
+        const bytes = fs.readFileSync(path.join(dir, f));
+        const ctx = new OfflineAudioContext(1, 1, SR);
+        const buf = await ctx.decodeAudioData(
+          bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        );
+        report.push({ file: f, ...measure(buf) });
+      }
+      ipcRenderer.send("pronto", report);
+    } catch (e) {
+      ipcRenderer.send("falhou", String(e && e.stack ? e.stack : e));
+    }
+  })();
+</script>
