@@ -7,7 +7,6 @@ import { config } from "./config.js";
 import type { Guild, InviteProblem } from "./guild.js";
 import type { Store } from "./store.js";
 import type { Sessions } from "./sessions.js";
-import { SlidingWindow } from "./limits.js";
 
 /**
  * OAuth do Discord (doc §5): o backend é o confidential client E usa PKCE
@@ -123,20 +122,16 @@ export function registerOAuthRoutes(
   const pending = new Map<string, PendingAuth>();
 
   /**
-   * Teto de fluxos de OAuth simultâneos. Uma guild de 10 amigos não chega perto
-   * disto nem com todo mundo logando ao mesmo tempo em duas máquinas; o número
-   * existe para que o crescimento tenha FIM, não para apertar o uso normal.
+   * Teto de fluxos de OAuth simultâneos, aplicado por DESPEJO do mais antigo.
+   *
    * Cada entrada é pequena (dois base64url de 43 chars e três campos), então
-   * 5 000 são alguns megabytes — longe do `limits: { memory: 1Gi }` do pod.
+   * 20 000 são poucos megabytes — longe do `limits: { memory: 1Gi }` do pod. O
+   * número é generoso de propósito: quanto maior o teto, mais requisições um
+   * atacante precisa emendar DENTRO dos segundos de um login real para chegar a
+   * despejar o fluxo de alguém. Uma guild de dez amigos nunca encosta nele.
    */
-  const MAX_PENDING_AUTH = 5_000;
+  const MAX_PENDING_AUTH = 20_000;
 
-  /**
-   * 20 inícios de login por minuto por IP. Um humano hesitante faz três ou
-   * quatro; o desktop faz um por clique no botão. Deixa folga para uma casa
-   * inteira atrás do mesmo NAT e ainda assim torna o enchimento do mapa caro.
-   */
-  const startWindow = new SlidingWindow(20, 60_000);
   const redirectUri = config.publicBaseUrl + "/auth/discord/callback";
 
   app.get("/auth/discord/start", async (req, reply) => {
@@ -153,18 +148,24 @@ export function registerOAuthRoutes(
         .send({ error: "query inválida — redirect_port entre 1024 e 65535, invite alfanumérico de até 32 chars" });
     }
 
-    // Rate limit por IP (auditoria de segurança do M12). Esta rota é ANÔNIMA —
-    // não precisa de conta, convite nem token — e cada acerto grava uma entrada
-    // que vive 10 min. Sem freio, qualquer pessoa na internet enche a memória do
-    // pod (`limits: { memory: 1Gi }`, `replicas: 1`, `strategy: Recreate`: o
-    // OOMKill derruba todas as chamadas). Como no GET público de convite, a
-    // TENTATIVA consome a cota — é o custo de tentar que se quer limitar.
-    const espera = startWindow.retryAfterMs(req.ip);
-    if (espera > 0) {
-      reply.header("retry-after", String(Math.max(1, Math.ceil(espera / 1000))));
-      return reply.code(429).send({ error: "muitas tentativas", retry_after: Number((espera / 1000).toFixed(3)) });
-    }
-    startWindow.record(req.ip);
+    // NÃO há rate limit aqui, e isso é decisão — a segunda sobre esta rota.
+    //
+    // Na 1ª rodada da auditoria eu pus uma janela por `req.ip`, copiando o GET
+    // público de convite. A 2ª rodada mostrou que era pior que não ter: o
+    // cluster usa `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT
+    // do tráfego externo e nem o Traefik vê o IP de origem (medido: as conexões
+    // externas chegam nele como 10.42.0.0). Sem IP de visitante, a janela era um
+    // balde ÚNICO — e 21 requisições anônimas por minuto trancavam o login de
+    // TODO MUNDO, web e desktop. Na única porta de autenticação do projeto.
+    //
+    // O recurso que precisava de proteção é a MEMÓRIA do mapa `pending`, e quem
+    // a protege é o teto lá embaixo. O custo de CPU por requisição é 32 bytes
+    // aleatórios e um sha256; a varredura virou O(1) amortizado. Não há
+    // amplificação que justifique arriscar o lockout.
+    //
+    // Recuperar o IP real exigiria `externalTrafficPolicy: Local` no Service do
+    // Traefik — mudança de CLUSTER, que afeta todos os outros apps do KubeCluster
+    // e não cabe decidir aqui.
 
     // Faxina preguiçosa: com ~10 usuários não vale um timer só para isto.
     //
@@ -179,13 +180,18 @@ export function registerOAuthRoutes(
       pending.delete(state);
     }
 
-    // Teto duro, depois da faxina: o rate limit por IP já segura o caso normal,
-    // mas uma botnet distribuída passa por ele. Recusar o fluxo NOVO é melhor
-    // que derrubar o pod para todo mundo — inclusive para quem já está em
-    // chamada, já que o processo é o mesmo.
+    // Teto por DESPEJO, e não por recusa. A primeira versão respondia 503 no
+    // teto, o que continuava sendo lockout com outra roupa: enchido o mapa,
+    // ninguém mais loga. Descartar a entrada MAIS ANTIGA inverte quem paga —
+    // um login que começa agora sempre encontra vaga, e quem é descartado é um
+    // fluxo parado há mais tempo (quase sempre lixo abandonado; o resgate real
+    // leva segundos, não minutos).
+    //
+    // O Map preserva ordem de inserção e o TTL é constante, então a primeira
+    // chave é sempre a mais antiga.
     if (pending.size >= MAX_PENDING_AUTH) {
-      app.log.warn({ pendentes: pending.size }, "fluxos de OAuth pendentes no teto — recusando novos");
-      return reply.code(503).send({ error: "servidor ocupado — tente de novo em alguns minutos" });
+      const maisAntiga = pending.keys().next();
+      if (!maisAntiga.done) pending.delete(maisAntiga.value);
     }
 
     const state = randomBytes(32).toString("base64url");

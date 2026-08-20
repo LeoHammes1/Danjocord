@@ -270,6 +270,34 @@ test("ALTA: com trustProxy, dois visitantes atrás do MESMO proxy têm baldes se
   assert.equal((await comoProxy("198.51.100.9")).statusCode, 200, "outro visitante não pode estar trancado");
 });
 
+test("ALTA: enxurrada anônima não tranca o login — o teto despeja o mais antigo", async () => {
+  // A 1ª versão respondia 503 no teto, o que era lockout com outra roupa. E a
+  // janela por `req.ip` que eu tinha posto era pior ainda: o cluster faz SNAT
+  // (externalTrafficPolicy Cluster), então TODOS compartilhavam um balde e 21
+  // requisições anônimas por minuto trancavam o login de todo mundo.
+  process.env.DISCORD_CLIENT_ID = "test-client-id";
+  process.env.DISCORD_CLIENT_SECRET = "test-client-secret";
+  const { registerOAuthRoutes } = await import("../src/oauth.js");
+  const oauthApp = Fastify();
+  registerOAuthRoutes(oauthApp, store, sessions, guild);
+  await oauthApp.ready();
+
+  const start = () => oauthApp.inject({ method: "GET", url: "/auth/discord/start" });
+
+  // enxurrada: muito mais que qualquer uso legítimo
+  let naoRedirecionou = 0;
+  for (let i = 0; i < 600; i++) {
+    const r = await start();
+    if (r.statusCode !== 302) naoRedirecionou++;
+  }
+  assert.equal(naoRedirecionou, 0, "nenhuma requisição pode ser recusada — era o lockout");
+
+  // e o login de um humano DEPOIS da enxurrada continua funcionando
+  const humano = await start();
+  assert.equal(humano.statusCode, 302, "o login legítimo tem de continuar passando");
+  assert.match(String(humano.headers.location ?? ""), /discord\.com\/oauth2\/authorize/);
+});
+
 test("...e o XFF que o CLIENTE escreve não fura a janela", async () => {
   // é a objeção que o comentário antigo levantava, e ela é correta para XFF
   // cru. Com contagem de saltos o proxy-addr descarta o que o cliente pôs e
