@@ -105,6 +105,15 @@ tipo em `apps/client/src/desktop.d.ts`):
   `apps/server/test/oauth-loopback.test.ts`).
 - **Segredos**: tokens via `safeStorage` num JSON em userData (o cliente troca
   localStorage pela ponte quando é desktop; web segue localStorage).
+- **CSP**: o header do Fastify **não alcança este renderer** — quem serve é o
+  scheme `app://`, dentro do Electron. Até o M12 o desktop rodava a mesma UI do
+  navegador **sem CSP nenhuma**. Ela agora sai de `src/csp.ts` (função pura,
+  testada) e é posta no `protocol.handle`, só nas respostas `.html`. A diferença
+  para a do servidor é o `connect-src`: no web a API é a MESMA origem e `'self'`
+  basta; aqui a origem é `app://bundle` e a API precisa ser nomeada, junto do
+  `wss://` do gateway — que o `connect-src` também governa (WebRTC não).
+  Armadilha do formato: origem com barra no fim é inválida e o navegador
+  descarta a **diretiva inteira em silêncio**; o teste cobre isso.
 
 Release do desktop: tag `v*` → `.github/workflows/desktop-release.yml`
 (windows-latest) gera o NSIS e publica no GitHub Release da tag (draft —

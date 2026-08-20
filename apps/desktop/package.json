@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "bundle-renderer": "node scripts/bundle-renderer.mjs",
     "dist": "npm run bundle-renderer && npm run build && electron-builder --win",
-    "dist:dir": "npm run bundle-renderer && npm run build && electron-builder --win --dir"
+    "dist:dir": "npm run bundle-renderer && npm run build && electron-builder --win --dir",
+    "test": "npm run build && node --test test/"
   },
   "dependencies": {
     "electron-updater": "^6.6.0",

@@ -3,6 +3,7 @@ import { autoUpdater } from "electron-updater";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
+import { rendererCsp } from "./csp";
 import { oauthLogin } from "./oauth-loopback";
 import { registerScreenPicker } from "./picker";
 import { labelForKeycode, pttCaptureNextKey, pttSetKey, pttShutdown, setPttEmitter } from "./ptt";
@@ -84,7 +85,17 @@ function registerAppProtocol(): void {
       return new Response("não encontrado", { status: 404 });
     }
     // net.fetch de file:// resolve mime type e streaming por conta própria
-    return net.fetch(pathToFileURL(file).toString());
+    return net.fetch(pathToFileURL(file).toString()).then((res) => {
+      // CSP aqui porque o header do Fastify NÃO alcança este renderer: quem
+      // serve é o scheme app://, dentro do Electron. Sem esta linha o desktop
+      // rodava a mesma UI do navegador SEM a CSP que o navegador recebe.
+      // Só no documento: pôr em cada asset é ruído sem efeito.
+      if (!file.endsWith(".html")) return res;
+      const headers = new Headers(res.headers);
+      headers.set("content-security-policy", rendererCsp(serverUrl));
+      headers.set("x-content-type-options", "nosniff");
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    });
   });
   console.log(`[app://] protocolo registrado — servindo ${RENDERER_DIST}`);
 }
