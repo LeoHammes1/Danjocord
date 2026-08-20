@@ -12,6 +12,19 @@ const SEQ_MASK = 0x3f_ffffn; // 22 bits
 
 export function nextId(): bigint {
   let now = BigInt(Date.now());
+  // REGRESSÃO DE RELÓGIO (roadmap 121). `Date.now()` não é monotônico: NTP
+  // corrigindo para trás, VM suspensa e retomada, ou alguém acertando a hora
+  // fazem `now < lastMs`. Sem esta linha isso caía no `else` lá embaixo, que
+  // ZERA o contador — e o gerador reemitia ids de um milissegundo JÁ USADO.
+  //
+  // O estrago não é teórico nem cosmético: o id é PRIMARY KEY de `messages` (o
+  // INSERT falha) e é também o cursor de paginação (a ordem sai errada). Um
+  // salto de um segundo para trás basta.
+  //
+  // Prender em `lastMs` mantém a monotonia: enquanto o relógio real não
+  // alcança, os ids saem do último instante conhecido com o contador andando —
+  // 4 milhões de vagas por ms, folga de sobra para dez amigos.
+  if (now < lastMs) now = lastMs;
   if (now === lastMs) {
     seq = (seq + 1n) & SEQ_MASK;
     if (seq === 0n) {

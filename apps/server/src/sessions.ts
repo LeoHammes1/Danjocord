@@ -150,6 +150,28 @@ export class Sessions {
     };
   }
 
+  /**
+   * Apaga sessões velhas demais para servirem a qualquer coisa (roadmap 119).
+   *
+   * A tabela nunca era limpa: cada rotação de refresh grava uma linha nova e
+   * marca a anterior como revogada, e uma sessão ativa rotaciona a cada ~15 min
+   * (o TTL do access). Nada apagava nada, nunca.
+   *
+   * O critério NÃO é "expirou", e a razão está no `rotate`: o check de revogado
+   * vem ANTES do de expiração de propósito, porque "um token roubado é
+   * evidência de roubo mesmo velho" — apagar no vencimento destruiria
+   * exatamente o sinal que a detecção de reuso existe para captar.
+   *
+   * Então a retenção é o TTL do refresh DE NOVO depois do vencimento: um token
+   * apresentado dentro de ~60 dias ainda derruba a família inteira, e o que
+   * passa disso deixa de ocupar espaço. É a troca entre "guardar prova" e
+   * "crescer para sempre", com o lado da prova generoso.
+   */
+  purgeOld(now: number = Date.now()): number {
+    const corte = now - config.refreshTokenTtlMs;
+    return this.db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(corte).changes;
+  }
+
   private getByHash(tokenHash: string): SessionRow | undefined {
     return this.db.prepare("SELECT * FROM sessions WHERE token_hash = ?").get(tokenHash) as SessionRow | undefined;
   }

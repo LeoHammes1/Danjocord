@@ -238,6 +238,12 @@ function sweepOrphanAttachments(): void {
   // FALHAM (o cache negativo também grava).
   const previews = store.deleteExpiredLinkPreviews();
   if (previews > 0) app.log.info(`preview de link: ${previews} entradas vencidas apagadas`);
+  // Terceira carona no mesmo timer (roadmap 119): a tabela `sessions` também
+  // nunca era limpa. Cada rotação de refresh grava uma linha, e uma sessão
+  // ativa rotaciona a cada ~15 min — para sempre. Ver `purgeOld` para o porquê
+  // de o corte ser bem depois do vencimento, e não nele.
+  const sessoes = sessions.purgeOld();
+  if (sessoes > 0) app.log.info(`sessões: ${sessoes} linhas antigas apagadas`);
 }
 sweepOrphanAttachments();
 const orphanSweeper = setInterval(sweepOrphanAttachments, ORPHAN_SWEEP_INTERVAL_MS);

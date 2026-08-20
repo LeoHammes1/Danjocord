@@ -390,6 +390,59 @@ test("ALTA: uploads SIMULTÂNEOS respeitam a cota — a checagem e o registro s�
 });
 
 // ---------------------------------------------------------------------------
+// Roadmap 121 — relógio andando para trás
+// ---------------------------------------------------------------------------
+
+test("relógio voltando NÃO faz o gerador reemitir ids já usados", async (t) => {
+  const { nextId } = await import("../src/db/snowflake.js");
+  t.mock.timers.enable({ apis: ["Date"], now: 1_800_000_000_000 });
+
+  const antes = [nextId(), nextId(), nextId()];
+  // NTP corrigindo para trás, VM retomada, alguém acertando a hora: `Date.now()`
+  // não é monotônico. Antes disto o `else` zerava o contador e o gerador
+  // reemitia ids de um milissegundo JÁ USADO — colisão de PRIMARY KEY em
+  // `messages`, e ordem errada na paginação (o id É o cursor).
+  t.mock.timers.setTime(1_800_000_000_000 - 5_000);
+  const depois = [nextId(), nextId(), nextId()];
+
+  const todos = [...antes, ...depois];
+  assert.equal(new Set(todos.map(String)).size, todos.length, "nenhum id pode repetir");
+  for (let i = 1; i < todos.length; i++) {
+    assert.ok(todos[i]! > todos[i - 1]!, `id ${i} não é maior que o anterior — a monotonia quebrou`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Roadmap 119 — a tabela sessions nunca era limpa
+// ---------------------------------------------------------------------------
+
+test("sessões velhas saem, mas a prova de reuso sobrevive ao vencimento", async () => {
+  const { Sessions } = await import("../src/sessions.js");
+  const { openDb } = await import("../src/db/index.js");
+  const { config } = await import("../src/config.js");
+  const dbLocal = openDb(":memory:");
+  const storeLocal = new Store(dbLocal);
+  const s = new Sessions(dbLocal, storeLocal);
+  const u = storeLocal.findOrCreateDevUser("purga");
+
+  const conta = (): number => Number((dbLocal.prepare("SELECT count(*) c FROM sessions").get() as { c: bigint }).c);
+  for (let i = 0; i < 5; i++) s.create(u.id);
+  assert.equal(conta(), 5, "sanidade: as cinco existem");
+
+  const agora = Date.now();
+  // ainda dentro da janela: NADA sai — é aqui que mora a evidência de roubo,
+  // porque o `rotate` checa revogado ANTES de expiração de propósito
+  assert.equal(s.purgeOld(agora), 0, "sessão viva não pode ser apagada");
+  assert.equal(s.purgeOld(agora + config.refreshTokenTtlMs), 0, "recém-vencida também não");
+
+  // bem depois do vencimento (TTL do refresh de novo): aí sim
+  const apagadas = s.purgeOld(agora + 2 * config.refreshTokenTtlMs + 1000);
+  assert.equal(apagadas, 5, "as velhas demais têm de sair");
+  assert.equal(conta(), 0);
+  dbLocal.close();
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 

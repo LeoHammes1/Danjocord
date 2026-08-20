@@ -171,9 +171,9 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 116. ✅ `M` **Deploy limpo nasce trancado** — allowlist vazia + `is_admin` default 0. Falta bootstrap do primeiro dono.
 117. 🟡 `M` Zero rate limit no REST e no gateway. (M12: o GATEWAY tem — op 20 a 60/s e op 3 a 10/s por sessão, mais tetos de sessão e de ring buffer; os uploads e o GET público de convite também. O REST em geral — postar, reagir, editar — continua sem.)
 118. `M` **Zero backup do SQLite** — PVC local-path preso a um nó, sem snapshot.
-119. `M` Nada é purgado nunca (`sessions` acumula todas as gerações de refresh).
+119. ✅ `M` Nada é purgado nunca (`sessions` acumula todas as gerações de refresh). (M12: purga no mesmo sweeper dos órfãos, com corte BEM depois do vencimento — o `rotate` checa revogado antes de expiração de propósito, então apagar no vencimento destruiria a prova de reuso.)
 120. ✅ `P` Deploy mata a call sem aviso — o op 7 (Reconnect) existe no protocolo e no cliente, mas o servidor nunca o envia.
-121. `P` Regressão de relógio quebra o snowflake (`nextId()` só compara `now === lastMs`).
+121. ✅ `P` Regressão de relógio quebra o snowflake (`nextId()` só compara `now === lastMs`). (M12: trava de monotonia — relógio para trás caía no else, zerava o contador e reemitia ids de um ms já usado; o id é PRIMARY KEY de messages E o cursor de paginação.)
 122. ✅ `P` CI roda os testes (`pnpm test`: 105 do servidor + 23 do cliente) — entrou junto do M9, porque a validação de upload é onde um erro é furo de segurança.
 123. `M` `mediasoup-client` inteiro carrega antes da tela de login.
 124. `P` Runbook de operação (restart, restore, logs, rollback).
