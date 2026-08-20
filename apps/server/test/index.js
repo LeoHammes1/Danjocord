@@ -44,6 +44,9 @@ import "./static-client.test.ts";
 // correções da auditoria do M12: o quarto caminho do ban, id fora do int64 e o
 // esquema do avatar_override. Banco :memory: próprio, sem relógio mockado.
 import "./security-m12.test.ts";
+// tetos e freios do gateway (M12 rodada 2). Sobe um http.Server próprio na
+// porta 0 e clientes ws de verdade — os tetos só se manifestam no socket.
+import "./gateway-limits.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte

@@ -15,6 +15,7 @@ import {
   type VoiceState,
 } from "@danjocord/protocol";
 import { config } from "./config.js";
+import { SlidingWindow } from "./limits.js";
 import type { Store } from "./store.js";
 import { authenticate } from "./auth.js";
 
@@ -32,6 +33,8 @@ interface GatewaySession {
   token: string;
   seq: number;
   ring: { s: number; raw: string }[];
+  /** soma dos bytes de `ring` — teto próprio, ver MAX_RING_BYTES (auditoria M12) */
+  ringBytes: number;
   ws: WebSocket | null;
   lastHeartbeatAt: number;
   disconnectedAt: number | null;
@@ -70,6 +73,55 @@ export class Gateway {
    */
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
   private readonly sessions = new Map<string, GatewaySession>();
+
+  /**
+   * Tetos de sessão (auditoria M12, rodada 2). Nenhum existia: o
+   * `sessions.set` do Identify não perguntava quantas aquele usuário já tinha,
+   * nem quantas havia no total. Um membro autenticado abria K WebSockets com o
+   * MESMO token e cada um ganhava ring buffer próprio.
+   *
+   * 8 por usuário cobre folgado o uso real (desktop + navegador + celular, com
+   * abas duplicadas e sessões velhas ainda dentro da janela de Resume). O teto
+   * global existe porque 10 amigos × 8 = 80, e qualquer número muito acima
+   * disso é ataque, não uso.
+   */
+  private static readonly MAX_SESSIONS_PER_USER = 8;
+  private static readonly MAX_SESSIONS_TOTAL = 200;
+
+  /**
+   * Teto do ring buffer em BYTES, além do teto em entradas.
+   *
+   * `config.ringBufferSize` limitava só a CONTAGEM (512 entradas), e cada
+   * entrada guarda o JSON já serializado. Com mensagens no tamanho máximo
+   * (`CreateMessageBody`, 4000 chars) isso dá ~2 MB por sessão — e o
+   * `dispatchRaw` serializa POR sessão, porque o `s` é o sequence de cada uma,
+   * então N sessões são N cópias distintas e não uma compartilhada.
+   *
+   * 256 KB por sessão × 200 sessões = 50 MB no pior caso absoluto, contra o
+   * `limits: { memory: 1Gi }` do pod. O Resume perde replay quando o buffer
+   * corta por bytes, mas perder replay é um F5; perder o pod é a chamada toda.
+   */
+  private static readonly MAX_RING_BYTES = 256 * 1024;
+
+  /**
+   * Freio da sinalização de voz (op 20). O `chainOp` serializa por sessão mas
+   * NÃO limita taxa: o `join` repetido no mesmo canal é o op mais lucrativo do
+   * projeto — cada um dispara o leave implícito, fecha o router quando a sala
+   * esvazia, recria router + audioLevelObserver, e ainda faz DOIS broadcasts de
+   * VOICE_STATE_UPDATE para a guild inteira. Um frame de 57 bytes vira trabalho
+   * de milissegundos no worker e fan-out para todo mundo — amplificação medida
+   * na auditoria em ~58 Mbps de saída para 0,87 Mbps de entrada.
+   *
+   * 60/s é ordens de grandeza acima de qualquer uso humano (entrar na voz,
+   * criar dois transports, produzir, consumir os pares) e ainda assim tira o
+   * multiplicador da mão de quem manda em laço.
+   */
+  private static readonly VOICE_OPS_PER_SESSION = 60;
+  private static readonly VOICE_OPS_WINDOW_MS = 1_000;
+  private readonly voiceOps = new SlidingWindow(
+    Gateway.VOICE_OPS_PER_SESSION,
+    Gateway.VOICE_OPS_WINDOW_MS,
+  );
   private readonly sweeper: NodeJS.Timeout;
 
   /**
@@ -138,7 +190,19 @@ export class Gateway {
     session.seq += 1;
     const raw = JSON.stringify({ op: Op.Dispatch, s: session.seq, t, d });
     session.ring.push({ s: session.seq, raw });
-    if (session.ring.length > config.ringBufferSize) session.ring.shift();
+    session.ringBytes += raw.length;
+    // Dois tetos: entradas (janela de replay do Resume) e BYTES. O de bytes é
+    // da auditoria M12 — sem ele, 512 mensagens no tamanho máximo davam ~2 MB
+    // por sessão, e o dispatchRaw serializa POR sessão (o `s` é o sequence de
+    // cada uma), então K sessões eram K cópias e não uma compartilhada.
+    while (
+      session.ring.length > config.ringBufferSize ||
+      (session.ringBytes > Gateway.MAX_RING_BYTES && session.ring.length > 1)
+    ) {
+      const saiu = session.ring.shift();
+      if (saiu === undefined) break;
+      session.ringBytes -= saiu.raw.length;
+    }
     if (session.ws?.readyState === WebSocket.OPEN) session.ws.send(raw);
   }
 
@@ -197,8 +261,18 @@ export class Gateway {
     if (this.sessions.get(session.id) !== session) return;
     this.sessions.delete(session.id);
     this.onSessionGone?.({ userId: session.user.id, sessionId: session.id });
-    session.ws?.close(code, reason);
+    const ws = session.ws;
+    ws?.close(code, reason);
     session.ws = null;
+    // ARMADILHA (auditoria M12): `close()` é o handshake GRACIOSO — o servidor
+    // manda o close frame e só destrói o socket quando o cliente responde, ou
+    // depois do closeTimeout do `ws`, que são 30 SEGUNDOS. Um cliente que
+    // simplesmente ignora o frame continua mandando dados nesse intervalo, e o
+    // `Receiver` segue emitindo 'message'. Para o kickado isso era meia janela
+    // de moderação: dava para seguir mandando op 20 e op 3 com a sessão já
+    // morta. O guard no onMessage fecha a porta lógica; este timer garante que
+    // o socket também morre, em vez de ficar meio minuto de pé.
+    if (ws) setTimeout(() => ws.terminate(), 2_000).unref();
     this.broadcastPresence(session.user.id);
   }
 
@@ -240,6 +314,18 @@ export class Gateway {
   }
 
   private onMessage(ws: WebSocket, state: ConnState, msg: ClientMessage): void {
+    // GUARD DA SESSÃO MORTA (auditoria M12). `state.session` é a referência que
+    // esta CONEXÃO guardou no Identify; o `dropSession` tira a sessão do mapa
+    // mas não tem como reescrever essa referência. Sem esta checagem, um
+    // kickado/banido que ignore o close frame continuava sendo atendido pelos
+    // handlers de op 3 e op 20 durante os 30 s do closeTimeout do `ws` — só o
+    // op 1 revalidava pertencimento. O mapa é a fonte da verdade sobre quem
+    // ainda existe; a referência guardada não é.
+    if (state.session !== null && this.sessions.get(state.session.id) !== state.session) {
+      state.session = null;
+      ws.terminate();
+      return;
+    }
     switch (msg.op) {
       case Op.Heartbeat: {
         const session = state.session;
@@ -295,12 +381,35 @@ export class Gateway {
         }
         if (state.identifyTimer) clearTimeout(state.identifyTimer);
 
+        // TETOS DE SESSÃO (auditoria M12). Sem eles, um membro autenticado abria
+        // K WebSockets com o MESMO token e cada um ganhava ring buffer próprio —
+        // e o fan-out serializa POR sessão, então o custo por mensagem postada
+        // crescia com K. Reproduzido com K=120.
+        //
+        // Derruba a MAIS ANTIGA em vez de recusar a nova: recusar puniria quem
+        // acabou de abrir o app (e deixaria vivas as sessões velhas, que são
+        // justamente as candidatas a lixo). É também o que a intuição espera —
+        // fazer login num quarto dispositivo desconecta o primeiro.
+        const doUsuario = [...this.sessions.values()].filter((s) => s.user.id === user.id);
+        while (doUsuario.length >= Gateway.MAX_SESSIONS_PER_USER) {
+          const maisAntiga = doUsuario.shift();
+          if (maisAntiga) this.dropSession(maisAntiga, "limite de sessões", CloseCode.SessionTimeout);
+        }
+        // Teto global: só é alcançável em ataque (10 amigos × 8 = 80), e aqui
+        // recusar é o certo — a alternativa seria derrubar a sessão de OUTRA
+        // pessoa para acomodar quem está inundando.
+        if (this.sessions.size >= Gateway.MAX_SESSIONS_TOTAL) {
+          ws.close(CloseCode.SessionTimeout, "servidor com sessões demais");
+          return;
+        }
+
         const session: GatewaySession = {
           id: randomUUID(),
           user,
           token: msg.d.token,
           seq: 0,
           ring: [],
+          ringBytes: 0,
           ws,
           lastHeartbeatAt: Date.now(),
           disconnectedAt: null,
@@ -381,6 +490,28 @@ export class Gateway {
           ws.close(CloseCode.NotAuthenticated);
           return;
         }
+        // Freio do op 20 (auditoria M12), ANTES de qualquer outra coisa.
+        //
+        // O `chainOp` serializa por sessão mas não limita TAXA, e o `join`
+        // repetido recria router + observer e faz dois broadcasts para a guild
+        // — 57 bytes de entrada viravam fan-out para todo mundo.
+        //
+        // A ORDEM foi corrigida por um teste: com a checagem de `handler` na
+        // frente, um servidor sem o módulo de voz ligado respondia "voz
+        // indisponível" a um laço infinito sem NUNCA frear. O limite é sobre a
+        // taxa de FRAMES, não sobre o que eles conseguem fazer.
+        //
+        // A chave é a SESSÃO e não o usuário: derrubar a cota de alguém por
+        // causa de outra aba dele seria pior que o ataque.
+        if (this.voiceOps.retryAfterMs(session.id) > 0) {
+          this.send(ws, {
+            op: Op.VoiceResponse,
+            d: { req: msg.d.req, ok: false, error: "muitas operações de voz — desacelere" },
+          });
+          return;
+        }
+        this.voiceOps.record(session.id);
+
         const handler = this.onVoiceRequest;
         if (!handler) {
           this.send(ws, { op: Op.VoiceResponse, d: { req: msg.d.req, ok: false, error: "voz indisponível" } });
