@@ -134,6 +134,16 @@ function producerSource(producer: types.Producer): ProducerSource | undefined {
   return (producer.appData as { source?: ProducerSource }).source;
 }
 
+/**
+ * snake_case no fio, mas `createTransport` também é aceito: normalizar custa uma
+ * regex e elimina uma classe inteira de quebra boba na integração. Extraída de
+ * dentro do `dispatch` no M12 — o `handleRequest` precisa do mesmo nome para
+ * decidir se a op é de moderação, e duas cópias divergiriam.
+ */
+function normalizeMethod(m: string): string {
+  return m.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
 export class Voice {
   /** sessão de voz por gateway session — UMA por sessionId, por contrato */
   private readonly sessions = new Map<string, VoiceSession>();
@@ -193,7 +203,31 @@ export class Voice {
    * valida o `p` com o schema do método e executa. Exceção daqui vira
    * { ok: false, error } no gateway — mensagens curtas em pt-BR de propósito.
    */
+  /**
+   * Ops que agem sobre a sessão de OUTRA pessoa. Elas NÃO passam pela fila do
+   * ator (auditoria M12, rodada 2) — serializam na fila do ALVO, lá dentro.
+   *
+   * Rodar moderação na fila do ator não protegia nada (ela não toca no estado
+   * da sessão dele) e causava dois defeitos:
+   *
+   *  1. DEADLOCK. `disconnect_user` esperava a fila do alvo de DENTRO da fila
+   *     do ator. Dois staff se desconectando mutuamente fechavam o ciclo: a
+   *     fila A espera a B, que espera a A. As duas morriam para sempre — nem
+   *     `leave` respondia — e como `kick`/`ban` do REST chamam
+   *     `removeUserFromVoice`, a requisição HTTP de expulsão ficava pendurada.
+   *  2. MUTE CONCORRENTE. Dois admins têm filas DIFERENTES, então dois
+   *     `server_mute` sobre o mesmo alvo se intercalavam. O comentário do
+   *     `syncServerMute` prometia que "mute e unmute concorrentes convergem
+   *     para a última leitura"; não convergiam, porque `producer.paused` só
+   *     muda quando a chamada ao worker VOLTA — um mute que chega no meio de
+   *     um `resume()` em voo via "já está pausado" e não fazia nada.
+   *
+   * Serializar por ALVO resolve os dois: é o alvo que tem estado disputado.
+   */
+  private static readonly OPS_DE_MODERACAO = new Set(["disconnect_user", "server_mute"]);
+
   async handleRequest(ctx: VoiceCtx, m: string, p: unknown): Promise<unknown> {
+    if (Voice.OPS_DE_MODERACAO.has(normalizeMethod(m))) return this.dispatch(ctx, m, p);
     // SERIALIZAÇÃO por gateway session (revisão M3, achados 1 e 6): dois joins
     // — ou um leave no meio de um join — da MESMA sessão intercalados nos
     // awaits do worker deixavam router/sessão órfãos permanentes (reproduzido).
@@ -217,9 +251,7 @@ export class Voice {
   }
 
   private async dispatch(ctx: VoiceCtx, m: string, p: unknown): Promise<unknown> {
-    // o fio é snake_case, mas normalizar camelCase ("createTransport") custa
-    // uma regex e elimina uma classe inteira de quebra boba na integração
-    const method = m.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+    const method = normalizeMethod(m);
     switch (method) {
       case "join":
         return this.join(ctx, parseParams(VoiceJoinParams, method, p));
@@ -721,14 +753,27 @@ export class Voice {
 
     // vale para o alvo mesmo FORA da voz (aí não há o que pausar nem o que
     // anunciar; quando ele entrar, o produce aplica)
-    for (const session of [...this.sessions.values()]) {
-      if (session.userId !== userId) continue;
-      await this.syncServerMute(session);
-      // revalidação pós-await (achado do M3): o alvo pode ter saído da voz
-      // durante o pause — anunciar por uma sessão morta seria mentira
-      if (this.sessions.get(session.sessionId) !== session) continue;
-      this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
-    }
+    // Cada alvo é sincronizado DENTRO da fila DELE (auditoria M12). Sem isto,
+    // dois admins em sessões diferentes tinham filas diferentes e seus
+    // `server_mute` sobre o MESMO alvo se intercalavam: como `producer.paused`
+    // só muda quando a chamada ao worker volta, um mute que chegava no meio de
+    // um `resume()` em voo via "já está pausado", não fazia nada, e o resume
+    // terminava soltando o áudio — usuário marcado como silenciado e AUDÍVEL.
+    // O comentário do `syncServerMute` prometia convergência e não entregava;
+    // agora a fila do alvo é quem garante a ordem.
+    await Promise.all(
+      [...this.sessions.values()]
+        .filter((session) => session.userId === userId)
+        .map((session) =>
+          this.chainOp(session.sessionId, async () => {
+            await this.syncServerMute(session);
+            // revalidação pós-await (achado do M3): o alvo pode ter saído da
+            // voz durante o pause — anunciar por uma sessão morta seria mentira
+            if (this.sessions.get(session.sessionId) !== session) return;
+            this.broadcast("VOICE_STATE_UPDATE", this.toVoiceState(session));
+          }),
+        ),
+    );
     return {};
   }
 
@@ -786,13 +831,15 @@ export class Voice {
         const session = this.sessions.get(sessionId);
         if (session) this.doLeave(session);
       };
-      if (sessionId === ctx.sessionId) {
-        // admin se desconectando: JÁ estamos dentro da fila desta sessão —
-        // enfileirar de novo seria esperar por nós mesmos (deadlock)
-        kick();
-      } else {
-        pending.push(this.chainOp(sessionId, kick));
-      }
+      // Sempre pela fila do ALVO, inclusive quando o alvo é o próprio ator.
+      //
+      // Antes havia um caso especial aqui — "admin se desconectando já está
+      // dentro da fila desta sessão, enfileirar de novo seria esperar por nós
+      // mesmos". Ele existia porque `disconnect_user` rodava dentro da fila do
+      // ator; agora não roda (ver OPS_DE_MODERACAO), então a exceção sumiu
+      // junto com o motivo dela. E o ciclo entre DUAS sessões — que o caso
+      // especial não cobria e travava as duas para sempre — deixou de existir.
+      pending.push(this.chainOp(sessionId, kick));
     }
     await Promise.all(pending);
     return {};

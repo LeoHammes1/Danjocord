@@ -1512,6 +1512,46 @@ test("disconnect_user tira o alvo da voz e não encosta em quem está junto", as
   }
 });
 
+test("ARMADILHA (auditoria M12): dois admins se desconectando NÃO travam as filas", async () => {
+  // O `disconnect_user` rodava dentro da fila do ATOR e esperava a fila do
+  // ALVO. Dois staff cruzados fechavam o ciclo: a fila A espera a B, que espera
+  // a A. As duas morriam PARA SEMPRE — nem `leave` respondia — e como kick/ban
+  // do REST chamam `removeUserFromVoice`, a requisição HTTP de expulsão ficava
+  // pendurada. O caso especial que existia cobria só o admin se desconectando a
+  // si mesmo, nunca o cruzado.
+  const admin2 = store.findOrCreateDevUser("admin2");
+  store.setRole(admin2.id, "admin");
+  const a: Ctx = { userId: admin.id, sessionId: "s-dl-a" };
+  const b: Ctx = { userId: admin2.id, sessionId: "s-dl-b" };
+  try {
+    await join(a, "2");
+    await join(b, "2");
+
+    // cruzados, sem ceder o event loop entre um e outro
+    const pa = voice.handleRequest(a, "disconnect_user", { user_id: admin2.id });
+    const pb = voice.handleRequest(b, "disconnect_user", { user_id: admin.id });
+
+    const prazo = new Promise((_, rej) => setTimeout(() => rej(new Error("DEADLOCK: as filas travaram")), 4000));
+    await Promise.race([Promise.all([pa, pb]), prazo]);
+
+    // e as filas continuam vivas depois: um leave posterior responde
+    const depois = Promise.race([
+      voice.handleRequest(a, "leave", {}),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("fila morta: leave não respondeu")), 3000)),
+    ]);
+    await depois;
+  } finally {
+    // Limpeza COM PRAZO. Sem isto, quando a regressão volta o `leaveQuietly`
+    // também cai na fila morta e trava — o arquivo inteiro pendura em vez de
+    // dar um teste vermelho. Aconteceu ao verificar esta correção: o runner
+    // ficou preso até o timeout externo, sem imprimir nada.
+    const comPrazo = (p: Promise<unknown>): Promise<unknown> =>
+      Promise.race([p, new Promise((r) => setTimeout(r, 2000))]);
+    await comPrazo(leaveQuietly(a));
+    await comPrazo(leaveQuietly(b));
+  }
+});
+
 test("disconnect_user com DUAS sessões de voz do MESMO usuário derruba as duas", async () => {
   // Pelo join, duas sessões de voz do mesmo usuário não coexistem (a segunda
   // expulsa a primeira). O cenário é forjado a partir de duas sessões REAIS,
