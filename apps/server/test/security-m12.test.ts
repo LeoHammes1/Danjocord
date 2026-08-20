@@ -349,6 +349,47 @@ test("ALTA: rota anônima não bufferiza megabytes de binário antes de autentic
 });
 
 // ---------------------------------------------------------------------------
+// ALTA — corrida no rate limit de upload
+// ---------------------------------------------------------------------------
+
+test("ALTA: uploads SIMULTÂNEOS respeitam a cota — a checagem e o registro são atômicos", async () => {
+  // O `retryAfterMs` era consultado no hook `onRequest` e o `record` só rodava
+  // no handler — e entre os dois o Fastify LÊ O CORPO, que é um await. N
+  // requisições disparadas juntas passavam todas com a janela em zero: medido
+  // pela auditoria, 60 simultâneas = 60 aceitas com UPLOAD_LIMIT = 10 (as
+  // mesmas 60 em série davam 10 aceitas e 50 recusadas).
+  const { registerAttachmentRoutes } = await import("../src/attachments/routes.js");
+  const { UPLOAD_LIMIT } = await import("../src/attachments/limits.js");
+  const upApp = Fastify();
+  registerAttachmentRoutes(upApp, store);
+  await upApp.ready();
+
+  // PNG mínimo de verdade: o provador lê magic bytes, não a extensão
+  const png = Buffer.from(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000100" +
+      "05fe02fea7d4b3000000000049454e44ae426082",
+    "hex",
+  );
+  const enviar = () =>
+    upApp.inject({
+      method: "POST",
+      url: "/api/attachments?filename=corrida.png",
+      headers: { authorization: "Bearer dev.corredor", "content-type": "application/octet-stream" },
+      payload: png,
+    });
+
+  const respostas = await Promise.all(Array.from({ length: 40 }, enviar));
+  const aceitas = respostas.filter((r) => r.statusCode === 201).length;
+  const recusadas = respostas.filter((r) => r.statusCode === 429).length;
+
+  assert.ok(
+    aceitas <= UPLOAD_LIMIT,
+    `${aceitas} uploads aceitos com limite de ${UPLOAD_LIMIT} — a corrida voltou`,
+  );
+  assert.ok(recusadas > 0, "o excedente tem de levar 429");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 

@@ -89,14 +89,22 @@ export function registerSoundRoutes(
         }
         const wait = uploadWindow.retryAfterMs(user.id);
         if (wait > 0) return tooManyRequests(reply, wait, "muitos uploads seguidos");
+        // CONSOME A COTA AQUI, junto da checagem (auditoria M12). O `record`
+        // morava no handler, e o Fastify lê o CORPO entre um e outro — então N
+        // requisições simultâneas passavam todas com a janela em zero. Aqui o
+        // estrago era pior que nos anexos: o soundboard é COMPARTILHADO e tem
+        // teto de 100 sons, então um disparo enchia as 91 vagas livres e todo
+        // mundo passava a levar 409.
+        //
+        // Tudo entre a leitura e a escrita da janela é síncrono
+        // (`authFromHeader`, `countSounds`, os dois métodos da janela), então o
+        // bloco é atômico — é por isso que precisa ficar junto.
+        uploadWindow.record(user.id);
       },
     },
     async (req, reply) => {
       const user = authFromHeader(req.headers.authorization, store);
       if (!user) return reply.code(401).send({ error: "não autenticado" });
-      // a TENTATIVA consome a cota (e não só o sucesso): senão mandar lixo
-      // repetidamente seria de graça, que é justamente o abuso barato
-      uploadWindow.record(user.id);
 
       const raw = req.query as { name?: string; gain?: string };
       const query = CreateSoundQuery.safeParse({

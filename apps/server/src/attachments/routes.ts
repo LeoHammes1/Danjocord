@@ -67,14 +67,23 @@ export function registerAttachmentRoutes(app: FastifyInstance, store: Store): vo
         }
         const wait = uploadWindow.retryAfterMs(user.id);
         if (wait > 0) return tooManyRequests(reply, wait, "muitos envios seguidos");
+        // CONSOME A COTA AQUI, no mesmo passo síncrono da checagem (auditoria
+        // M12). Antes o `record` morava no handler, e entre os dois o Fastify
+        // LIA O CORPO — um await. N requisições disparadas juntas passavam
+        // todas pelo `retryAfterMs` com a janela ainda em zero: medido, 60
+        // uploads simultâneos deram 60 aceitos com UPLOAD_LIMIT = 10 (as mesmas
+        // 60 em série davam 10 e 50).
+        //
+        // Nada entre a leitura e a escrita da janela pode ceder o event loop.
+        // `authFromHeader`, `totalAttachmentBytes` e os dois métodos da janela
+        // são todos síncronos, então este bloco é atômico na prática — e é por
+        // isso que ele precisa ficar junto, e não porque "é mais organizado".
+        uploadWindow.record(user.id);
       },
     },
     async (req, reply) => {
       const user = authFromHeader(req.headers.authorization, store);
       if (!user) return reply.code(401).send({ error: "não autenticado" });
-      // a TENTATIVA consome a cota (e não só o sucesso): mandar lixo
-      // repetidamente custa ler o corpo e abrir o cabeçalho — mesma regra do M9
-      uploadWindow.record(user.id);
 
       const raw = req.query as { filename?: string };
       const query = CreateAttachmentQuery.safeParse({ filename: raw.filename });
