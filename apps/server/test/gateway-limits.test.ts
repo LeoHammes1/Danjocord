@@ -164,6 +164,35 @@ test("kickado que ignora o close frame para de ser atendido na hora", async () =
   }
 });
 
+// --- erro de socket não pode matar o processo --------------------------------
+
+test("CRÍTICO: frame acima do maxPayload não derruba o processo", async () => {
+  // Descoberto derrubando o pod de PRODUÇÃO com um curl de 300 KiB. No Node,
+  // um evento 'error' sem ouvinte é `throw` — e o `onConnection` registrava
+  // 'message' e 'close', nunca 'error'. Sem autenticação nenhuma: abrir o
+  // socket e mandar um frame grande matava o servidor inteiro.
+  //
+  // O teste roda no MESMO processo dos outros, então se a regressão voltar ele
+  // não "falha": ele mata o runner. É o formato certo — um crash não deve
+  // conseguir se disfarçar de teste vermelho.
+  const c = await abrir();
+  const vivoAntes = gateway instanceof Object;
+  assert.ok(vivoAntes);
+  c.ws.send("x".repeat(300 * 1024));
+  await dormir(400);
+
+  // se o processo sobreviveu até aqui, o listener existe. Confirma-se que o
+  // gateway segue atendendo: um cliente NOVO ainda consegue Hello + READY.
+  const depois = await abrir();
+  try {
+    const sid = await identificar(depois, "depoisdocrash");
+    assert.ok(sid, "o gateway tem de continuar atendendo depois do frame hostil");
+  } finally {
+    depois.ws.terminate();
+    c.ws.terminate();
+  }
+});
+
 // --- freio da sinalização de voz ---------------------------------------------
 
 test("op 20 em laço leva freio em vez de virar trabalho no worker", async () => {

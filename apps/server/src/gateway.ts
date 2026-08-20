@@ -141,6 +141,9 @@ export class Gateway {
     this.sweeper = setInterval(() => this.sweep(), 15_000);
     this.sweeper.unref();
     this.wss.on("connection", (ws) => this.onConnection(ws));
+    // irmão do listener por socket: erro no SERVIDOR (falha de handshake, por
+    // exemplo) também é 'error' sem ouvinte, e também mataria o processo
+    this.wss.on("error", () => undefined);
   }
 
   /** Prende o gateway no upgrade HTTP do servidor, em /gateway. */
@@ -300,6 +303,23 @@ export class Gateway {
         return;
       }
       this.onMessage(ws, state, msg.data);
+    });
+
+    // CRÍTICO: sem este listener, QUALQUER erro de socket vira exceção não
+    // tratada e derruba o PROCESSO — no Node, um evento 'error' sem ouvinte é
+    // `throw`. Não é teórico: eu derrubei o pod de produção mandando um frame
+    // de 300 KiB (o `maxPayload` recusa e emite 'error'), sem autenticação
+    // nenhuma. Um `ws.close()` já é feito pelo próprio `ws` nesses casos; o que
+    // faltava era alguém ouvindo.
+    //
+    // Vale para todo o resto também: ECONNRESET, UTF-8 inválido, violação de
+    // frame. O `maxPayload` que eu adicionei antes só tornou o gatilho trivial.
+    ws.on("error", () => {
+      // Corpo VAZIO de propósito, e não por preguiça: o `ws` já fecha o socket
+      // sozinho nesses casos, e o `close` acima faz a limpeza da sessão. O que
+      // faltava era existir um ouvinte. Também não se loga: isto é a porta
+      // aberta na internet, e um erro por frame daria a quem inunda o poder de
+      // encher o disco de log junto.
     });
 
     ws.on("close", () => {
