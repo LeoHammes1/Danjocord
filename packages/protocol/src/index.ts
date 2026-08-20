@@ -1063,8 +1063,30 @@ export type UpdateRoleBody = z.infer<typeof UpdateRoleBody>;
  * = não mexe; `null` explícito = limpar e voltar ao que vem do Discord. Os dois
  * casos precisam ser distinguíveis, senão não existe como REMOVER um apelido.
  */
+/**
+ * `z.string().url()` NÃO é um filtro de esquema: ele aceita `javascript:`,
+ * `data:`, `file:`, `ftp:` — qualquer coisa que o WHATWG considere URL. Este
+ * valor vai parar no `src` de um `<img>` no cliente de todo mundo, então o
+ * esquema precisa ser decidido aqui (auditoria de segurança do M12).
+ *
+ * Fica o que o projeto já aceitou em outro lugar e não mais: `https`. Nem
+ * `http`, porque um avatar em texto claro dispara aviso de conteúdo misto na
+ * página HTTPS e não carrega.
+ *
+ * O que ISTO NÃO RESOLVE, e é decisão de desenho, não de validação: mesmo em
+ * https, a URL é escolhida por um membro e buscada pelo navegador de TODOS os
+ * outros — IP, user-agent e horário de cada amigo chegam ao servidor de quem
+ * escolheu. É exatamente o vazamento que o preview de link evita não tendo
+ * campo de imagem. Fechar de vez é guardar o avatar em BLOB, como anexo e som.
+ */
+const HTTPS_URL = z
+  .string()
+  .url()
+  .max(512)
+  .refine((u) => /^https:\/\//i.test(u), { message: "só https" });
+
 export const UpdateMeBody = z.object({
   nickname: z.string().trim().min(1).max(32).nullable().optional(),
-  avatar_override: z.string().url().max(512).nullable().optional(),
+  avatar_override: HTTPS_URL.nullable().optional(),
 });
 export type UpdateMeBody = z.infer<typeof UpdateMeBody>;

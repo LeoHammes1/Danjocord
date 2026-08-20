@@ -28,7 +28,23 @@ export function authenticate(store: Store, token: string): User | null {
       audience: "danjocord",
     });
     if (typeof payload === "string" || typeof payload.sub !== "string") return null;
-    return store.getUserById(idFromString(payload.sub));
+    const user = store.getUserById(idFromString(payload.sub));
+    if (user === null) return null;
+    // PERTENCIMENTO, e não só assinatura (auditoria de segurança do M12).
+    //
+    // O M10 dizia derrubar o acesso "pelos TRÊS caminhos que existem" — refresh
+    // revogado, WebSocket fechado e voz — e o `evict()` faz os três. Faltava o
+    // quarto: o JWT de acesso é STATELESS e vale até expirar (15 min), então
+    // quem acabava de ser banido continuava usando o MESMO header para ler o
+    // histórico inteiro, postar, subir anexos e — sendo staff — criar um
+    // convite sem validade e sem limite de usos, voltando com OUTRA conta do
+    // Discord (o ban é indexado por discord_id). O ban virava reversível pela
+    // própria vítima.
+    //
+    // A query é a mesma que o heartbeat do gateway já roda a cada 41 s por
+    // sessão; aqui ela roda por request, indexada, contra um banco local.
+    // Barato perto de "o banido escreve por mais 15 minutos".
+    return store.isMember(user.id) ? user : null;
   } catch {
     // expirado, assinatura errada, malformado ou sub que não é snowflake
     return null;

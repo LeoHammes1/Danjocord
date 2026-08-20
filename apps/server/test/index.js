@@ -41,6 +41,9 @@ import "./search.test.ts";
 // falso mora no tmp, então pode entrar em qualquer ponto. Está aqui porque foi
 // escrito como rede para a troca do @fastify/static (8.x → 10.x).
 import "./static-client.test.ts";
+// correções da auditoria do M12: o quarto caminho do ban, id fora do int64 e o
+// esquema do avatar_override. Banco :memory: próprio, sem relógio mockado.
+import "./security-m12.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte

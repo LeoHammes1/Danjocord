@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import type { Guild, InviteProblem } from "./guild.js";
 import type { Store } from "./store.js";
 import type { Sessions } from "./sessions.js";
+import { SlidingWindow } from "./limits.js";
 
 /**
  * OAuth do Discord (doc §5): o backend é o confidential client E usa PKCE
@@ -120,6 +121,22 @@ export function registerOAuthRoutes(
   onMemberUpdate: (user: User) => void = () => undefined,
 ): void {
   const pending = new Map<string, PendingAuth>();
+
+  /**
+   * Teto de fluxos de OAuth simultâneos. Uma guild de 10 amigos não chega perto
+   * disto nem com todo mundo logando ao mesmo tempo em duas máquinas; o número
+   * existe para que o crescimento tenha FIM, não para apertar o uso normal.
+   * Cada entrada é pequena (dois base64url de 43 chars e três campos), então
+   * 5 000 são alguns megabytes — longe do `limits: { memory: 1Gi }` do pod.
+   */
+  const MAX_PENDING_AUTH = 5_000;
+
+  /**
+   * 20 inícios de login por minuto por IP. Um humano hesitante faz três ou
+   * quatro; o desktop faz um por clique no botão. Deixa folga para uma casa
+   * inteira atrás do mesmo NAT e ainda assim torna o enchimento do mapa caro.
+   */
+  const startWindow = new SlidingWindow(20, 60_000);
   const redirectUri = config.publicBaseUrl + "/auth/discord/callback";
 
   app.get("/auth/discord/start", async (req, reply) => {
@@ -136,10 +153,39 @@ export function registerOAuthRoutes(
         .send({ error: "query inválida — redirect_port entre 1024 e 65535, invite alfanumérico de até 32 chars" });
     }
 
+    // Rate limit por IP (auditoria de segurança do M12). Esta rota é ANÔNIMA —
+    // não precisa de conta, convite nem token — e cada acerto grava uma entrada
+    // que vive 10 min. Sem freio, qualquer pessoa na internet enche a memória do
+    // pod (`limits: { memory: 1Gi }`, `replicas: 1`, `strategy: Recreate`: o
+    // OOMKill derruba todas as chamadas). Como no GET público de convite, a
+    // TENTATIVA consome a cota — é o custo de tentar que se quer limitar.
+    const espera = startWindow.retryAfterMs(req.ip);
+    if (espera > 0) {
+      reply.header("retry-after", String(Math.max(1, Math.ceil(espera / 1000))));
+      return reply.code(429).send({ error: "muitas tentativas", retry_after: Number((espera / 1000).toFixed(3)) });
+    }
+    startWindow.record(req.ip);
+
     // Faxina preguiçosa: com ~10 usuários não vale um timer só para isto.
+    //
+    // O `break` importa e não é otimização prematura: sem ele isto é O(n) a
+    // CADA requisição de uma rota anônima, o que faz o custo do ataque crescer
+    // ao quadrado. Como o TTL é constante, `expiresAt` cresce junto com a ordem
+    // de inserção do Map — então a primeira entrada viva garante que todas as
+    // seguintes também estão, e a varredura vira O(1) amortizado.
     const now = Date.now();
     for (const [state, entry] of pending) {
-      if (entry.expiresAt <= now) pending.delete(state);
+      if (entry.expiresAt > now) break;
+      pending.delete(state);
+    }
+
+    // Teto duro, depois da faxina: o rate limit por IP já segura o caso normal,
+    // mas uma botnet distribuída passa por ele. Recusar o fluxo NOVO é melhor
+    // que derrubar o pod para todo mundo — inclusive para quem já está em
+    // chamada, já que o processo é o mesmo.
+    if (pending.size >= MAX_PENDING_AUTH) {
+      app.log.warn({ pendentes: pending.size }, "fluxos de OAuth pendentes no teto — recusando novos");
+      return reply.code(503).send({ error: "servidor ocupado — tente de novo em alguns minutos" });
     }
 
     const state = randomBytes(32).toString("base64url");

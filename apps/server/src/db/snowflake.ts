@@ -42,7 +42,18 @@ export function idFromString(id: string): bigint {
  * dessincronização silenciosa de todo mundo (achado de revisão do M2). null =
  * inválido, e a rota responde 404 (nada de BigInt() explodindo em 500).
  */
+/** Maior INTEGER que o SQLite guarda (int64 com sinal). Acima disto o driver lança RangeError. */
+const MAX_ID = 9_223_372_036_854_775_807n;
+
 export function canonicalId(raw: string | undefined): string | null {
   if (raw === undefined || !/^\d{1,20}$/.test(raw)) return null;
-  return BigInt(raw).toString();
+  const id = BigInt(raw);
+  // O regex sozinho não bastava: ele aceita 20 dígitos, e o int64 termina no
+  // 19º. "9223372036854775808" e "99999999999999999999" passavam, chegavam ao
+  // bind do better-sqlite3 e viravam RangeError NÃO tratado — 500 com mensagem
+  // interna no corpo e stack trace no log, em qualquer rota com id, sem
+  // autenticação especial nenhuma. É o contrário do que o comentário acima
+  // promete; agora é 404, como o resto do inválido.
+  if (id > MAX_ID) return null;
+  return id.toString();
 }

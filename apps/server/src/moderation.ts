@@ -33,13 +33,22 @@ import { announce } from "./system.js";
  *      responde a quem não tem sessão nenhuma, então o que ela conta é
  *      deliberadamente pobre e o que ela custa é limitado por janela.
  *
- * Kick e ban derrubam o acesso pelos TRÊS caminhos que existem, porque cada um
- * cobre um furo diferente:
+ * Kick e ban derrubam o acesso por QUATRO caminhos, porque cada um cobre um
+ * furo diferente:
  *   - `revokeSessionsOfDiscordId` mata o refresh (senão o token rotativo
  *     renovaria o acesso para sempre — a allowlist só é lida no login);
  *   - `closeUserSessions` fecha os WebSockets abertos (o gateway valida o token
  *     uma vez, no Identify — roadmap 114);
- *   - `disconnectFromVoice` tira do canal de voz.
+ *   - `disconnectFromVoice` tira do canal de voz;
+ *   - o REST checa PERTENCIMENTO a cada request (`authenticate`, em auth.ts).
+ *
+ * O quarto entrou no M12, por auditoria. Este comentário dizia "os TRÊS
+ * caminhos que existem" e estava errado: o JWT de acesso é stateless e vale até
+ * expirar, então o banido seguia lendo o histórico, postando e — sendo staff —
+ * criando um convite sem validade nem limite de usos, para voltar com outra
+ * conta do Discord (o ban é por `discord_id`). O ban era reversível pela
+ * própria vítima. Os três ativos derrubam o que JÁ ESTÁ aberto; só o quarto
+ * fecha o que continua sendo aceito.
  */
 
 /** Dependências que não moram no banco nem no gateway. */

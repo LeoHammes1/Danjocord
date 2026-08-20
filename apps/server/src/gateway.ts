@@ -57,7 +57,18 @@ interface ConnState {
 }
 
 export class Gateway {
-  private readonly wss = new WebSocketServer({ noServer: true });
+  /**
+   * `maxPayload` explícito porque o default do `ws` é 100 MiB, e ele vale
+   * ANTES do Identify — qualquer pessoa na internet abre o socket e manda o
+   * frame. O pod tem `limits: { memory: 1Gi }` no manifest, então ~3 frames
+   * simultâneos bastam para o OOMKill; com `replicas: 1` e `strategy: Recreate`
+   * isso derruba todas as chamadas de voz, em laço, sem credencial nenhuma.
+   *
+   * 256 KiB é folgado para o que trafega aqui: mensagem entra por REST, e o
+   * maior frame do gateway é a sinalização de voz (o `join` volta ~3,7 KB com
+   * as rtp_capabilities; o `produce` de simulcast é da mesma ordem).
+   */
+  private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
   private readonly sessions = new Map<string, GatewaySession>();
   private readonly sweeper: NodeJS.Timeout;
 

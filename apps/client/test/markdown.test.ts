@@ -380,6 +380,44 @@ test("href de esquema proibido não vira <a> nem quando a árvore diz que é lin
   });
 });
 
+test("nenhum <a> renderizado escapa do portão do href — lote adversarial", () => {
+  // Veio de uma auditoria adversarial que jogou 25 payloads no parser. O achado
+  // que importou: `https://\u0000evil` PASSA pelo parser (o esquema é https,
+  // então vira nó de link) e é o `isSafeHref` do RENDERIZADOR que o barra, por
+  // causa do byte de controle. Ou seja, as duas trancas não são redundantes —
+  // cada uma pega um conjunto diferente, e é por isso que a asserção certa é
+  // sobre o DOM produzido, e não sobre a árvore.
+  withFakeDom(() => {
+    for (const p of [
+      "java\tscript:alert(1)",
+      "\u0001javascript:alert(1)",
+      " javascript:alert(1)",
+      "https://\u0000evil",
+      "http\u0000s://x",
+      "https:javascript:alert(1)",
+      "httpss://x.com",
+      "\u202ejavascript:alert(1)",
+      'https://x.com"onmouseover=alert(1)//',
+      "[a](javascript:alert(1))",
+      "![a](javascript:alert(1))",
+      "**javascript:alert(1)**",
+      "> <script>alert(1)</script>",
+      "`</code><img src=x onerror=alert(1)>`",
+      "```\n</code></pre><script>alert(1)</script>\n```",
+    ]) {
+      const frag = renderMarkdown(p);
+      for (const a of all(frag, "a")) {
+        const href = a.getAttribute("href") ?? "";
+        assert.ok(isSafeHref(href), `href inseguro no DOM, vindo de ${JSON.stringify(p)}: ${JSON.stringify(href)}`);
+      }
+      // nenhum payload pode ter criado elemento executável
+      for (const tag of ["script", "img", "iframe"]) {
+        assert.equal(all(frag, tag).length, 0, `${JSON.stringify(p)} criou um <${tag}>`);
+      }
+    }
+  });
+});
+
 test("HTML digitado vira texto no DOM, e não elemento", () => {
   withFakeDom(() => {
     const frag = renderMarkdown("<script>alert(1)</script>");
