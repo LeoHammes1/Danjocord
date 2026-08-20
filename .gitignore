@@ -26,5 +26,8 @@ apps/desktop/release/
 # rascunhos que agentes de auditoria escrevem no repo enquanto reproduzem um
 # achado. Já entraram num commit por um `git add -A` distraído.
 __audit_*
+__tmp_*
+__refute_*
 __refute_*
 **/zz-*
+**/poc-*
