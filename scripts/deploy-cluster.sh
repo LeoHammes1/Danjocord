@@ -18,11 +18,17 @@
 # imagem não é a esperada, e torna o rollback um `kubectl set image` para o SHA
 # anterior.
 #
-# ARMADILHA: `kubectl apply -f deploy/danjocord.yaml` devolve a imagem para
-# `:latest`, porque é o que o manifest diz. Isso é o CERTO (o manifest é a
-# fonte da verdade do deploy, não o último teste), mas se você aplicar o
-# manifest depois de um deploy destes, rode este script de novo — senão o pod
-# fica num `:latest` que pode ser mais velho que o seu HEAD.
+# O MANIFEST ENTRA NO LAÇO (M12). Antes, este script só fazia `set image`, e a
+# nota aqui avisava que aplicar o manifest à mão devolveria a imagem para
+# `:latest` — ou seja, mudar securityContext, volume ou env era um passo manual,
+# fora do laço, que ninguém lembra de dar. Um deploy que aplica só metade do que
+# está no git é pior do que um que não aplica nada: o pod diverge do manifest em
+# silêncio, e o próximo `apply` de alguém desfaz o pin da imagem sem avisar.
+#
+# Agora o script aplica o manifest INTEIRO com a imagem já trocada pelo SHA no
+# caminho (um `sed` no stream, sem tocar no arquivo). Um rollout só, o manifest
+# continua sendo a fonte da verdade, e o `:latest` do arquivo continua correto
+# para quem aplicar de fora.
 set -euo pipefail
 
 NS=production
@@ -92,8 +98,12 @@ done
 printf '\n'; ok "imagem publicada em $(( $(date +%s) - inicio ))s"
 
 # --- 3. rolar ----------------------------------------------------------------
-passo "Apontando o Deployment para $TAG"
-kubectl -n "$NS" set image "deploy/$DEPLOY" "$DEPLOY=$IMAGE:$TAG"
+passo "Aplicando o manifest com a imagem $TAG"
+# a substituição é no STREAM: o arquivo em git continua dizendo `:latest`
+sed "s|image: $IMAGE:latest|image: $IMAGE:$TAG|" deploy/danjocord.yaml | kubectl apply -f -
+# rede: se o manifest não tinha a linha esperada, o apply teria deixado :latest
+imagem_agora=$(kubectl -n "$NS" get deploy "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].image}')
+[ "$imagem_agora" = "$IMAGE:$TAG" ] || erro "o apply deixou a imagem em '$imagem_agora' — o sed não casou a linha do manifest"
 kubectl -n "$NS" rollout status "deploy/$DEPLOY" --timeout=300s || {
   aviso "rollout não completou — últimos eventos:"
   kubectl -n "$NS" describe pod -l app="$DEPLOY" | sed -n '/Events:/,$p' | tail -15

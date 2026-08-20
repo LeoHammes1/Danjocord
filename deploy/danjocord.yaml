@@ -75,10 +75,17 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
-          # readOnlyRootFilesystem NÃO está aqui de propósito: o worker do
-          # mediasoup e o Node podem querer /tmp, e ligar isso sem testar troca
-          # um risco teórico por um CrashLoop real. Fica como item de próxima
-          # rodada, com emptyDir em /tmp e um teste de chamada de verdade.
+            # MEDIDO, e não deduzido. No pod em execução, `find / -xdev -newer
+            # /proc/1` fora de /data não devolve um arquivo, /tmp está vazio
+            # desde o build da imagem, e os únicos descritores de ESCRITA do
+            # processo são os três do SQLite (danjocord.db, -wal, -shm) — o
+            # worker do mediasoup não tem nenhum. O caminho completo também
+            # rodou com `docker run --read-only` (boot, migrations, seed do
+            # soundboard, mensagem, anexo de 8 MB, upload de som, busca FTS5,
+            # preview de link e o smoke de voz) sem escrever fora dos volumes.
+            #
+            # O /tmp abaixo NÃO é para o caminho normal — é para o SQLite.
+            readOnlyRootFilesystem: true
           env:
             - name: NODE_ENV
               value: "production"
@@ -86,6 +93,24 @@ spec:
               value: "8080"
             - name: DB_PATH
               value: "/data/danjocord.db"
+            # O único disco que o processo pode querer FORA do PVC. O SQLite
+            # escreve arquivos temporários quando uma operação não cabe na
+            # cache: ordenação grande, CREATE INDEX de uma migration futura,
+            # VACUUM manual. O `PRAGMA temp_store` do better-sqlite3 é o default
+            # de COMPILAÇÃO, que é ARQUIVO (o `defines.gypi` dele não define
+            # SQLITE_TEMP_STORE), e o db/index.ts não emite o pragma.
+            #
+            # Sem esta env ele tenta, nesta ordem: SQLITE_TMPDIR, TMPDIR,
+            # /var/tmp, /usr/tmp, /tmp e por fim o CWD. Com a raiz somente-
+            # leitura os cinco primeiros reprovam e o CWD também. Nomear /tmp
+            # tira o resultado da ordem de tentativa — e do CWD de quem der
+            # `kubectl exec`.
+            #
+            # É o EROFS perigoso: não aparece no boot, aparece no dia em que uma
+            # query derrama. Por isso o volume existe mesmo com a medição acima
+            # dizendo que hoje nada escreve lá.
+            - name: SQLITE_TMPDIR
+              value: "/tmp"
             - name: ANNOUNCED_IP            # usado pelo mediasoup a partir do M3
               value: "72.61.44.156"
             - name: RTC_PORT
@@ -136,6 +161,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests: { memory: 256Mi, cpu: 250m }
             limits: { memory: 1Gi }
@@ -151,6 +178,18 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: danjocord-data
+        - name: tmp
+          # emptyDir de DISCO, e não `medium: Memory`: tmpfs conta no limite de
+          # memória do container (1Gi, acima) e um derrame de ordenação viraria
+          # OOMKill — SIGKILL sem log nenhum — em vez de um arquivo temporário.
+          # É pela mesma razão que isto não se resolve com `PRAGMA temp_store =
+          # MEMORY` no db/index.ts: trocaria disco por RAM contra o mesmo teto.
+          #
+          # O `fsGroup: 1000` do pod já o faz nascer gravável para o uid 1000,
+          # sem chown. 512Mi cobre um VACUUM manual deste banco; se um dia não
+          # cobrir, o caminho sem temporário é `VACUUM INTO '/data/novo.db'`.
+          emptyDir:
+            sizeLimit: 512Mi
 ---
 apiVersion: v1
 kind: Service

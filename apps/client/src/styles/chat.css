@@ -357,6 +357,12 @@
   color: var(--text-faint);
 }
 
+/* a mesma linha vira o recado de erro quando o PATCH falha: o editor continua
+   aberto com o texto, e a dica dá lugar ao motivo (M12) */
+.edit-hint--erro {
+  color: var(--danger);
+}
+
 /* --- retry de carregamento (o botão nasce no main.ts, dentro do #messages) */
 
 .load-retry {

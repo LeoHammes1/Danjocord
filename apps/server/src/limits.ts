@@ -1,3 +1,5 @@
+import type { FastifyReply } from "fastify";
+
 /**
  * Janela deslizante por chave: no máximo `limit` eventos em `windowMs`.
  *
@@ -96,4 +98,25 @@ export class SlidingWindow {
     else this.hits.set(key, recent);
     return recent;
   }
+}
+
+/**
+ * O 429, num lugar só (M12). Havia CINCO cópias desta função — anexos, sons,
+ * reações, preview de link e uma inline no convite — idênticas byte a byte, e
+ * agora existe uma sexta origem de 429 (o limite geral do REST). Seis cópias da
+ * mesma resposta é como as respostas começam a divergir.
+ *
+ * A forma é a que o cliente JÁ entende, e não se mexe nela: `retry_after` em
+ * SEGUNDOS no CORPO (como o Discord). Os quatro lugares do cliente que tratam
+ * 429 leem só isso — nenhum lê o header `Retry-After`, então o header fica por
+ * correção de protocolo, não porque alguém o consuma.
+ *
+ * `Math.ceil` com piso 1 no header porque `Retry-After` é inteiro em segundos e
+ * "0" significaria "pode tentar já", que é o contrário do que acabou de ser
+ * dito.
+ */
+export function tooManyRequests(reply: FastifyReply, waitMs: number, message: string): FastifyReply {
+  const seconds = waitMs / 1000;
+  reply.header("retry-after", String(Math.max(1, Math.ceil(seconds))));
+  return reply.code(429).send({ error: message, retry_after: Number(seconds.toFixed(3)) });
 }

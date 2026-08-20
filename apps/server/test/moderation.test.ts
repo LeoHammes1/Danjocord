@@ -204,6 +204,23 @@ test("preview público: rate limit por IP — a TENTATIVA conta, não só o acer
   assert.equal(bloqueado.statusCode, 429, "código VÁLIDO barrado depois da cota de tentativas");
   assert.ok(Number(bloqueado.headers["retry-after"]) >= 1);
   assert.equal(typeof (bloqueado.json() as { retry_after: number }).retry_after, "number");
+
+  // E ESTA é a asserção que documenta o ambiente: um "outro visitante" leva o
+  // 429 junto. A janela desta rota é GLOBAL e não tem como não ser — medido no
+  // pod, todo tráfego externo chega como 10.42.0.0 (SNAT do kube-proxy antes do
+  // Traefik), então `req.ip` é o mesmo valor para o mundo inteiro.
+  //
+  // O teste existe para quem for "consertar" isto: chavear por
+  // `x-forwarded-for` faria esta linha passar e a produção continuar igual,
+  // porque o `trustProxy` descarta o header do cliente de propósito. É por isso
+  // que o número aqui é alto (600/min) em vez de apertado — ver o comentário do
+  // PREVIEW_LIMIT.
+  const outroVisitante = await appLimitado.inject({
+    method: "GET",
+    url: `/api/invites/${invite.code}`,
+    headers: { "x-forwarded-for": "203.0.113.7" },
+  });
+  assert.equal(outroVisitante.statusCode, 429, "a janela desta rota é global neste deploy — e isso é assumido");
 });
 
 // ---------------------------------------------------------------------------

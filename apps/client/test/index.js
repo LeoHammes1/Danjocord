@@ -36,3 +36,7 @@ await import("./emoji.test.ts");
 await import("./attachments.test.ts");
 await import("./search.test.ts");
 await import("./messages-core.test.ts");
+// o rearme da paginacao: funcao pura, sem DOM e sem rede (M12)
+await import("./pagination.test.ts");
+// o que o usuario le quando uma chamada REST falha (M12)
+await import("./api-error.test.ts");

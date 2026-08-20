@@ -3,7 +3,7 @@ import { isValidReactionEmoji } from "@danjocord/protocol";
 import { authFromHeader } from "./auth.js";
 import { canonicalId } from "./db/snowflake.js";
 import type { Gateway } from "./gateway.js";
-import { SlidingWindow } from "./limits.js";
+import { SlidingWindow, tooManyRequests } from "./limits.js";
 import { MAX_REACTIONS_PER_MESSAGE, MAX_REACTIONS_PER_USER_PER_MESSAGE, type Store } from "./store.js";
 
 /**
@@ -39,7 +39,7 @@ export function registerReactionRoutes(app: FastifyInstance, store: Store, gatew
     if (ctx === null) return reply;
 
     const wait = window.retryAfterMs(ctx.userId);
-    if (wait > 0) return tooManyRequests(reply, wait);
+    if (wait > 0) return tooManyRequests(reply, wait, "muitas reações seguidas");
     window.record(ctx.userId);
 
     const result = store.addReaction(ctx.messageId, ctx.userId, ctx.emoji);
@@ -151,8 +151,3 @@ function resolve(
   return { userId: user.id, channelId, messageId, emoji };
 }
 
-function tooManyRequests(reply: FastifyReply, waitMs: number): FastifyReply {
-  const seconds = waitMs / 1000;
-  reply.header("retry-after", String(Math.max(1, Math.ceil(seconds))));
-  return reply.code(429).send({ error: "muitas reações seguidas", retry_after: Number(seconds.toFixed(3)) });
-}

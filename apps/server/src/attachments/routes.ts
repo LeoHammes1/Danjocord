@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { CreateAttachmentQuery } from "@danjocord/protocol";
 import { authFromHeader } from "../auth.js";
 import { canonicalId } from "../db/snowflake.js";
-import { SlidingWindow } from "../limits.js";
+import { SlidingWindow, tooManyRequests } from "../limits.js";
 import { registerRawBodyParser } from "../raw-body.js";
 import type { Store } from "../store.js";
 import {
@@ -171,9 +171,3 @@ function storageFull(reply: FastifyReply, used: number): FastifyReply {
   });
 }
 
-/** 429 com `retry_after` em SEGUNDOS no corpo (como o Discord), igual ao M9. */
-function tooManyRequests(reply: FastifyReply, waitMs: number, message: string): FastifyReply {
-  const seconds = waitMs / 1000;
-  reply.header("retry-after", String(Math.max(1, Math.ceil(seconds))));
-  return reply.code(429).send({ error: message, retry_after: Number(seconds.toFixed(3)) });
-}

@@ -57,4 +57,4 @@ export function clampGain(gain: number | undefined): number {
 // A janela deslizante em si mora em ../limits.ts desde o M10 (o GET público de
 // convite virou o segundo usuário dela); reexportada aqui para os call sites e
 // os testes do M9 continuarem apontando para o mesmo lugar.
-export { SlidingWindow } from "../limits.js";
+export { SlidingWindow, tooManyRequests } from "../limits.js";

@@ -86,6 +86,7 @@ import {
   type MessageType,
   type ReactionData,
 } from "@danjocord/protocol";
+import { textoDoErro } from "../api-error.js";
 import { typingLabel } from "../typing.js";
 import { avatarColor, avatarEl } from "./avatar.js";
 import { openEmojiPicker } from "./emoji.js";
@@ -964,10 +965,19 @@ export function startEdit(
         const live = list === null ? null : findMessageEl(list, msg.id);
         if (live !== null) replaceMessage(live, updated, ctx, actions);
       },
-      () => {
-        // 403/404/rede: restaura o original, se o broadcast já não o refez
-        // (pela Message do nó, pelo mesmo motivo do `cancel` acima)
-        if (wrap.isConnected) replaceMessage(wrap, MESSAGES.get(wrap) ?? msg, ctx, actions);
+      (err: unknown) => {
+        // M12: o editor FICA ABERTO com o texto. Antes daqui, qualquer falha
+        // reconstruía o nó — e o que a pessoa tinha acabado de digitar sumia
+        // sem uma palavra, parecendo que o app comeu. Dava para conviver com
+        // isso quando as falhas eram 403/404 (que só acontecem para quem sabe
+        // o que fez); o rate limit geral do REST (roadmap 117) trouxe um erro
+        // que aparece sem ninguém ter feito nada errado, e que diz quanto
+        // tempo esperar — jogar fora o texto E a explicação é o pior dos dois.
+        if (!input.isConnected) return; // o broadcast já refez o nó
+        input.disabled = false;
+        input.focus();
+        hint.classList.add("edit-hint--erro");
+        hint.textContent = `${textoDoErro(err, "não deu para editar")} · Esc para cancelar`;
       },
     );
   });

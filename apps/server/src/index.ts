@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { openDb } from "./db/index.js";
 import { Store } from "./store.js";
 import { Gateway } from "./gateway.js";
+import { registerRateLimit } from "./rate-limit.js";
 import { registerRoutes } from "./routes.js";
 import { registerModerationRoutes } from "./moderation.js";
 import { Guild } from "./guild.js";
@@ -73,12 +74,28 @@ const tls = tlsOptions();
  *
  * O comentário original recusava o `x-forwarded-for` por ser escrito pelo
  * cliente, e essa objeção é correta para XFF cru. `trustProxy` com CONTAGEM DE
- * SALTOS resolve: o proxy-addr descarta o que o cliente escreveu e devolve o
- * endereço que o salto confiável ACRESCENTOU — que o cliente não controla.
+ * SALTOS resolve ESSA metade: o proxy-addr descarta o que o cliente escreveu e
+ * devolve o endereço que o salto confiável ACRESCENTOU — que o cliente não
+ * controla.
  *
  * 1 salto = só o Traefik. Mudou a topologia (um CDN na frente, por exemplo),
  * muda `TRUST_PROXY_HOPS` junto — contagem errada volta a confiar em XFF do
  * cliente, que é pior que não confiar em nenhum.
+ *
+ * O QUE ISTO NÃO RESOLVE, e a versão anterior deste comentário dava a entender
+ * que sim: `req.ip` continua sendo o MESMO VALOR para todo mundo. Medido no pod
+ * (três requisições, uma sem XFF, uma com `1.1.1.1`, uma com três saltos
+ * forjados): `remoteAddress = 10.42.0.0` nas três. O Service do Traefik usa
+ * `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT ANTES do proxy
+ * e o Traefik nunca vê um IP de cliente para pôr no header.
+ *
+ * Consequência prática, e é a razão de esta nota existir: neste cluster NÃO
+ * EXISTE rate limit por IP que seja por pessoa. Todo limite chaveado em
+ * `req.ip` é um balde único, e um estranho com um `for` tranca os dez amigos
+ * para fora — foi exatamente isso no `/auth/discord/start`. É por isso que o
+ * limite geral do REST (`rate-limit.ts`) chaveia por USUÁRIO e simplesmente não
+ * conta o que não tem credencial. Só um `externalTrafficPolicy: Local` no
+ * Service do Traefik mudaria essa conta, e isso é mexida de cluster.
  */
 const app = Fastify({
   logger: true,
@@ -182,6 +199,19 @@ const voice = await Voice.create(store).catch((err: unknown) => {
 // cast declara o que a estrutura já garante.
 voice.broadcast = gateway.broadcast.bind(gateway) as typeof voice.broadcast;
 gateway.onVoiceRequest = (ctx, m, p) => voice.handleRequest(ctx, m, p);
+// Rate limit geral do REST (roadmap 117). DEPOIS do `app.register(cors, …)` de
+// propósito, e a ordem é a diferença entre funcionar e um bug caríssimo de
+// achar: o hook do cors responde o preflight e CURTO-CIRCUITA. Registrado antes
+// dele, este hook contaria o `OPTIONS` — e como o renderer do desktop é
+// `app://bundle` (origem própria), TODA ação dele é cross-origin e gastaria
+// duas unidades por clique em vez de uma. Pior: quem apanharia é o preflight,
+// então o sintoma no console seria `Failed to fetch` SEM status HTTP — o mesmo
+// sintoma que a lista de métodos do cors, logo acima, já enganou duas vezes.
+//
+// Também precisa vir depois de `store` existir: a chave do limite é o usuário
+// autenticado, e a autenticação materializa o usuário no banco.
+registerRateLimit(app, store);
+
 gateway.onSessionGone = (ctx) => voice.sessionGone(ctx);
 gateway.voiceStatesProvider = () => voice.voiceStates();
 gateway.soundsProvider = () => store.listSounds();

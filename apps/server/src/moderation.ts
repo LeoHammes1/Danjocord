@@ -15,7 +15,7 @@ import { config } from "./config.js";
 import { canonicalId, idFromString } from "./db/snowflake.js";
 import type { Gateway } from "./gateway.js";
 import type { Guild } from "./guild.js";
-import { SlidingWindow } from "./limits.js";
+import { SlidingWindow, tooManyRequests } from "./limits.js";
 import type { Store } from "./store.js";
 import { announce } from "./system.js";
 
@@ -66,23 +66,37 @@ export interface ModerationDeps {
  * espaço sendo grande (56^10), uma rota pública que consulta o banco sem freio
  * é DoS de graça para qualquer um com um `for`.
  *
- * A chave é o `req.ip`. Até o M12 isso era o peer do SOCKET — atrás do Traefik,
- * o IP do proxy — e a janela era global em vez de por visitante. Estava escrito
- * aqui como decisão consciente, com o argumento certo (o `x-forwarded-for` cru
- * é escrito pelo cliente, e confiar nele deixaria rotacionar IPs falsos) e a
- * conclusão errada (aceitar a janela global).
+ * A chave é o `req.ip`, e o que ela significa NESTE deploy foi medido, não
+ * deduzido — três requisições ao pod de produção, uma sem `x-forwarded-for`,
+ * uma com `1.1.1.1` e uma com três saltos forjados, e o servidor registrou
+ * `remoteAddress = 10.42.0.0` nas TRÊS.
  *
- * O que faltava era `trustProxy` com CONTAGEM DE SALTOS (`index.ts`): ele
- * descarta o que o cliente escreveu no XFF e devolve o endereço que o salto
- * confiável acrescentou — que o cliente não controla. Agora `req.ip` é o
- * visitante de verdade e a janela é por visitante, como sempre se quis.
+ * As duas metades desse resultado:
  *
- * O estrago da versão antiga era pequeno AQUI (um teto global de 30/min só
- * atrasa quem consulta convite) e grande na rota de login, que herdou o mesmo
- * padrão no M12: lá, 21 requisições anônimas por minuto trancavam TODO MUNDO
- * para fora. Mesma linha de código, consequências de ordens diferentes.
+ *   • o `trustProxy` com contagem de saltos (`index.ts`) FUNCIONA: o
+ *     `x-forwarded-for` escrito pelo cliente é descartado e não dá para
+ *     rotacionar IP falso para furar a janela;
+ *   • mas `req.ip` NÃO é o visitante. O Service do Traefik usa
+ *     `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT ANTES do
+ *     proxy — o Traefik nunca chega a ver um IP de cliente para pôr no header.
+ *     Esta janela é GLOBAL, e não há chave honesta que a torne por visitante
+ *     sem mexer no cluster.
+ *
+ * (Uma versão anterior deste comentário afirmava o contrário — que o
+ * `trustProxy` tinha tornado a janela por visitante. Ficava certa a metade que
+ * fala de falsificação e errada a que importa aqui, e uma frase errada num
+ * comentário é o que autoriza o próximo erro: foi um limite por IP copiado
+ * daqui para a rota de login que trancou TODO MUNDO para fora, no M12.)
+ *
+ * Ser global muda o NÚMERO. Um teto de 30/min é um estranho conseguindo negar o
+ * convite a um amigo novo — e a landing trata 429 como "offline", então ele
+ * nem vê o botão de entrar, só um "tentar de novo". E os 30 não protegem do que
+ * o comentário antigo dizia proteger: com 56^10 ≈ 3·10^17 códigos, força bruta
+ * a 30/min leva mais de 10^9 anos, e a 600/min também. O que a janela defende é
+ * só o custo de banco de um `for`, e para isso 600/min basta com folga: um
+ * convite é clicado uma vez por pessoa na vida.
  */
-export const PREVIEW_LIMIT = 30;
+export const PREVIEW_LIMIT = 600;
 export const PREVIEW_WINDOW_MS = 60_000;
 
 /**
@@ -207,11 +221,7 @@ export function registerModerationRoutes(
     // a TENTATIVA consome a cota, antes de qualquer validação: o custo que se
     // quer limitar é o de tentar, e código malformado é o chute mais barato
     const wait = previewWindow.retryAfterMs(req.ip);
-    if (wait > 0) {
-      const seconds = wait / 1000;
-      reply.header("retry-after", String(Math.max(1, Math.ceil(seconds))));
-      return reply.code(429).send({ error: "muitas tentativas", retry_after: Number(seconds.toFixed(3)) });
-    }
+    if (wait > 0) return tooManyRequests(reply, wait, "muitas tentativas");
     previewWindow.record(req.ip);
 
     const code = (req.params as { code: string }).code;

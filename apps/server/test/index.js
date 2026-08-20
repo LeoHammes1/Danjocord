@@ -44,6 +44,9 @@ import "./static-client.test.ts";
 // correções da auditoria do M12: o quarto caminho do ban, id fora do int64 e o
 // esquema do avatar_override. Banco :memory: próprio, sem relógio mockado.
 import "./security-m12.test.ts";
+// rate limit geral do REST (M12, roadmap 117). Agrupa com as suites de freio;
+// banco :memory: proprio, sem relogio mockado e sem mexer em config
+import "./rate-limit.test.ts";
 // tetos e freios do gateway (M12 rodada 2). Sobe um http.Server próprio na
 // porta 0 e clientes ws de verdade — os tetos só se manifestam no socket.
 import "./gateway-limits.test.ts";

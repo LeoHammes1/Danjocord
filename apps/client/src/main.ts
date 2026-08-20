@@ -96,6 +96,8 @@ import {
   updateSpeaking,
   type SidebarContext,
 } from "./ui/sidebar.js";
+import { ApiError, lerErro } from "./api-error.js";
+import { deveRearmarPaginacao } from "./pagination.js";
 import { VoiceClient } from "./voice.js";
 
 // Em produção same-origin a API é https e o replace produz wss:// (doc §4).
@@ -507,6 +509,9 @@ async function maybeLoadOlder(): Promise<void> {
   const before = el.messages.querySelector<HTMLElement>(".msg:not(.pending)")?.dataset.id;
   if (before === undefined) return;
   v.loadingOlder = true;
+  // "progrediu?" — o que decide o rearme lá embaixo. Ver `pagination.ts`: sem
+  // isto, falha de rede e página inteira de gente bloqueada viravam laço.
+  let avancou = false;
   try {
     const older = (await api(`/api/channels/${cid}/messages?limit=${PAGE_SIZE}&before=${before}`)) as Message[];
     if (v !== view || state.currentChannel !== cid) return;
@@ -520,6 +525,7 @@ async function maybeLoadOlder(): Promise<void> {
       const frag = document.createDocumentFragment();
       older.reverse();
       for (const m of older) if (visivel(m)) frag.append(renderMsg(m));
+      avancou = frag.childElementCount > 0;
       el.messages.prepend(frag);
       // OBRIGATORIAMENTE entre o prepend e o delta de scroll: as mensagens que
       // chegaram ganham avatar/separador e a antiga primeira PERDE os dela —
@@ -530,12 +536,24 @@ async function maybeLoadOlder(): Promise<void> {
       trimBottom(v);
     }
   } catch {
-    // falhou: sem retry automático — o próximo scroll perto do topo tenta de novo
+    // falhou: sem retry automático — o próximo scroll perto do topo tenta de
+    // novo. `avancou` continua false, e é ELE que faz esta frase ser verdade:
+    // até o M12 a linha do rearme, logo abaixo, era um retry automático.
   } finally {
     v.loadingOlder = false;
   }
   // viewport alto demais para a página carregada: ainda sem rolagem, completa já
-  if (v === view && !v.reachedStart && el.messages.scrollTop <= TOP_THRESHOLD) void maybeLoadOlder();
+  if (
+    deveRearmarPaginacao({
+      mesmaView: v === view,
+      reachedStart: v.reachedStart,
+      scrollTop: el.messages.scrollTop,
+      topThreshold: TOP_THRESHOLD,
+      avancou,
+    })
+  ) {
+    void maybeLoadOlder();
+  }
 }
 
 /** Prepend estourou a janela: o excedente sai do FUNDO (lado oposto à carga). */
@@ -608,7 +626,22 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
       throw new Error("sessão expirada");
     }
   }
-  if (!res.ok) throw new Error(`${res.status} em ${path}`);
+  if (!res.ok) {
+    // O corpo é lido AQUI, e antes não era: `{error, retry_after}` é a forma
+    // de toda resposta de erro do servidor, e o 429 do rate limit geral (M12)
+    // é o primeiro erro que aparece sem o usuário ter feito nada de errado —
+    // dizer "429 em /api/..." para ele seria esconder a única informação útil,
+    // que é quanto tempo esperar. `res.json()` pode falhar (204, 502 do proxy
+    // com HTML), e aí fica o status.
+    let corpo: unknown = null;
+    try {
+      corpo = await res.json();
+    } catch {
+      /* corpo vazio ou não-JSON */
+    }
+    const { mensagem, retryAfter } = lerErro(res.status, corpo, path);
+    throw new ApiError(res.status, mensagem, retryAfter);
+  }
   if (res.status === 204) return null; // DELETE/typing não têm corpo — .json() lançaria
   return res.json();
 }

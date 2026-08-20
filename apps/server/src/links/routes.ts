@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { LinkPreview } from "@danjocord/protocol";
 import { authFromHeader } from "../auth.js";
-import { SlidingWindow } from "../limits.js";
+import { SlidingWindow, tooManyRequests } from "../limits.js";
 import type { Store } from "../store.js";
 import { fetchHtmlForPreview, type FetchDeps } from "./fetch.js";
 import { normalizeUrl } from "./guard.js";
@@ -92,7 +92,7 @@ export function registerLinkRoutes(app: FastifyInstance, store: Store, deps: Lin
     if (cached !== null) return reply.send(cached);
 
     const wait = window.retryAfterMs(user.id);
-    if (wait > 0) return tooManyRequests(reply, wait);
+    if (wait > 0) return tooManyRequests(reply, wait, "muitas buscas de preview seguidas");
     window.record(user.id);
 
     try {
@@ -158,8 +158,3 @@ function failed(url: string, err: unknown): LinkPreview {
   };
 }
 
-function tooManyRequests(reply: FastifyReply, waitMs: number): FastifyReply {
-  const seconds = waitMs / 1000;
-  reply.header("retry-after", String(Math.max(1, Math.ceil(seconds))));
-  return reply.code(429).send({ error: "muitas buscas de preview seguidas", retry_after: Number(seconds.toFixed(3)) });
-}
