@@ -14,7 +14,7 @@
   "dependencies": {
     "@danjocord/protocol": "workspace:*",
     "@fastify/cors": "^11.0.0",
-    "@fastify/static": "^8.0.0",
+    "@fastify/static": "^10.1.3",
     "better-sqlite3": "^12.0.0",
     "fastify": "^5.0.0",
     "jsonwebtoken": "^9.0.0",

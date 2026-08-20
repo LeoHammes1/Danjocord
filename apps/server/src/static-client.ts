@@ -19,15 +19,23 @@ const clientDir = join(dirname(fileURLToPath(import.meta.url)), "..", "client-di
 /** Prefixos que pertencem ao backend — nunca caem no fallback de SPA. */
 const RESERVED_PREFIXES = ["/api", "/auth", "/gateway", "/healthz"];
 
-export function registerStaticClient(app: FastifyInstance): void {
-  if (!existsSync(clientDir)) {
-    app.log.info({ clientDir }, "client-dist ausente — cliente estático desligado (dev usa o vite)");
+/**
+ * `dir` existe para o TESTE, e o default é o de produção — o `index.ts` chama
+ * sem argumento. Sem isto o único jeito de exercitar este módulo seria criar
+ * `apps/server/client-dist` de verdade no meio da suíte, que atropelaria o
+ * build local de quem tivesse um. Ele é o arquivo que define o que NÃO cai no
+ * fallback de SPA, e isso precisa de rede antes de trocar de major do
+ * `@fastify/static`.
+ */
+export function registerStaticClient(app: FastifyInstance, dir: string = clientDir): void {
+  if (!existsSync(dir)) {
+    app.log.info({ clientDir: dir }, "client-dist ausente — cliente estático desligado (dev usa o vite)");
     return;
   }
 
   // wildcard: false — o plugin enumera os arquivos do build no boot e registra
   // uma rota por arquivo, deixando o GET /* abaixo livre para o fallback.
-  app.register(fastifyStatic, { root: clientDir, wildcard: false });
+  app.register(fastifyStatic, { root: dir, wildcard: false });
 
   // Fallback de SPA: rota desconhecida devolve o index.html (o roteamento fica
   // no cliente). setNotFoundHandler engoliria também os 404 legítimos de

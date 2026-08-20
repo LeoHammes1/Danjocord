@@ -51,6 +51,19 @@ MENSAGEM=""
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# --- 0. portão local ---------------------------------------------------------
+# O `ci.yml` roda isto no GitHub, mas em OUTRO job que não é o do `release.yml`:
+# a imagem é publicada mesmo com o CI vermelho. Falhar aqui, antes do push,
+# custa um minuto; descobrir depois custa um rollout e o app quebrado no ar.
+# Pule com PULAR_TESTES=1 quando o deploy for só de manifest/script.
+if [[ "${PULAR_TESTES:-0}" != "1" ]]; then
+  passo "Portão local (typecheck + testes)"
+  pnpm typecheck >/dev/null 2>&1 || erro "typecheck falhou — rode 'pnpm typecheck' para ver."
+  ok "typecheck"
+  pnpm --filter @danjocord/server test >/dev/null 2>&1 || erro "testes do servidor falharam — rode 'pnpm --filter @danjocord/server test'."
+  ok "testes do servidor"
+fi
+
 # --- 1. o código -------------------------------------------------------------
 if [[ -n "$(git status --porcelain)" ]]; then
   [[ -z "$MENSAGEM" ]] && erro "árvore suja. Commite, ou rode com -m \"mensagem\"."

@@ -37,6 +37,10 @@ import "./attachments.test.ts";
 import "./reactions.test.ts";
 import "./reply.test.ts";
 import "./search.test.ts";
+// cliente estático: não mexe em relógio, env nem banco — o diretório do build
+// falso mora no tmp, então pode entrar em qualquer ponto. Está aqui porque foi
+// escrito como rede para a troca do @fastify/static (8.x → 10.x).
+import "./static-client.test.ts";
 // voz por último: sobe um worker REAL do mediasoup (porta RTC própria via
 // env no topo do arquivo, para não colidir com um servidor de dev na 40000)
 // e o fecha no teardown da suíte
