@@ -316,6 +316,39 @@ test("...e o XFF que o CLIENTE escreve não fura a janela", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// ALTA — 8 MiB bufferizados antes de qualquer autenticação
+// ---------------------------------------------------------------------------
+
+test("ALTA: rota anônima não bufferiza megabytes de binário antes de autenticar", async () => {
+  // O parser de corpo cru é registrado no app RAIZ, então o teto dele valia para
+  // TODA rota POST. Com 8 MB, uma rota anônima como /auth/logout lia os 8 MB
+  // inteiros antes do handler — sem credencial nenhuma, e com o mesmo corpo em
+  // `application/json` levando 413 (o default de 1 MiB do Fastify).
+  const { registerRawBodyParser, RAW_BODY_FLOOR_BYTES } = await import("../src/raw-body.js");
+  const anon = Fastify();
+  registerRawBodyParser(anon);
+  anon.post("/anonima", async () => ({ ok: true })); // sem bodyLimit próprio
+  // e uma rota de upload, que DECLARA o limite dela e tem de continuar podendo
+  anon.post("/upload", { bodyLimit: 2 * 1024 * 1024 }, async () => ({ ok: true }));
+  await anon.ready();
+
+  const corpo = (n: number) => Buffer.alloc(n, 0x61);
+  const octet = { "content-type": "application/octet-stream" };
+
+  const grande = await anon.inject({ method: "POST", url: "/anonima", headers: octet, payload: corpo(1024 * 1024) });
+  assert.equal(grande.statusCode, 413, "1 MB numa rota sem bodyLimit tem de ser cortado");
+
+  const pequeno = await anon.inject({ method: "POST", url: "/anonima", headers: octet, payload: corpo(1024) });
+  assert.equal(pequeno.statusCode, 200, "corpo pequeno continua passando");
+
+  // o chão NÃO pode apertar quem declarou: o limite da rota vence o do parser
+  const upload = await anon.inject({ method: "POST", url: "/upload", headers: octet, payload: corpo(1024 * 1024) });
+  assert.equal(upload.statusCode, 200, "rota que declara bodyLimit maior continua recebendo");
+
+  assert.ok(RAW_BODY_FLOOR_BYTES <= 64 * 1024, "o chão tem de ser pequeno — é o ponto");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 
