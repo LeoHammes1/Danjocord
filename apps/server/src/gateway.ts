@@ -179,10 +179,14 @@ export class Gateway {
    * caiu. Numa janela de deploy de ~20 s, isso é a diferença entre "voltou
    * sozinho" e "ficou meio minuto parado depois de o servidor já estar de pé".
    */
-  notifyReconnect(): void {
+  notifyReconnect(): number {
+    let avisadas = 0;
     for (const session of this.sessions.values()) {
-      if (session.ws?.readyState === WebSocket.OPEN) this.send(session.ws, { op: Op.Reconnect });
+      if (session.ws?.readyState !== WebSocket.OPEN) continue;
+      this.send(session.ws, { op: Op.Reconnect });
+      avisadas += 1;
     }
+    return avisadas;
   }
 
   close(): void {

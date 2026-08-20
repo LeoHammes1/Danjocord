@@ -263,7 +263,12 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     // 250 ms cabe folgado no `terminationGracePeriodSeconds` padrão do k8s (30 s)
     // e é imperceptível num deploy; não é uma janela de drenagem de verdade,
     // porque com `replicas: 1` não há para onde drenar.
-    gateway.notifyReconnect();
+    // O log existe porque este caminho NÃO é testável na máquina de dev: o
+    // Windows não tem semântica de SIGTERM (Stop-Process é kill duro, e o
+    // handler nunca roda), então a única forma de saber que ele executa de
+    // verdade é olhar o pod Linux durante um rollout.
+    const avisadas = gateway.notifyReconnect();
+    app.log.info({ sessoes: avisadas, sinal: signal }, "desligando: op 7 enviado, aguardando o frame sair");
     await new Promise((r) => setTimeout(r, 250));
     voice.close();
     gateway.close();
