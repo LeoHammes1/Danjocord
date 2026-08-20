@@ -186,6 +186,15 @@ await registerStaticClient(app);
 function sweepOrphanAttachments(): void {
   const removed = store.deleteOrphanAttachments(ORPHAN_TTL_MS);
   if (removed > 0) app.log.info(`anexos: ${removed} órfãos apagados`);
+  // Pega carona no mesmo timer (auditoria M12): o cache de preview de link
+  // NUNCA era limpo. O `getLinkPreview` filtra por `expires_at > now`, então a
+  // linha vencida deixa de ser USADA — mas continua no arquivo, e o PVC é um
+  // só. O schema já previa isto: `expires_at` existe desde a migration 006 e
+  // até tem índice (`idx_link_previews_expires`); faltava alguém apagar.
+  // Cada URL distinta que qualquer membro cola vira uma linha, inclusive as que
+  // FALHAM (o cache negativo também grava).
+  const previews = store.deleteExpiredLinkPreviews();
+  if (previews > 0) app.log.info(`preview de link: ${previews} entradas vencidas apagadas`);
 }
 sweepOrphanAttachments();
 const orphanSweeper = setInterval(sweepOrphanAttachments, ORPHAN_SWEEP_INTERVAL_MS);

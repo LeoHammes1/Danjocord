@@ -169,6 +169,33 @@ test("...e continua limitando quem insiste do mesmo IP", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// BAIXA — cache de preview de link crescendo para sempre
+// ---------------------------------------------------------------------------
+
+test("BAIXA: entrada vencida do cache de preview é apagada, a viva fica", () => {
+  const agora = Date.now();
+  // a assinatura é (preview sem fetched_at, ttlMs, now) — o expires_at é
+  // calculado lá dentro
+  const salvar = (url: string, ttlMs: number): void => {
+    store.saveLinkPreview(
+      { url, ok: false, title: null, description: null, site_name: null, error: "falhou", expires_at: 0 },
+      ttlMs,
+      agora,
+    );
+  };
+
+  // O cache NEGATIVO também grava: bastava colar URLs que falham para encher a
+  // tabela. `getLinkPreview` ignorava a linha vencida, mas nada a removia.
+  for (let i = 0; i < 50; i++) salvar(`https://vencida-${i}.example.com/`, -1); // ttl negativo = ja vencida
+  salvar("https://viva.example.com/", 600_000);
+
+  const apagadas = store.deleteExpiredLinkPreviews(agora);
+  assert.equal(apagadas, 50, "as 50 vencidas deveriam sair");
+  assert.notEqual(store.getLinkPreview("https://viva.example.com/", agora), null, "a viva tem de ficar");
+  assert.equal(store.deleteExpiredLinkPreviews(agora), 0, "nada sobrou para apagar");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 

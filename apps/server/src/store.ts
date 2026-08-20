@@ -854,6 +854,19 @@ export class Store {
   // falha seria retentada para sempre. Por isso guarda o fracasso também.
   // ---------------------------------------------------------------------------
 
+  /**
+   * Apaga o que já venceu. Chamado pelo sweeper de órfãos do index.ts.
+   *
+   * Sem isto a tabela só crescia: o `getLinkPreview` ignora a linha vencida,
+   * mas nada a remove — e cada URL distinta colada por qualquer membro vira
+   * uma linha, inclusive as que falham (o cache negativo também grava). Usa o
+   * `idx_link_previews_expires`, que existe desde a migration 006 justamente
+   * para esta consulta e não tinha ninguém para servir.
+   */
+  deleteExpiredLinkPreviews(now: number = Date.now()): number {
+    return this.db.prepare("DELETE FROM link_previews WHERE expires_at <= ?").run(now).changes;
+  }
+
   /** Entrada VÁLIDA do cache (positiva ou negativa); null = não tem, ou venceu. */
   getLinkPreview(url: string, now: number = Date.now()): LinkPreview | null {
     const row = this.db.prepare("SELECT * FROM link_previews WHERE url = ? AND expires_at > ?").get(url, now) as

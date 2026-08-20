@@ -31,6 +31,9 @@ export class SlidingWindow {
    */
   private static readonly MAX_KEYS = 20_000;
 
+  /** Quando a última faxina rodou — segura a varredura para não virar por-request. */
+  private lastSweep = 0;
+
   constructor(
     private readonly limit: number,
     private readonly windowMs: number,
@@ -62,7 +65,15 @@ export class SlidingWindow {
   record(key: string, now: number = Date.now()): void {
     // faxina ANTES de crescer: é aqui que o mapa ganha chave nova
     if (!this.hits.has(key) && this.hits.size >= SlidingWindow.MAX_KEYS) {
-      this.sweep(now);
+      // Só varre se faz tempo — e isto NÃO é micro-otimização. Numa enxurrada
+      // as 20 000 chaves estão todas vivas, então a varredura não libera nada e
+      // rodaria a CADA requisição: 20 000 operações por request, que é
+      // exatamente a amplificação de CPU que este arquivo existe para evitar.
+      // (Medido: 60 mil inserções levavam 11 s antes desta guarda.)
+      if (now - this.lastSweep >= this.windowMs / 2) {
+        this.lastSweep = now;
+        this.sweep(now);
+      }
       // ainda cheio depois da faxina = enxurrada de verdade, com todas as
       // chaves vivas. Não rastrear a nova seria FALHAR ABERTO justo no momento
       // do ataque; recusar é o contrário do que se quer num limitador.
