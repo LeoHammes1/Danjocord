@@ -22,3 +22,9 @@ certs/
 Thumbs.db
 apps/desktop/renderer-dist/
 apps/desktop/release/
+
+# rascunhos que agentes de auditoria escrevem no repo enquanto reproduzem um
+# achado. Já entraram num commit por um `git add -A` distraído.
+__audit_*
+__refute_*
+**/zz-poc-*
