@@ -177,6 +177,7 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 122. ✅ `P` CI roda os testes (`pnpm test`: 105 do servidor + 23 do cliente) — entrou junto do M9, porque a validação de upload é onde um erro é furo de segurança.
 123. `M` `mediasoup-client` inteiro carrega antes da tela de login.
 124. `P` Runbook de operação (restart, restore, logs, rollback).
+125. `P` O limite da classe `midia` conta REQUISIÇÕES, não bytes: 900 GETs podem ser 900 arquivos de 8 MB. Cobrar por MB exige um `onResponse` (a checagem é antes, a cobrança depois, então uma rajada única passa inteira). Hoje o que segura é o teto de 512 MB de anexos da guild e a exigência de credencial de membro.
 
 ## 10. Fora de escopo
 

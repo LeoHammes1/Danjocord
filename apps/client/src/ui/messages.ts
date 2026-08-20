@@ -975,9 +975,18 @@ export function startEdit(
         // tempo esperar — jogar fora o texto E a explicação é o pior dos dois.
         if (!input.isConnected) return; // o broadcast já refez o nó
         input.disabled = false;
-        input.focus();
+        // O RECADO ANTES DO FOCO, nesta ordem. O leitor de tela anuncia o campo
+        // quando ele ganha foco; escrever a dica depois faria ele ler a versão
+        // velha ("Esc para cancelar · Enter para salvar") e o Enter pareceria
+        // não ter feito nada.
         hint.classList.add("edit-hint--erro");
         hint.textContent = `${textoDoErro(err, "não deu para editar")} · Esc para cancelar`;
+        // Só toma o foco se ninguém mais o tem. Este handler é assíncrono: entre
+        // o Enter e a resposta a pessoa pode ter ido escrever no composer ou em
+        // outro editor, e puxar o cursor de volta no meio de uma frase é pior do
+        // que o erro que estamos reportando. `document.body` é o "ninguém": é
+        // onde o foco cai quando o próprio input foi desabilitado.
+        if (document.activeElement === null || document.activeElement === document.body) input.focus();
       },
     );
   });
