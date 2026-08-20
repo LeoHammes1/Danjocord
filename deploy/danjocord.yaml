@@ -48,15 +48,37 @@ spec:
         # Brasil: RTT de voz (10–40 ms) + IP público direto + PVC local.
         # Os workers Oracle ficam nos EUA (~150–200 ms) — vetados para mídia.
         kubernetes.io/hostname: hostinger
+      # O Danjocord NÃO fala com a API do Kubernetes — nem uma linha. O token
+      # montado por padrão é, portanto, só superfície: qualquer execução de
+      # código no pod ganharia uma credencial de cluster de graça. A da
+      # serviceAccount `default` daqui é fraca (medida: só self-review e
+      # discovery), então isto é higiene, não emergência — mas é uma linha.
+      automountServiceAccountToken: false
       securityContext:
         # local-path monta o PVC root:root; sem isto o processo (USER node,
         # uid 1000) não cria o SQLite em /data e o pod entra em CrashLoop —
         # mesmo fix do zookeeper.yaml/artemis.yaml do KubeCluster
         fsGroup: 1000
+        # O Dockerfile já tem `USER node`, mas isso é promessa da IMAGEM. Estas
+        # três linhas são a garantia do CLUSTER: valem mesmo se alguém trocar a
+        # imagem, e o kubelet RECUSA subir o pod se ela vier rodando como root.
+        runAsNonRoot: true
+        runAsUser: 1000
       containers:
         - name: danjocord
           image: ghcr.io/leohammes1/danjocord:latest  # publicada pelo release.yml; deixar o package PÚBLICO no GitHub
           imagePullPolicy: Always
+          securityContext:
+            # nada aqui precisa de privilégio: a porta de mídia é a 40000 (acima
+            # de 1024, então nem NET_BIND_SERVICE), o mediasoup roda como
+            # processo comum e o SQLite mora no PVC.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          # readOnlyRootFilesystem NÃO está aqui de propósito: o worker do
+          # mediasoup e o Node podem querer /tmp, e ligar isso sem testar troca
+          # um risco teórico por um CrashLoop real. Fica como item de próxima
+          # rodada, com emptyDir em /tmp e um teste de chamada de verdade.
           env:
             - name: NODE_ENV
               value: "production"
