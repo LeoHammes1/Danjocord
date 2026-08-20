@@ -25,6 +25,8 @@ registerHooks({
   },
 });
 
+// gateway: WebSocket falso + relogio simulado, sem rede e sem esperar 20 s
+await import("./gateway-handshake.test.ts");
 await import("./sound-policy.test.ts");
 await import("./lru.test.ts");
 await import("./markdown.test.ts");

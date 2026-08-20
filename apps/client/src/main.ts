@@ -20,9 +20,9 @@ import {
 import { GatewayClient, type GatewayStatus } from "./gateway.js";
 import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, hydrateAuth, logout, refresh } from "./auth.js";
 import { desktop } from "./bridge.js";
-import { emit, emitConnection, mountSound } from "./sound/index.js";
+import { emit, emitConnection, mountSound, resetConnectionSound } from "./sound/index.js";
 import { TypingSender, TypingTracker } from "./typing.js";
-import { mountChrome, renderChannelHead, setConnectionStatus } from "./ui/chrome.js";
+import { mountChrome, renderChannelHead, resetConnectionBar, setConnectionStatus } from "./ui/chrome.js";
 import {
   clearComposer,
   focusComposer,
@@ -1000,6 +1000,13 @@ async function doLogout(motivo?: string): Promise<void> {
   currentGateway = null;
   await logout();
   resetState();
+  // Estado de MÓDULO que o resetState não alcança: o anti-flapping do som e os
+  // timers da faixa de conexão. Sem estes dois, um close que leva ao logout
+  // (kick com 4016, refresh inválido) deixava um timer armado disparando DEPOIS
+  // que a tela de login já estava na frente — som de "conexão perdida" por cima
+  // dela, e o próximo login herdando "caiu" para tocar "reconectado".
+  resetConnectionSound();
+  resetConnectionBar();
   showLogin(motivo);
 }
 

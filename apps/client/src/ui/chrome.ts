@@ -126,6 +126,21 @@ function paintBar(status: GatewayStatus): void {
   div.className = `conn-bar ${TONE[status]}${barVisible ? " on" : ""}`;
 }
 
+/**
+ * Irmã do `resetConnectionSound`: `barVisible` e `barTimer` também são estado
+ * de módulo e também atravessavam o logout. O `barTimer` de 600 ms armado por
+ * um close continuava vivo depois do `showLogin` — a faixa é filha de `#app`,
+ * então piscava escondida, e o login seguinte já começava com `barVisible`
+ * true, mostrando "sem conexão" numa sessão que conectou de primeira.
+ */
+export function resetConnectionBar(): void {
+  if (barTimer !== null) clearTimeout(barTimer);
+  barTimer = null;
+  barVisible = false;
+  bar?.remove();
+  bar = null;
+}
+
 export function setConnectionStatus(status: GatewayStatus): void {
   // o ponto do header acompanha SEMPRE — é o estado permanente, discreto
   el.status.className = status === "online" ? "online" : status === "offline" ? "offline" : "";

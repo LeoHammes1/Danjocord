@@ -34,6 +34,7 @@ export class GatewayClient {
   private seq: number | null = null;
   private sessionId: string | null = null;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private ackPending = false;
   private reconnectAttempts = 0;
   private closedByUser = false;
@@ -44,11 +45,20 @@ export class GatewayClient {
     { resolve: (p: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
   >();
 
-  constructor(
-    private readonly url: string,
-    private readonly token: string,
-    private readonly events: GatewayEvents,
-  ) {}
+  // Campos explícitos, e NÃO `constructor(private readonly url: string, …)`:
+  // o type stripping do Node recusa parameter property, e enquanto isto era um
+  // construtor abreviado a classe simplesmente não carregava no harness de
+  // teste do cliente — foi por isso que o gateway ficou sem teste até agora.
+  // Mesma pedra que o ByteLru do M9 pagou.
+  private readonly url: string;
+  private readonly token: string;
+  private readonly events: GatewayEvents;
+
+  constructor(url: string, token: string, events: GatewayEvents) {
+    this.url = url;
+    this.token = token;
+    this.events = events;
+  }
 
   connect(): void {
     this.closedByUser = false;
@@ -74,8 +84,22 @@ export class GatewayClient {
       this.onMessage(msg);
     });
 
+    // Cão de guarda do handshake. Ignorar um frame inválido é certo para
+    // Dispatch, mas se o engolido for o READY o cliente fica MUDO e VIVO: o
+    // servidor considera a sessão autenticada e responde os heartbeats
+    // normalmente, então não há close, não há scheduleReconnect, e a tela fica
+    // em "Conectando…" para sempre. Sem este timer não existe nada que perceba.
+    //
+    // Vale para qualquer causa de handshake incompleto, não só schema — READY
+    // perdido no meio do caminho dá no mesmo. O 4900 preserva a sessão e cai no
+    // handler de close, que reconecta com o backoff normal; e como `sessionId`
+    // só é preenchido PELO READY, a tentativa seguinte re-Identifica em vez de
+    // tentar um Resume que o servidor não reconheceria.
+    this.armHandshakeWatchdog();
+
     this.ws.addEventListener("close", (ev) => {
       this.stopHeartbeat();
+      this.clearHandshakeWatchdog();
       // requests de voz em voo morrem com o socket: rejeitar já é melhor que
       // deixar cada um esperar o próprio timeout de 10s (contrato do M3)
       this.rejectPending(new Error("gateway desconectado"));
@@ -94,6 +118,7 @@ export class GatewayClient {
   disconnect(): void {
     this.closedByUser = true;
     this.stopHeartbeat();
+    this.clearHandshakeWatchdog();
     this.ws?.close(1000);
   }
 
@@ -159,7 +184,11 @@ export class GatewayClient {
         this.seq = msg.s;
         this.reconnectAttempts = 0;
         if (msg.t === "READY") this.sessionId = msg.d.session_id;
-        if (msg.t === "READY" || msg.t === "RESUMED") this.events.status("online");
+        // handshake completo: o cão de guarda cumpriu o papel e sai de cena
+        if (msg.t === "READY" || msg.t === "RESUMED") {
+          this.clearHandshakeWatchdog();
+          this.events.status("online");
+        }
         this.events.dispatch(msg.t, msg.d);
         return;
       }
@@ -173,6 +202,27 @@ export class GatewayClient {
         return;
       }
     }
+  }
+
+  /**
+   * Generoso de propósito: o handshake leva um segundo em rede normal, e o que
+   * se quer aqui é não confundir rede lenta com sessão travada. 20 s ainda é
+   * infinitamente melhor que "para sempre".
+   */
+  private static readonly HANDSHAKE_TIMEOUT_MS = 20_000;
+
+  private armHandshakeWatchdog(): void {
+    this.clearHandshakeWatchdog();
+    this.handshakeTimer = setTimeout(() => {
+      this.handshakeTimer = null;
+      console.warn("gateway: READY não chegou em 20s — reconectando");
+      this.ws?.close(4900, "handshake sem READY");
+    }, GatewayClient.HANDSHAKE_TIMEOUT_MS);
+  }
+
+  private clearHandshakeWatchdog(): void {
+    if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = null;
   }
 
   private startHeartbeat(intervalMs: number): void {

@@ -64,6 +64,23 @@ const SETTLE_MS = 2000;
 let announced: "up" | "down" | null = null;
 let settleTimer: number | undefined;
 
+/**
+ * Volta o anti-flapping ao estado de boot. Existe por causa do LOGOUT, e o
+ * caminho que o revelou foi o close 4016 (kick): o handler de close emite
+ * `status("offline")` ANTES de emitir `closed(4016)`, então o timer de 2 s é
+ * armado; logo depois o app sai para a tela de login — e `announced`/
+ * `settleTimer` são estado de MÓDULO, que nem `resetState` nem `showLogin`
+ * conhecem. Resultado sem isto: o som de "conexão perdida" tocava POR CIMA da
+ * tela de login (categoria `system`, que deafen não silencia), e o login
+ * seguinte tocava "reconectado" — exatamente o que o comentário do SETTLE_MS
+ * diz que não pode acontecer, porque boot não é reconexão.
+ */
+export function resetConnectionSound(): void {
+  if (settleTimer !== undefined) clearTimeout(settleTimer);
+  settleTimer = undefined;
+  announced = null;
+}
+
 export function emitConnection(status: GatewayStatus): void {
   const level: "up" | "down" = status === "online" ? "up" : "down";
   if (settleTimer !== undefined) clearTimeout(settleTimer);
