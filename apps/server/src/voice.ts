@@ -484,7 +484,12 @@ export class Voice {
     // ARMADILHA do server mute (M9): o silêncio é do USUÁRIO e não da sessão —
     // um producer novo (re-produce, ou sair e voltar da voz) tem que nascer
     // pausado se o admin silenciou, senão burlar seria só clicar em sair/entrar
-    if (p.source === "mic") {
+    //
+    // `p.kind === "audio"` e não `p.source === "mic"` (auditoria M12): o
+    // `screen_audio` nascia solto, e era por ele que o silenciado voltava a ser
+    // ouvido. Mesmo motivo do syncServerMute — a regra é sobre ÁUDIO, não sobre
+    // a fonte que o cliente declarou.
+    if (p.kind === "audio") {
       try {
         await this.syncServerMute(session);
       } catch (err) {
@@ -728,13 +733,28 @@ export class Voice {
   }
 
   /**
-   * Alinha os producers de `mic` de UMA sessão ao conjunto de silenciados.
+   * Alinha TODO producer de áudio de UMA sessão ao conjunto de silenciados.
    * Chamado no produce (para o mute sobreviver a re-produce e a sair/voltar) e
    * no server_mute (para valer já, sem esperar o próximo producer).
+   *
+   * O critério é `kind === "audio"`, e NÃO `source === "mic"` (auditoria M12).
+   * A versão por source deixava o `screen_audio` — o outro producer de áudio do
+   * protocolo — passar inteiro: o silenciado abria um Go Live com um canvas 1×1,
+   * alimentava o `screen_audio` com o track do MICROFONE, e voltava a ser ouvido
+   * por todos que abrissem a transmissão. Com o badge de silenciado aceso na UI,
+   * e sem acender o anel de "falando" (o observer só recebe `mic`, então o
+   * VOICE_SPEAKING nunca o mencionava). No desktop Windows nem era preciso
+   * cliente modificado: o picker manda `audio: "loopback"`, que é o áudio do
+   * SISTEMA — basta rotear o mic para a saída.
+   *
+   * Por kind e não por lista de sources porque a garantia que se quer é
+   * "silenciado não emite ÁUDIO". Enumerar sources faz a garantia depender de
+   * alguém lembrar de atualizar a lista no dia em que aparecer a próxima —
+   * que foi exatamente como este buraco nasceu.
    */
   private async syncServerMute(session: VoiceSession): Promise<void> {
     for (const producer of [...session.producers.values()]) {
-      if (producerSource(producer) !== "mic" || producer.closed) continue;
+      if (producer.kind !== "audio" || producer.closed) continue;
       // a lista é lida a cada producer, e não uma vez no topo: um mute e um
       // unmute concorrentes convergem para a última leitura, nunca para um
       // estado misto entre producers da mesma sessão

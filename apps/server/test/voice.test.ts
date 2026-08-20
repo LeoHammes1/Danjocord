@@ -1310,6 +1310,15 @@ function micProducerOf(sessionId: string): { paused: boolean; closed: boolean } 
   return undefined;
 }
 
+function producerOf(sessionId: string, source: string): { paused: boolean; closed: boolean } | undefined {
+  const session = internals.sessions.get(sessionId);
+  if (!session) return undefined;
+  for (const producer of session.producers.values()) {
+    if (producer.appData.source === source && !producer.closed) return producer;
+  }
+  return undefined;
+}
+
 /** O admin não precisa estar em voz para moderar — a sessão dele é só identidade. */
 const adminCtx: Ctx = { userId: admin.id, sessionId: "s-admin" };
 
@@ -1359,6 +1368,49 @@ test("server_mute PAUSA o producer de verdade e broadcasta server_mute true", as
     await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
     assert.equal(mic.paused, false, "unmute retoma o producer");
     assert.equal(findAll<VoiceStateWire>("VOICE_STATE_UPDATE").at(-1)?.server_mute, false);
+  } finally {
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    await leaveQuietly(alvo);
+  }
+});
+
+test("ARMADILHA (auditoria M12): o silenciado NÃO escapa pelo screen_audio", async () => {
+  // O bypass: abrir um Go Live com um canvas 1×1 e alimentar o `screen_audio`
+  // com o track do MICROFONE. Antes da correção o servidor pausava só o
+  // producer de `mic`, então essa segunda trilha de áudio saía inteira — para
+  // todos que abrissem a transmissão, com o badge de silenciado aceso e sem
+  // acender o anel de "falando" (o observer só recebe `mic`).
+  //
+  // No desktop Windows nem exigia cliente modificado: o picker manda
+  // `audio: "loopback"`, que é o áudio do SISTEMA.
+  const alvo: Ctx = { userId: dave.id, sessionId: "s-mute-screenaudio" };
+  try {
+    await join(alvo, "2");
+    const t = await createTransport(alvo, "send");
+    await produce(alvo, t.transport_id); // mic
+    await produceScreen(alvo, t.transport_id); // a tela que o soundshare exige
+    await produceScreenAudio(alvo, t.transport_id);
+
+    const mic = producerOf(alvo.sessionId, "mic");
+    const screenAudio = producerOf(alvo.sessionId, "screen_audio");
+    const screen = producerOf(alvo.sessionId, "screen");
+    assert.ok(mic && screenAudio && screen, "sanidade: os três producers existem");
+    assert.equal(screenAudio.paused, false, "sanidade: sem mute, o soundshare toca");
+
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: true });
+    assert.equal(mic.paused, true, "o mic pausa, como sempre pausou");
+    assert.equal(screenAudio.paused, true, "e o screen_audio TAMBÉM — era o buraco");
+    assert.equal(screen.paused, false, "o VÍDEO da tela continua: silenciar não é derrubar o Go Live");
+
+    // e um producer de áudio NOVO, criado já silenciado, nasce pausado
+    await voice.handleRequest(alvo, "close_producer", { producer_id: (screenAudio as unknown as { id: string }).id });
+    await produceScreenAudio(alvo, t.transport_id);
+    assert.equal(producerOf(alvo.sessionId, "screen_audio")?.paused, true, "re-produzir já silenciado não solta o áudio");
+
+    // liberar volta a soltar os dois
+    await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
+    assert.equal(mic.paused, false);
+    assert.equal(producerOf(alvo.sessionId, "screen_audio")?.paused, false);
   } finally {
     await voice.handleRequest(adminCtx, "server_mute", { user_id: dave.id, muted: false });
     await leaveQuietly(alvo);
