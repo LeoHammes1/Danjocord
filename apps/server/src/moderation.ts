@@ -66,11 +66,21 @@ export interface ModerationDeps {
  * espaço sendo grande (56^10), uma rota pública que consulta o banco sem freio
  * é DoS de graça para qualquer um com um `for`.
  *
- * A chave é o `req.ip`, que é o peer REAL do socket. Atrás do Traefik isso é o
- * IP do proxy, e a janela vira global em vez de por visitante — de propósito:
- * o `x-forwarded-for` é escrito pelo cliente e um atacante rotacionaria valores
- * falsos para furar a janela, que é exatamente o que ela existe para impedir.
- * Com ≤10 amigos, um teto global de 30/min não atrapalha ninguém.
+ * A chave é o `req.ip`. Até o M12 isso era o peer do SOCKET — atrás do Traefik,
+ * o IP do proxy — e a janela era global em vez de por visitante. Estava escrito
+ * aqui como decisão consciente, com o argumento certo (o `x-forwarded-for` cru
+ * é escrito pelo cliente, e confiar nele deixaria rotacionar IPs falsos) e a
+ * conclusão errada (aceitar a janela global).
+ *
+ * O que faltava era `trustProxy` com CONTAGEM DE SALTOS (`index.ts`): ele
+ * descarta o que o cliente escreveu no XFF e devolve o endereço que o salto
+ * confiável acrescentou — que o cliente não controla. Agora `req.ip` é o
+ * visitante de verdade e a janela é por visitante, como sempre se quis.
+ *
+ * O estrago da versão antiga era pequeno AQUI (um teto global de 30/min só
+ * atrasa quem consulta convite) e grande na rota de login, que herdou o mesmo
+ * padrão no M12: lá, 21 requisições anônimas por minuto trancavam TODO MUNDO
+ * para fora. Mesma linha de código, consequências de ordens diferentes.
  */
 export const PREVIEW_LIMIT = 30;
 export const PREVIEW_WINDOW_MS = 60_000;

@@ -237,6 +237,57 @@ test("preflight da origem do desktop é respondido; origem estranha não", async
 });
 
 // ---------------------------------------------------------------------------
+// ALTA — o rate limit por IP virava balde global atrás do proxy
+// ---------------------------------------------------------------------------
+
+test("ALTA: com trustProxy, dois visitantes atrás do MESMO proxy têm baldes separados", async () => {
+  // Era a pior consequência de todas as correções desta auditoria: eu pus um
+  // rate limit no /auth/discord/start chaveado por `req.ip`, mas atrás do
+  // Traefik `req.ip` é o proxy — então 21 requisições anônimas por minuto
+  // trancavam o LOGIN DE TODO MUNDO, web e desktop. A única porta do servidor.
+  const { SlidingWindow } = await import("../src/limits.js");
+  const proxied = Fastify({ trustProxy: 1 });
+  const janela = new SlidingWindow(3, 60_000);
+  proxied.get("/limitada", async (req, reply) => {
+    if (janela.retryAfterMs(req.ip) > 0) return reply.code(429).send({ ip: req.ip });
+    janela.record(req.ip);
+    return { ip: req.ip };
+  });
+  await proxied.ready();
+
+  // o proxy acrescenta o IP real ao XFF; o socket é sempre ele mesmo
+  const comoProxy = (ipReal: string) =>
+    proxied.inject({ method: "GET", url: "/limitada", headers: { "x-forwarded-for": ipReal } });
+
+  for (let i = 0; i < 3; i++) {
+    const r = await comoProxy("203.0.113.7");
+    assert.equal(r.statusCode, 200, "o primeiro visitante tem 3 vagas");
+    assert.equal(r.json().ip, "203.0.113.7", "req.ip tem de ser o visitante, não o proxy");
+  }
+  assert.equal((await comoProxy("203.0.113.7")).statusCode, 429, "o 4º dele apanha");
+
+  // e o vizinho, atrás do MESMO proxy, não pode herdar a punição
+  assert.equal((await comoProxy("198.51.100.9")).statusCode, 200, "outro visitante não pode estar trancado");
+});
+
+test("...e o XFF que o CLIENTE escreve não fura a janela", async () => {
+  // é a objeção que o comentário antigo levantava, e ela é correta para XFF
+  // cru. Com contagem de saltos o proxy-addr descarta o que o cliente pôs e
+  // usa o que o salto confiável ACRESCENTOU — que o cliente não controla.
+  const proxied = Fastify({ trustProxy: 1 });
+  proxied.get("/eco", async (req) => ({ ip: req.ip }));
+  await proxied.ready();
+
+  const r = await proxied.inject({
+    method: "GET",
+    url: "/eco",
+    // o cliente inventa dois saltos na frente; só o último (o real) vale
+    headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8, 203.0.113.7" },
+  });
+  assert.equal(r.json().ip, "203.0.113.7", "só o endereço do salto confiável conta");
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 

@@ -59,7 +59,32 @@ function tlsOptions(): { key: Buffer; cert: Buffer } | null {
 // spread condicional e NAO um ternario entre duas chamadas: o tipo do Fastify
 // muda com `https`, e a uniao dos dois instanciadores quebra o addHook
 const tls = tlsOptions();
-const app = Fastify({ logger: true, ...(tls === null ? {} : { https: tls }) });
+/**
+ * `trustProxy` (auditoria M12, rodada 2) — sem ele, `req.ip` é o peer do
+ * SOCKET, que atrás do Traefik é o IP do proxy. Todo rate limit chaveado por
+ * `req.ip` virava então um balde ÚNICO compartilhado por todo mundo.
+ *
+ * Para o `GET /api/invites/:code` isso era decisão consciente e documentada (um
+ * teto global de 30/min não atrapalha dez amigos, e impede força bruta de
+ * código). Mas eu copiei o mesmo padrão para o `/auth/discord/start` sem
+ * reexaminar o trade-off, e lá a consequência é oposta: é a ÚNICA porta de
+ * autenticação, então 21 requisições por minuto de qualquer anônimo trancavam
+ * o login de TODOS — web e desktop.
+ *
+ * O comentário original recusava o `x-forwarded-for` por ser escrito pelo
+ * cliente, e essa objeção é correta para XFF cru. `trustProxy` com CONTAGEM DE
+ * SALTOS resolve: o proxy-addr descarta o que o cliente escreveu e devolve o
+ * endereço que o salto confiável ACRESCENTOU — que o cliente não controla.
+ *
+ * 1 salto = só o Traefik. Mudou a topologia (um CDN na frente, por exemplo),
+ * muda `TRUST_PROXY_HOPS` junto — contagem errada volta a confiar em XFF do
+ * cliente, que é pior que não confiar em nenhum.
+ */
+const app = Fastify({
+  logger: true,
+  trustProxy: config.trustProxyHops,
+  ...(tls === null ? {} : { https: tls }),
+});
 
 // A mesma origem serve SPA + API e os tokens vivem no localStorage: um XSS no
 // render de mensagens roubaria a sessão — a CSP é a contenção. Em dev o

@@ -80,6 +80,20 @@ export const config = {
   /** intervalo do audioLevelObserver — orçamento de "quem fala" < 200 ms (doc §8) */
   rtcSpeakingIntervalMs: Number(env.RTC_SPEAKING_INTERVAL_MS ?? 150),
 
+  /**
+   * Quantos saltos de proxy confiar ao resolver `req.ip` (auditoria M12).
+   *
+   * 1 = só o Traefik (produção) ou o Nginx Proxy Manager (staging do homelab).
+   * Zero volta ao peer do socket — correto em dev sem proxy, mas em produção
+   * faz TODO rate limit por IP virar um balde ÚNICO compartilhado por todos os
+   * visitantes, porque o peer passa a ser sempre o proxy.
+   *
+   * Contagem ERRADA é pior que zero: confiar em mais saltos do que existem faz
+   * o servidor acreditar no `x-forwarded-for` que o próprio cliente escreveu, e
+   * aí qualquer um rotaciona IPs falsos para furar a janela.
+   */
+  trustProxyHops: Number(env.TRUST_PROXY_HOPS ?? 1),
+
   // --- OAuth do Discord (M1) ---
   discordClientId: env.DISCORD_CLIENT_ID ?? "",
   discordClientSecret: env.DISCORD_CLIENT_SECRET ?? "",
