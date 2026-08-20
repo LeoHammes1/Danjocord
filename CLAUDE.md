@@ -310,9 +310,19 @@ deixam de ser opcionais.
 - **Busca**: FTS5 com `content='messages'` (externo, não contentless — sem isso
   o `snippet()` não funciona). O trecho vem com marcadores ``/``, não
   com `<b>`, porque o cliente monta nós.
-- **CORS de dev**: a lista de métodos em `index.ts` já mordeu duas vezes (M2
-  faltavam PATCH/DELETE, M11b faltava PUT). O sintoma engana — `Failed to fetch`
-  sem status, porque o navegador barra no preflight. Método novo entra lá junto.
+- **CORS não é só de dev** (corrigido no M12, rodando o Electron contra o
+  cluster): o renderer do desktop é servido pelo scheme `app://`, que é **origem
+  própria** — toda chamada dele à API é cross-origin, inclusive em produção. Só
+  o cliente web é same-origin. Enquanto o `cors` ficou dentro de
+  `if (config.devAuth)`, o app desktop **nunca conseguiu falar com produção**, e
+  o sintoma enganava: o OAuth terminava, o navegador dizia "Login concluído" e o
+  app dizia "Falha no login" — quem apanhava era o `POST /auth/session`, depois
+  de o OTC já ter voltado. Hoje o `origin: true` é só de dev (para o vite) e
+  produção tem lista fechada com `app://bundle`.
+  A lista de **métodos** já mordeu duas vezes (M2 faltavam PATCH/DELETE, M11b
+  faltava PUT); o sintoma é `Failed to fetch` sem status, porque o navegador
+  barra no preflight. Método novo entra lá junto — e agora isso vale para o
+  desktop em produção, não só para o dev.
 
 ## Convenções
 
