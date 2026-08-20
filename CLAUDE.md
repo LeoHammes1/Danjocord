@@ -324,6 +324,70 @@ deixam de ser opcionais.
   barra no preflight. Método novo entra lá junto — e agora isso vale para o
   desktop em produção, não só para o dev.
 
+## Limites, e por que a chave nunca é o IP (M12)
+
+O gateway ganhou freios primeiro (op 20 a 60/s, op 3 a 10/s, tetos de sessão e
+de ring buffer). O REST em geral não tinha nenhum: mandar mensagem, editar,
+apagar, ler histórico, buscar, baixar anexo e o "está digitando" eram
+ilimitados — e quase todos terminam em `gateway.broadcast`, que faz
+`JSON.stringify` **por sessão**. `src/rate-limit.ts` fecha isso.
+
+- **A chave é o USUÁRIO, nunca o IP, e isso é medição.** Três requisições ao pod
+  (uma sem `x-forwarded-for`, uma com `1.1.1.1`, uma com três saltos forjados)
+  registraram `remoteAddress = 10.42.0.0` nas **três**. O Service do Traefik usa
+  `externalTrafficPolicy: Cluster`, então o kube-proxy faz SNAT **antes** do
+  proxy. Duas conclusões: não há bypass por header forjado (o `trustProxy: 1`
+  cumpre), mas o IP é um **balde único** — chavear por ele é dar a um estranho o
+  poder de trancar os dez amigos para fora. Foi o que aconteceu no
+  `/auth/discord/start`. A linha que reintroduz o bug é `user?.id ?? req.ip`;
+  há teste que reprova se ela aparecer. Requisição sem Bearer não entra em
+  janela nenhuma: leva 401 no `onRequest`, antes de o corpo ser lido.
+- **Rota nova sem classe não sobe.** A classe vem de uma tabela por PADRÃO de
+  rota, carimbada num `onRoute`; rota fora dela faz o **boot lançar**. O default
+  silencioso seria uma rota nova nascendo ilimitada sem ninguém notar.
+- **Os números saem das constantes do CLIENTE** (throttle de digitação, debounce
+  de ack e de busca, tamanho de página), cada um com a conta no comentário: um
+  limite que o próprio cliente estoura em uso normal é um bug, não uma defesa.
+- **O hook vai DEPOIS do `register(cors)`.** Antes dele, contaria o preflight —
+  e como o renderer do desktop é `app://bundle`, toda ação dele gastaria duas
+  unidades, com o sintoma `Failed to fetch` sem status.
+- **Isento é lista explícita.** `/healthz` é o mortal: um 429 ali tira o pod dos
+  Endpoints em ~30 s (Traefik devolve 503 com o processo vivo) e o mata em ~45.
+- Rota com limitador próprio é `proprio` e o geral **não** a conta: levar 429 do
+  soundboard é o caso normal de quem aperta o pad duas vezes, e cobrança dupla
+  gastaria o balde geral sem um som tocar.
+- O 429 tem **uma** função (`limits.ts`) — havia cinco cópias idênticas. A forma
+  é a que o cliente já lê: `retry_after` em **segundos no corpo**.
+
+Do lado do cliente: o `api()` lia o status e **jogava o corpo fora**. Com o
+limite, existe erro que aparece sem ninguém ter feito nada errado e cuja
+resposta traz a única informação útil — quanto esperar. E o editor de mensagem
+agora **fica aberto com o texto** quando o PATCH falha; antes o texto digitado
+evaporava sem uma palavra.
+
+**O laço que já existia**: `maybeLoadOlder` terminava rearmando a si mesmo. Numa
+falha nada é prependado, então `scrollTop` não muda e `reachedStart` continua
+falso — rearmava na hora, uma requisição por RTT, para sempre. O comentário do
+`catch` dizia "sem retry automático" e a linha seguinte era o retry automático.
+O mesmo `if` repetia a MESMA página quando ela vinha inteira de gente bloqueada.
+A condição certa é **progresso**, e agora é função pura em `pagination.ts`.
+
+**`readOnlyRootFilesystem: true`** no pod, medido e não deduzido: no pod em
+operação, `find / -xdev -newer /proc/1` fora de `/data` não devolve arquivo e os
+únicos descritores de escrita são os três do SQLite. O `emptyDir` em `/tmp` é
+para o temporário que o SQLite escreve quando uma query **derrama** — provado
+com dois pods idênticos, um com o mount e outro sem: sem ele é
+`SQLITE_IOERR_GETTEMPPATH`. Quem segura é o **volume**, não o `SQLITE_TMPDIR`
+(o SQLite testa a gravabilidade de cada candidato e acha `/tmp` sozinho); a env
+tira o resultado da ordem de tentativa. E o temporário só vira arquivo acima da
+cache de 16 MB — é por isso que em operação normal `/tmp` fica vazio, e é por
+isso que este é o `EROFS` que não aparece no boot.
+
+**O `deploy-cluster.sh` aplica o MANIFEST** (com a imagem trocada pelo SHA no
+stream). Antes só fazia `set image`, e mudar `securityContext`, volume ou env
+era passo manual fora do laço — um pod que diverge do manifest em silêncio é
+pior que um deploy que não roda.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

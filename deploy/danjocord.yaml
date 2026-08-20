@@ -100,15 +100,24 @@ spec:
             # de COMPILAÇÃO, que é ARQUIVO (o `defines.gypi` dele não define
             # SQLITE_TEMP_STORE), e o db/index.ts não emite o pragma.
             #
-            # Sem esta env ele tenta, nesta ordem: SQLITE_TMPDIR, TMPDIR,
-            # /var/tmp, /usr/tmp, /tmp e por fim o CWD. Com a raiz somente-
-            # leitura os cinco primeiros reprovam e o CWD também. Nomear /tmp
-            # tira o resultado da ordem de tentativa — e do CWD de quem der
-            # `kubectl exec`.
+            # ORDEM DE IMPORTÂNCIA, medida com dois pods idênticos rodando a
+            # mesma query, um com o emptyDir de /tmp e outro sem:
             #
-            # É o EROFS perigoso: não aparece no boot, aparece no dia em que uma
-            # query derrama. Por isso o volume existe mesmo com a medição acima
-            # dizendo que hoje nada escreve lá.
+            #     sem o mount -> SQLITE_IOERR_GETTEMPPATH: disk I/O error
+            #     com o mount -> escreveu 24 MB de temporário, tudo bem
+            #
+            # Ou seja: quem segura é o VOLUME abaixo, não esta env. O SQLite
+            # tenta SQLITE_TMPDIR, TMPDIR, /var/tmp, /usr/tmp, /tmp e o CWD, e
+            # TESTA a gravabilidade de cada um antes de usar — com a raiz
+            # somente-leitura ele descarta os outros e acha /tmp sozinho. A env
+            # existe para tirar o resultado da ORDEM DE TENTATIVA (e do CWD de
+            # quem der `kubectl exec`), não para o caminho funcionar.
+            #
+            # E o motivo de isto não aparecer em teste casual: o temporário só
+            # vira ARQUIVO quando passa da cache de 16 MB do better-sqlite3.
+            # Abaixo disso ele nunca toca o disco — que é por que a medição do
+            # pod em operação normal mostra /tmp vazio. É o EROFS que não
+            # aparece no boot: aparece no dia em que uma query derrama.
             - name: SQLITE_TMPDIR
               value: "/tmp"
             - name: ANNOUNCED_IP            # usado pelo mediasoup a partir do M3
