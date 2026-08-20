@@ -88,9 +88,27 @@ app.addHook("onSend", async (_req, reply) => {
 // sintoma é o mesmo e engana: `Failed to fetch` no console, sem status HTTP,
 // porque o navegador barra no preflight e a requisição nem sai. Método novo na
 // API entra AQUI junto — em produção não aparece, e o bug só existe em dev.
-if (config.devAuth) {
-  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] });
-}
+// E em PRODUÇÃO ele também é necessário, por um motivo que só apareceu quando o
+// app desktop foi rodado de verdade contra o cluster (M12): o renderer do
+// Electron é servido pelo scheme `app://`, que é uma ORIGEM PRÓPRIA. Toda
+// chamada dele à API é cross-origin — o cliente web é same-origin e não precisa
+// de nada disso, mas o desktop precisa, sempre.
+//
+// O sintoma era cruel de diagnosticar: o OAuth ia até o fim, o navegador dizia
+// "Login concluído ✓", e o app dizia "Falha no login" — porque quem apanhava
+// era o `POST /auth/session` DEPOIS do OTC já ter voltado. Sem estas linhas o
+// desktop nunca conseguiu falar com produção.
+//
+// `origin: true` (reflete qualquer origem) fica SÓ em dev. Em produção é uma
+// lista fechada com a origem do desktop e mais nada.
+const DESKTOP_ORIGIN = "app://bundle";
+await app.register(cors, {
+  origin: config.devAuth ? true : [DESKTOP_ORIGIN],
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+  // explícito porque o preflight do desktop manda os dois: Bearer no
+  // authorization e o content-type dos POSTs de JSON e de corpo binário
+  allowedHeaders: ["authorization", "content-type"],
+});
 
 const db = openDb();
 const store = new Store(db);

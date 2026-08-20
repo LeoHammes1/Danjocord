@@ -196,6 +196,47 @@ test("BAIXA: entrada vencida do cache de preview é apagada, a viva fica", () =>
 });
 
 // ---------------------------------------------------------------------------
+// CORS: o desktop é cross-origin SEMPRE, inclusive em produção
+// ---------------------------------------------------------------------------
+
+test("preflight da origem do desktop é respondido; origem estranha não", async () => {
+  const { default: cors } = await import("@fastify/cors");
+  // reproduz a produção: devAuth DESLIGADO, lista fechada
+  const prod = Fastify();
+  await prod.register(cors, {
+    origin: ["app://bundle"],
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["authorization", "content-type"],
+  });
+  prod.post("/auth/session", async () => ({ ok: true }));
+  await prod.ready();
+
+  const preflight = (origem: string) =>
+    prod.inject({
+      method: "OPTIONS",
+      url: "/auth/session",
+      headers: {
+        origin: origem,
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type",
+      },
+    });
+
+  // era exatamente isto que faltava: o OAuth ia até o fim e o POST seguinte
+  // apanhava, com o navegador dizendo "Login concluído" e o app "Falha no login"
+  const desktop = await preflight("app://bundle");
+  assert.equal(desktop.headers["access-control-allow-origin"], "app://bundle");
+  assert.match(String(desktop.headers["access-control-allow-methods"] ?? ""), /POST/);
+
+  const estranha = await preflight("https://atacante.example");
+  assert.equal(
+    estranha.headers["access-control-allow-origin"],
+    undefined,
+    "origem fora da lista não pode receber ACAO",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // BAIXA — id fora do int64
 // ---------------------------------------------------------------------------
 
