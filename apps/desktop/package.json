@@ -1,6 +1,6 @@
 {
   "name": "@danjocord/desktop",
-  "version": "0.0.1",
+  "version": "0.0.0-dev",
   "private": true,
   "description": "Danjocord — cliente desktop (Electron)",
   "main": "dist/main.js",
