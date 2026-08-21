@@ -21,17 +21,50 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   transition: background-color var(--t-fast);
+  /* âncora da régua abaixo — não muda o fluxo */
+  position: relative;
+}
+/* A régua da marca: um fio de 1px que nasce vermelho na borda esquerda da
+   janela e se dissolve. É o gesto de identidade mais barato que existe — não
+   move um pixel (é `absolute`, logo não vira flex item), não anima, não custa
+   GPU, e assina o topo do app sem pintar nada de vermelho.
+
+   `bottom: -1px` cai exatamente sobre a `border-bottom` de 1px: o bloco
+   absoluto se posiciona pela caixa de padding, então -1px é a borda. */
+#sidebar-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--brand) 0%, transparent 55%);
 }
 #sidebar-head:hover {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
 }
-#sidebar-head svg {
+/* O brasão do time (M13), à esquerda do nome. Ele veio da coluna de guilds,
+   que deixou de existir — e o cabeçalho da sidebar é onde uma marca costuma
+   ficar: colada ao nome do servidor, não numa coluna própria.
+
+   É --brand-bright e não --brand pela mesma razão já escrita para o trilho do
+   canal, e no mesmo fundo: o vermelho cheio sobre o --bg-sidebar dá 2,6:1 e o
+   desenho fica turvo; o claro dá 5,4:1. */
+#sidebar-head .brasao {
+  flex: none;
+  color: var(--brand-bright);
+}
+
+/* CUIDADO: por classe, e não por `#sidebar-head svg`. Depois do M13 há dois
+   SVG aqui dentro, e o seletor de elemento pegaria o brasão junto — ele
+   herdaria o margin-left e giraria 90° a cada recolhimento. */
+#sidebar-head .chevron {
   margin-left: auto;
   color: var(--int-normal);
   transition: transform var(--t-fast);
 }
 /* recolhido = seta apontando para a direita (o desenho aponta para baixo) */
-#sidebar-head[aria-expanded="false"] svg {
+#sidebar-head[aria-expanded="false"] .chevron {
   transform: rotate(-90deg);
 }
 
@@ -52,7 +85,10 @@
   align-items: center;
   gap: var(--sp-1);
   width: 100%;
-  padding: var(--sp-2) var(--sp-1) var(--sp-1);
+  /* o lateral acompanha o do `.channel` (--sp-2): com --sp-1 o rótulo ficava
+     4px mais à esquerda que os canais que ele encabeça, e o desalinho aparece
+     porque os dois são a mesma coluna de texto */
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
   color: var(--text-faint);
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
@@ -99,6 +135,15 @@
     background-color var(--t-fast),
     color var(--t-fast);
 }
+/* O trilho do item de canal — a pílula que cresce à esquerda. Era branca (é
+   assim no Discord); no M13 ela é o vermelho do time. É o toque de identidade
+   mais barato do app inteiro: nenhum elemento novo, nenhuma mudança de
+   layout, só a cor de um ::before que já existia.
+
+   É o --brand-bright e não o --brand: sobre o --bg-sidebar o vermelho cheio
+   dá 2,6:1, e um trilho de 4px que não se enxerga não é um trilho. O claro dá
+   5,5:1. (O realce do canal aberto não depende só dele — o fundo e a cor do
+   texto também mudam —, mas um indicador invisível não vale o código.) */
 .channel::before {
   content: "";
   position: absolute;
@@ -108,11 +153,11 @@
   width: 4px;
   height: 0;
   border-radius: var(--r-full);
-  background: var(--text-strong);
+  background: var(--brand-bright);
   transition: height var(--t-fast);
 }
 .channel:hover {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
   color: var(--int-hover);
 }
 .channel:hover::before {
@@ -204,7 +249,7 @@
 /* Só quem PODE assistir vira botão (regra do M5) — e só ele acende no hover:
    acender uma linha que não faz nada é prometer um clique que não acontece. */
 .voice-user.watchable:hover {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
   color: var(--int-hover);
 }
 
@@ -214,6 +259,12 @@
   color: var(--text-faint);
 }
 
+/* "AO VIVO" continua vermelho depois do M13, e agora pelo token da MARCA e não
+   pelo --danger. O ui/sidebar.ts já dizia por quê: "não é 'perigo', é 'no ar'".
+   Vermelho de gravação é convenção universal e âmbar não a substitui — o selo
+   diria "atenção" onde precisa dizer "está transmitindo". Com a marca do
+   Danjomar sendo vermelha, o selo ganha a cor do time sem perder o sentido:
+   4,78:1 com o --text-strong. */
 .live-badge {
   flex: none;
   display: inline-flex;
@@ -221,7 +272,7 @@
   gap: 2px;
   padding: 0 var(--sp-1);
   border-radius: var(--r-sm);
-  background: var(--danger);
+  background: var(--brand);
   color: var(--text-strong);
   font-size: 10px;
   font-weight: var(--fw-bold);
@@ -232,7 +283,7 @@
    Fundo próprio e borda em cima: ele e o painel do usuário formam o bloco
    fixo do pé da coluna, separado da lista que rola. */
 #voice-footer {
-  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  padding: var(--sp-2);
   border-top: 1px solid var(--line);
 }
 
@@ -264,10 +315,21 @@
   white-space: nowrap;
 }
 
+/* Quatro `.icon-btn` de 32px (câmera, tela, soundboard e sair): 4×32 + 3×4 =
+   140px, folgado até nos 184 úteis da sidebar encolhida.
+
+   Eram SEIS, e não cabiam: com mic e fone aqui dava 212px, e como `.icon-btn`
+   é `flex: none` e a `#sidebar` tem `overflow: hidden`, o sexto sumia pela
+   borda em tela estreita. Os dois saíram (viraram duplicata do painel do
+   usuário) e o aperto foi junto. O `wrap` FICA mesmo assim: o botão do
+   soundboard nasce em JS, e o próximo que alguém acrescentar reabriria o
+   mesmo bug em silêncio. */
 .voice-footer-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--sp-1);
+  row-gap: var(--sp-1);
   margin-top: var(--sp-1);
 }
 /* desconectar fica na ponta, longe dos toggles: é o único irreversível */
@@ -339,8 +401,10 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--bg-guilds);
+  /* 8px e não 4: com 4 o painel fechava em 42px de altura e os três botões de
+     32px encostavam na borda de cima e de baixo ao mesmo tempo */
+  padding: var(--sp-2);
+  background: var(--bg-deepest);
 }
 
 .user-panel-id {
@@ -410,10 +474,10 @@
    Era o contrário enquanto "Sair" foi o único item — com um vizinho inócuo
    ao lado, o vermelho em tudo passa a mentir (integração do M8). */
 .menu-item:hover {
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   color: var(--text-strong);
 }
 .menu-item.danger:hover {
-  background: var(--danger);
+  background: var(--danger-bg);
   color: var(--text-strong);
 }

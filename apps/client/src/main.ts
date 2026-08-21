@@ -22,6 +22,7 @@ import { API, AuthError, devLogin, exchangeOtc, getAccessToken, getUser, hydrate
 import { desktop } from "./bridge.js";
 import { emit, emitConnection, mountSound, resetConnectionSound } from "./sound/index.js";
 import { TypingSender, TypingTracker } from "./typing.js";
+import { mountBrand } from "./ui/brasao.js";
 import { mountChrome, renderChannelHead, resetConnectionBar, setConnectionStatus } from "./ui/chrome.js";
 import {
   clearComposer,
@@ -116,7 +117,6 @@ const el = {
   loginDev: document.getElementById("login-dev")!,
   // app
   app: document.getElementById("app")!,
-  guildHome: document.getElementById("guild-home") as HTMLButtonElement,
   sidebarHead: document.getElementById("sidebar-head") as HTMLButtonElement,
   userPanel: document.getElementById("user-panel")!,
   meAvatar: document.getElementById("me-avatar") as HTMLImageElement,
@@ -143,8 +143,6 @@ const el = {
   voiceFooter: document.getElementById("voice-footer")!,
   voiceFooterStatus: document.getElementById("voice-footer-status")!,
   voiceFooterChannel: document.getElementById("voice-footer-channel")!,
-  voiceMute: document.getElementById("voice-mute") as HTMLButtonElement,
-  voiceDeafen: document.getElementById("voice-deafen") as HTMLButtonElement,
   voiceLeave: document.getElementById("voice-leave") as HTMLButtonElement,
   // vídeo (M4)
   voiceCamera: document.getElementById("voice-camera") as HTMLButtonElement,
@@ -1868,6 +1866,11 @@ async function jumpTo(channelId: string, messageId: string): Promise<void> {
 }
 
 async function boot(): Promise<void> {
+  // marca (M13): o brasão no pill da guild, no cartão de login e no favicon.
+  // Antes do hydrateAuth de propósito — é síncrono e não depende de sessão, e
+  // esperar por ela deixaria a tela de login sem a marca no primeiro quadro.
+  mountBrand();
+
   // desktop (M6): hidrata o cache de segredos ANTES de qualquer getAccessToken
   // síncrono — sem isto, uma sessão salva no safeStorage pareceria logout
   await hydrateAuth();

@@ -7,10 +7,17 @@
    (chrome.css) — e em dois casos precisa GANHAR um empate de especificidade.
    Está anotado em cada um; não reordenar sem ler.
 
-   CONTRASTE (o requisito do M7): as duas cores de fundo usadas aqui foram
-   escolhidas medindo, não por gosto. `--danger` puro com `--text-strong` dá
-   3,4:1 e reprova o AA (4,5:1) em texto pequeno — daí o color-mix, que escurece
-   o vermelho até 4,7:1 sem inventar cor nova nem sair dos tokens. */
+   CONTRASTE (o requisito do M7): as cores daqui foram escolhidas medindo, não
+   por gosto — e no M13 as três contas que moravam neste arquivo sumiram, o que
+   vale registrar porque parece perda de rigor e é o contrário.
+
+   Este arquivo tinha DOIS color-mix e uma exceção, todos com o mesmo motivo: o
+   vermelho e o blurple do Discord não passavam no AA nos usos daqui, e cada
+   ponto era corrigido com uma porcentagem medida à mão. Com a paleta do
+   Danjomar os três casos passam direto — o --brand é escuro o bastante para
+   receber texto claro (4,78:1) e o --brand-bright já é a versão clareada até
+   passar (5,03:1). O rigor não saiu do arquivo: subiu para o tokens.css, onde
+   fica num lugar só em vez de repetido em três contas. */
 
 /* --- badge no item de canal (item 80) ------------------------------------
 
@@ -40,7 +47,7 @@
   border-radius: var(--r-full);
   /* mais escuro que a sidebar E que o hover (--bg-elevated): a pílula continua
      legível com o cursor em cima, que é justamente quando a pessoa vai clicar */
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   color: var(--text-normal);
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
@@ -50,10 +57,19 @@
 }
 
 /* Menção tem cor própria: "alguém falou comigo" não pode parecer "tem mensagem
-   nova". O vermelho é o --danger escurecido com o --bg-guilds até o texto
-   passar no AA (4,7:1 contra --text-strong; o --danger puro dá 3,4:1). */
+   nova".
+
+   No M13 esta cor trocou de token sem trocar de aparência: menção é vermelha
+   por CONVENÇÃO (é assim no Discord, e é o que a pessoa já sabe ler), não
+   porque seja um "perigo" — e o --danger virou âmbar. Um badge de menção
+   âmbar diria "atenção" onde precisa dizer "falaram com você".
+
+   O color-mix que existia aqui também sumiu, e é uma boa notícia: ele existia
+   para ESCURECER o vermelho antigo até o texto passar no AA (o #f23f42 puro
+   dava 3,4:1). O vermelho do Danjomar já é escuro — o --brand puro dá 4,78:1
+   com o --text-strong. O número mágico deixou de ser necessário. */
 .unread-badge--mention {
-  background: color-mix(in srgb, var(--danger) 78%, var(--bg-guilds));
+  background: var(--brand);
   color: var(--text-strong);
 }
 
@@ -73,13 +89,17 @@
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--danger);
+  /* mesma troca do badge de menção: vermelho aqui é convenção, não perigo.
+     E é o --brand-bright, não o --brand: uma linha de 1px no --brand dá
+     2,4:1 sobre o --bg-chat, ou seja, quase não se vê */
+  background: var(--brand-bright);
 }
 .unread-line-label {
   flex: none;
-  /* o --danger puro sobre o --bg-chat dá 3,3:1 em texto de 12px; clareado com
-     o --text-strong chega a 4,9:1 e continua sendo vermelho */
-  color: color-mix(in srgb, var(--danger) 65%, var(--text-strong));
+  /* o color-mix que clareava o vermelho antigo saiu: o --brand-bright já É o
+     vermelho clareado até passar (5,0:1 sobre o --bg-chat), e agora num token
+     em vez de numa conta repetida em dois arquivos */
+  color: var(--brand-bright);
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   text-transform: uppercase;
@@ -97,7 +117,7 @@
    classes dos dois lados). Quem decide é a ORDEM — e é por isso que este
    arquivo é importado depois. */
 .msg:has(.unread-line) .msg-row {
-  padding-top: var(--sp-3);
+  padding-top: var(--sp-4);
 }
 
 /* --- barra "pular para o presente" (item 83) -----------------------------
@@ -125,9 +145,12 @@
   gap: var(--sp-2);
   padding: var(--sp-1) var(--sp-3);
   border-radius: var(--r-sm) var(--r-sm) 0 0;
-  /* --brand-hover e não --brand: o roxo cheio com texto claro dá 4,1:1 e
-     reprova o AA por pouco; o escuro dá 5,8:1 e ainda lê como "a cor da marca" */
-  background: var(--brand-hover);
+  /* Aqui era --brand-hover, e não --brand, porque o blurple cheio com texto
+     claro dava 4,1:1 e reprovava o AA por pouco. O vermelho do Danjomar é mais
+     escuro que o blurple e dá 4,78:1: a exceção deixou de ser necessária, e a
+     barra volta a ser um botão comum da marca — cheio em repouso, escuro no
+     hover, como todos os outros. */
+  background: var(--brand);
   color: var(--text-strong);
   font-size: var(--fs-xs);
   font-weight: var(--fw-medium);
@@ -135,10 +158,10 @@
   box-shadow: var(--shadow-low);
   transition: background-color var(--t-fast);
 }
-/* escurecer no hover (e não clarear) é o que mantém o contraste do texto: o
-   caminho de volta seria justamente o roxo que reprovou acima */
+/* escurecer no hover (e não clarear) é o que mantém o contraste do texto —
+   6,19:1 com o --text-strong, contra 4,78:1 em repouso */
 .jump-bar:hover {
-  background: color-mix(in srgb, var(--brand-hover) 85%, var(--bg-guilds));
+  background: var(--brand-hover);
 }
 
 .jump-bar-text {

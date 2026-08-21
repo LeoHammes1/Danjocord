@@ -69,7 +69,14 @@
    dele, e depois do emoji.css, cujo botão divide a mesma linha do campo. */
 @import "./attachments.css";
 
-/* busca (M11b, item 91) por último: o diálogo reusa a casca `.dialog-*` que o
+/* busca (M11b, item 91): o diálogo reusa a casca `.dialog-*` que o
    voice-settings.css define e sobrescreve a largura e o overflow do painel.
    Sem a ordem, seria preciso inventar especificidade para o mesmo efeito. */
 @import "./search.css";
+
+/* tipografia de display (M13) é o ÚLTIMO de todos, e por um motivo mecânico:
+   cada seletor dele pertence a outro arquivo (`#sidebar-head` ao sidebar.css,
+   `.dialog-head h2` ao voice-settings.css, `.settings-head h2` ao settings.css,
+   `.sb-dialog-head h2` ao soundboard.css). Em `.dialog-head h2` a
+   especificidade é IGUAL nos dois lados (0,1,1) — só a ordem resolve. */
+@import "./display.css";

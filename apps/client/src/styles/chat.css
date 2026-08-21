@@ -51,13 +51,19 @@
 /* a linha inteira acende (e não só um cantinho com os botões) */
 .msg-row:hover,
 .msg-row:focus-within {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
 }
 
 /* respiro entre blocos: como padding (e não margin) para o realce do hover
-   cobrir o vão — no Discord o bloco inteiro acende junto */
+   cobrir o vão — no Discord o bloco inteiro acende junto.
+
+   M13: era --sp-3. Este é o vão que a pessoa mais olha no dia, e 12px deixava
+   dois blocos de autores diferentes quase colados. GÊMEO OBRIGATÓRIO: o
+   `.msg:has(.unread-line) .msg-row` do unread.css tem a MESMA função e empata
+   em especificidade — os dois sobem juntos ou o bloco que abre as não lidas
+   fica com menos respiro que os vizinhos. */
 .msg:not(.msg--cont) .msg-row {
-  padding-top: var(--sp-3);
+  padding-top: var(--sp-4);
 }
 
 .msg.pending {
@@ -395,7 +401,9 @@
   width: 4px;
   height: 4px;
   border-radius: var(--r-full);
-  background: var(--text-muted);
+  /* era --text-muted: o cinza sumia no rodapé. Sobe para 5,0:1 e é a marca —
+     sem animação nova, a que existe abaixo já é a de sempre */
+  background: var(--brand-bright);
   animation: typing-bounce 1.2s infinite ease-in-out;
 }
 .typing-dots span:nth-child(2) {
@@ -452,7 +460,7 @@
   outline: none;
 }
 .msg:focus-visible .msg-row {
-  outline: 2px solid var(--text-link);
+  outline: 2px solid var(--brand-bright);
   outline-offset: -2px;
 }
 /* mensagem focada mostra a toolbar: sem isso, quem chegou pelas setas veria a
@@ -753,12 +761,12 @@ button.msg-reply:hover .msg-reply-author {
 /* os itens são tabindex=-1 e recebem foco PROGRAMÁTICO pelas setas: sem um
    estado de :focus visível, quem navega por teclado não veria onde está */
 .msg-menu .menu-item:focus {
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   color: var(--text-strong);
   outline: none;
 }
 .msg-menu .menu-item.danger:focus {
-  background: var(--danger);
+  background: var(--danger-bg);
   color: var(--text-strong);
 }
 
@@ -774,7 +782,7 @@ button.msg-reply:hover .msg-reply-author {
   transform: translateX(-50%);
   padding: var(--sp-2) var(--sp-4);
   border-radius: var(--r-md);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   color: var(--text-normal);
   font-size: var(--fs-sm);
   box-shadow: var(--shadow-high);

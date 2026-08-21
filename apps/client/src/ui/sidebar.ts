@@ -53,8 +53,6 @@ const el = {
   voiceFooterChannel: document.getElementById("voice-footer-channel")!,
   voiceCamera: document.getElementById("voice-camera") as HTMLButtonElement,
   voiceStream: document.getElementById("voice-stream") as HTMLButtonElement,
-  voiceMute: document.getElementById("voice-mute") as HTMLButtonElement,
-  voiceDeafen: document.getElementById("voice-deafen") as HTMLButtonElement,
   voiceLeave: document.getElementById("voice-leave") as HTMLButtonElement,
 };
 
@@ -152,7 +150,15 @@ export function mountSidebar(ctx: SidebarContext): void {
   // É o único trabalho honesto para este botão hoje (não há convite nem
   // configurações de guild para um servidor de dez amigos), e é o que faz o
   // aria-expanded que já estava no HTML deixar de ser mentira.
-  el.sidebarHead.append(icon("chevron", 16));
+  // A classe é obrigatória, não arrumação: o sidebar.css alcançava esta seta
+  // por `#sidebar-head svg`, e desde o M13 há DOIS svg aqui dentro — o brasão
+  // do time entra antes do texto. Com o seletor de elemento, o brasão herdaria
+  // o `margin-left: auto` da seta e giraria 90° toda vez que alguém recolhesse
+  // as categorias. `setAttribute` e não `className`: em SVGElement o `className`
+  // é um SVGAnimatedString somente-leitura.
+  const chevron = icon("chevron", 16);
+  chevron.setAttribute("class", "chevron");
+  el.sidebarHead.append(chevron);
   el.sidebarHead.setAttribute("aria-controls", "channels");
   el.sidebarHead.addEventListener("click", () => {
     const collapse = anyExpanded();
@@ -236,14 +242,10 @@ export function mountSidebar(ctx: SidebarContext): void {
   // aqui só se pinta o estado.
   el.voiceCamera.classList.add("icon-btn");
   el.voiceStream.classList.add("icon-btn");
-  el.voiceMute.classList.add("icon-btn");
-  el.voiceDeafen.classList.add("icon-btn");
   el.voiceLeave.classList.add("icon-btn");
   el.voiceLeave.replaceChildren(icon("logout"));
   el.voiceLeave.setAttribute("aria-label", "Desconectar da voz");
   el.voiceLeave.title = "Desconectar";
-  el.voiceMute.addEventListener("click", () => ctx.actions.toggleMute());
-  el.voiceDeafen.addEventListener("click", () => ctx.actions.toggleDeafen());
   el.voiceLeave.addEventListener("click", () => ctx.actions.leaveVoice());
 }
 
@@ -552,11 +554,10 @@ export function renderVoiceFooter(ctx: SidebarContext): void {
 
   const cam = ctx.voice.cameraOn;
   const stream = ctx.voice.streamOn;
-  const mute = ctx.state.selfMute;
-  const deaf = ctx.state.selfDeaf;
+  // Só câmera e transmissão: mute e ensurdecer moram no painel do usuário e
+  // são pintados por lá (paintUserPanel). Eram pintados nos dois lugares até o
+  // M13 — o mesmo estado, dois botões, um em cima do outro.
   paintToggle(el.voiceCamera, cam ? "video" : "video-off", "Câmera", cam ? "Desligar câmera" : "Ligar câmera", cam);
   // transmitindo usa o mesmo vermelho do AO VIVO — não é "perigo", é "no ar"
   paintToggle(el.voiceStream, "screen", "Transmitir tela", stream ? "Parar transmissão" : "Transmitir tela", stream, true);
-  paintToggle(el.voiceMute, mute ? "mic-off" : "mic", "Microfone", mute ? "Desmutar" : "Mutar", mute, true);
-  paintToggle(el.voiceDeafen, deaf ? "headphones-off" : "headphones", "Fones de ouvido", deaf ? "Voltar a ouvir" : "Ensurdecer", deaf, true);
 }

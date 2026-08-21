@@ -32,6 +32,7 @@ import { z } from "zod";
 import { InvitePreview } from "@danjocord/protocol";
 import { API } from "../auth.js";
 import { desktop } from "../bridge.js";
+import { brasao } from "./brasao.js";
 import { el } from "./dialog.js";
 
 // ---------------------------------------------------------------------------
@@ -244,8 +245,13 @@ function paint(state: LandingState, code: string, opts: InviteLandingOptions): v
     box.append(el("p", "inv-landing-lead", copy.body));
   } else {
     const { guild_name: guild, inviter_name: inviter } = state.preview;
-    // a inicial da guild, do mesmo jeito que o botão da coluna de servidores
-    box.append(el("div", "inv-landing-badge", guild.trim().charAt(0).toUpperCase() || "?"));
+    // O brasão do time, do mesmo jeito que o botão da coluna de servidores —
+    // que também deixou de ser uma letra no M13. Esta é a ÚNICA tela que
+    // alguém de fora vê antes de ter conta: a inicial do nome da guild dizia
+    // muito pouco sobre quem está convidando.
+    const marca = el("div", "inv-landing-badge");
+    marca.append(brasao(36));
+    box.append(marca);
     box.append(el("p", "inv-landing-kicker", "Você foi convidado para"));
     box.append(el("h1", "", guild));
 

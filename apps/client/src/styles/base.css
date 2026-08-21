@@ -11,13 +11,23 @@ body {
   height: 100%;
 }
 
+/* A UI NATIVA que o CSS não alcança: a lista suspensa do <select>, o menu de
+   contexto de um <input>, o preenchimento automático, o realce de busca do
+   navegador. Sem esta linha o Chrome desenha todos eles no tema CLARO do
+   sistema — e a lista de microfones abria BRANCA no meio de um app preto.
+   `color-scheme` é a única porta para isso: não é estilo, é a declaração de
+   qual tema o documento tem. */
+:root {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   /* o app é uma janela: quem rola são as colunas, nunca o documento */
   overflow: hidden;
   background: var(--bg-chat);
   color: var(--text-normal);
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-ui);
   font-size: var(--fs-sm);
   line-height: 1.4;
 }
@@ -63,18 +73,28 @@ img {
 
 /* Scrollbars finas em tudo. Chrome/Electron leem ::-webkit-*; o resto lê o
    par padrão scrollbar-width/color. Track transparente: a barra "flutua"
-   sobre a superfície da coluna, seja ela qual for. */
+   sobre a superfície da coluna, seja ela qual for.
+
+   M13: o polegar era o --bg-deepest, e isso PAROU de funcionar quando aquele
+   token desceu para quase-preto — uma barra #0c0c0d sobre o #313338 do chat
+   quase não se vê. O vinho abaixo resolve os dois lados de uma vez: volta a
+   ter contraste e é a cor do time. Nada de gradiente, ao contrário do site: o
+   `scrollbar-color` padrão só aceita cor, e um gradiente só no ::-webkit-
+   deixaria as duas engines diferentes. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-guilds) transparent;
+  scrollbar-color: color-mix(in srgb, var(--brand) 60%, var(--bg-deepest)) transparent;
 }
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-guilds);
+  background: color-mix(in srgb, var(--brand) 60%, var(--bg-deepest));
   border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-hover);
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -82,13 +102,32 @@ img {
 
 /* Foco: visível para quem navega por teclado, invisível para quem clica.
    :focus-visible resolve isso sozinho — o segundo bloco existe só para os
-   navegadores que ainda desenham o anel de :focus por baixo. */
+   navegadores que ainda desenham o anel de :focus por baixo.
+
+   M13: o anel era o --text-link (azul), a última coisa azul de uma UI que
+   virou vermelha. É o --brand-bright e não o --brand porque o anel precisa
+   aparecer sobre QUALQUER superfície, inclusive a mais clara (--bg-elevated):
+   o vermelho cheio dá 2,1:1 ali e o claro dá 4,5:1.
+
+   Sem glow no anel, de propósito: um halo aqui teria de ser box-shadow, e
+   box-shadow no :focus-visible global sobrescreveria o --shadow-low/high de
+   todo elemento que já tem um (o pill da guild, os diálogos, a barra de
+   pular). O halo da marca fica onde ele é identidade e não estado — no
+   brasão, em chrome.css. */
 :focus-visible {
-  outline: 2px solid var(--text-link);
+  outline: 2px solid var(--brand-bright);
   outline-offset: 2px;
 }
 :focus:not(:focus-visible) {
   outline: none;
+}
+
+/* Seleção de texto. Sem isto o navegador usa o azul do sistema, que é a última
+   coisa fora da paleta numa UI que virou vermelha — e aparece toda vez que
+   alguém copia uma mensagem. 45% para o texto continuar legível por cima. */
+::selection {
+  background: color-mix(in srgb, var(--brand) 45%, transparent);
+  color: var(--text-strong);
 }
 
 /* Texto só para leitor de tela (rótulo de um controle que já tem ícone). */
@@ -122,7 +161,7 @@ img {
 }
 .icon-btn:hover {
   color: var(--int-hover);
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
 }
 .icon-btn[aria-pressed="true"],
 .icon-btn[aria-expanded="true"] {

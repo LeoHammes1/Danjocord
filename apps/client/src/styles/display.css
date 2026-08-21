@@ -1,0 +1,75 @@
+/* Dono: a TIPOGRAFIA DE DISPLAY (M13). A Orbitron do site do Danjomar, e a
+   lista fechada de onde ela pode aparecer.
+
+   POR QUE UM ARQUIVO SÓ, e não uma linha em cada componente. A Orbitron é uma
+   fonte cara: larga, geométrica, de pouca entrelinha — ótima em título curto e
+   péssima em qualquer coisa que se leia por mais de duas palavras. Espalhada
+   em seis arquivos ela vira aquele app em que "tudo é título", e ninguém
+   consegue mais dizer onde ela está sem procurar. Aqui a resposta é o próprio
+   arquivo: se um seletor não está abaixo, ele está na --font-ui.
+
+   POR QUE ELE É O ÚLTIMO IMPORT. Todos os seletores daqui pertencem a OUTROS
+   arquivos (`#sidebar-head` é do sidebar.css, `.dialog-head h2` é do
+   voice-settings.css, e por aí). Não há disputa de propriedade — nenhum deles
+   declara font-family —, mas `.dialog-head h2` daqui e de lá têm a MESMA
+   especificidade (0,1,1). Só a ordem decide, e é a mesma razão pela qual o
+   unread.css e o attachments.css estão onde estão.
+
+   A REGRA para acrescentar um seletor: é o nome de uma COISA (o servidor, o
+   canal, um diálogo, o app), não o conteúdo dela. Nome de pessoa, mensagem,
+   rótulo de botão e texto de ajuda ficam de fora. */
+
+/* --- a marca ------------------------------------------------------------- */
+
+/* o nome do servidor no topo da sidebar — a maior presença da marca na janela
+   depois do brasão. É o único ponto em que a Orbitron ganha peso 700. */
+#sidebar-head {
+  font-family: var(--font-display);
+  font-weight: var(--fw-bold);
+  /* a Orbitron é larga: sem descer um degrau, "Danjocord" encosta na seta de
+     recolher numa sidebar de 240px. O bloco tem altura travada em 48px (ele e
+     o header do canal formam a faixa do topo), então o tamanho é a única
+     folga que existe aqui */
+  font-size: var(--fs-sm);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* o título do cartão de login e o da landing de convite: as duas telas que
+   alguém vê ANTES de entrar, e as únicas em que o nome do app aparece grande */
+.login-card h1,
+.inv-landing-card h1 {
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+}
+
+/* --- títulos ------------------------------------------------------------- */
+
+/* o nome do canal no header.
+
+   Aqui a Orbitron entra em tamanho MENOR que o texto ao lado, e é de
+   propósito: este elemento mostra "#geral" quase o tempo todo, não a marca. Em
+   --fs-md ela fica pesada o bastante para o nome do canal competir com as
+   mensagens, que é o oposto do que um header deve fazer. */
+#channel-name {
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.03em;
+}
+
+/* As TRÊS cabeças de diálogo do projeto. Elas são cópias uma da outra (mesma
+   estrutura, mesmos tokens, arquivos diferentes) — o M13 não as unifica, mas
+   também não deixa a tipografia divergir: quem esquecer uma vai ver a fonte
+   errada no diálogo, que é justamente o tipo de coisa que ninguém reporta.
+     .dialog-head    — a casca genérica do ui/dialog.ts (voice-settings.css)
+     .settings-head  — o diálogo de som do M8 (settings.css)
+     .sb-dialog-head — o do soundboard do M9 (soundboard.css) */
+.dialog-head h2,
+.settings-head h2,
+.sb-dialog-head h2 {
+  font-family: var(--font-display);
+  /* --fs-lg (20px) em Orbitron estoura a largura de diálogo estreito; um
+     degrau abaixo, com o peso mantido, lê como título do mesmo jeito */
+  font-size: var(--fs-md);
+  letter-spacing: 0.02em;
+}

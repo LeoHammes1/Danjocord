@@ -105,7 +105,7 @@
    distinguir dos administradores num olhar — não é uma "categoria a mais" */
 .uc-badge-owner {
   background: var(--warn);
-  color: var(--bg-guilds);
+  color: var(--bg-deepest);
 }
 .uc-close {
   align-self: start; /* o X acompanha o topo do card, não o meio do avatar */
@@ -296,10 +296,14 @@
 .uc-destructive {
   border-left: 2px solid var(--danger);
 }
-/* a chave da moderação é a mesma primitiva, mas LIGADA ela é vermelha e não
-   azul: "silenciado para todos" não é uma preferência ligada, é um estado
+/* a chave da moderação é a mesma primitiva, mas LIGADA ela não usa a cor da
+   marca: "silenciado para todos" não é uma preferência ligada, é um estado
    imposto a outra pessoa (especificidade maior que a do settings.css, então
-   a ordem dos @import não importa aqui) */
+   a ordem dos @import não importa aqui).
+
+   No M13 a oposição inverteu de lado sem perder o sentido: era vermelho
+   contra o blurple da chave comum, e agora é âmbar contra o vermelho da
+   marca. O que importa é que sejam cores diferentes, e continuam sendo. */
 .uc-destructive .settings-switch:checked {
   background: var(--danger);
 }
@@ -330,7 +334,7 @@
   color: var(--danger);
 }
 .uc-danger-btn:hover:not(:disabled) {
-  background: var(--danger);
+  background: var(--danger-bg);
   color: var(--text-strong);
 }
 .uc-action-btn:disabled,
@@ -385,7 +389,7 @@
 }
 .uc-chip:hover {
   background: var(--warn);
-  color: var(--bg-guilds);
+  color: var(--bg-deepest);
 }
 /* "liberar agora" é o desfazer: fica separado das pastilhas por uma margem
    maior, para ninguém libertar alguém querendo silenciar por 5 minutos */

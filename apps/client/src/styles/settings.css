@@ -158,7 +158,7 @@
   height: 24px;
   margin: 0;
   border-radius: var(--r-full);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   cursor: pointer;
   transition: background-color var(--t-fast);
 }

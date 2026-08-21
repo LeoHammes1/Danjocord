@@ -29,6 +29,7 @@ registerHooks({
 await import("./gateway-handshake.test.ts");
 await import("./sound-policy.test.ts");
 await import("./sound-assets.test.ts");
+await import("./brand-asset.test.ts");
 await import("./lru.test.ts");
 await import("./markdown.test.ts");
 await import("./unread.test.ts");

@@ -45,7 +45,7 @@
 .md-codeblock {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", "Liberation Mono", monospace;
   font-size: 85%;
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
 }
@@ -117,9 +117,15 @@
   background: var(--brand);
 }
 
-/* A menção a MIM. O amarelo é o mesmo do Discord e é a única coisa que faz a
-   pessoa achar, rolando o histórico, onde foi chamada — por isso ele não pode
-   ser a mesma cor de todas as outras pílulas. */
+/* A menção a MIM. O amarelo é a única coisa que faz a pessoa achar, rolando o
+   histórico, onde foi chamada — por isso ele não pode ser a mesma cor de todas
+   as outras pílulas.
+
+   Era literalmente o amarelo do Discord; no M13 ele clareou junto com o --warn.
+   O motivo está no tokens.css e não é sobre esta pílula: o --danger virou
+   âmbar, e o dourado antigo ficava a 13° dele no círculo de matiz. O tom novo
+   é mais limão, e continua fazendo o trabalho — o que importa aqui é não ser
+   a cor das outras menções, e a marca agora é vermelha. */
 .md-mention--self {
   background: color-mix(in srgb, var(--warn) 25%, transparent);
   color: var(--warn);

@@ -78,9 +78,13 @@
   -webkit-mask-image: radial-gradient(ellipse 58% 58% at 78% 16%, #0000 98%, #000 100%);
   mask-image: radial-gradient(ellipse 58% 58% at 78% 16%, #0000 98%, #000 100%);
 }
-/* não perturbe: a barra horizontal do "proibido" */
+/* não perturbe: a barra horizontal do "proibido". Vermelho por convenção (é
+   assim no Discord, no Slack e no Teams), então segue o token da MARCA e não o
+   --danger, que virou âmbar no M13 — âmbar aqui seria lido como "ausente", que
+   é justamente o vizinho de cima. É o --brand-bright pelo mesmo motivo do
+   trilho do canal: o vermelho cheio num ponto de 8px some no fundo escuro. */
 .av-dot.av-dnd {
-  background: var(--danger);
+  background: var(--brand-bright);
   -webkit-mask-image: linear-gradient(#000 0 32%, #0000 32% 68%, #000 68% 100%);
   mask-image: linear-gradient(#000 0 32%, #0000 32% 68%, #000 68% 100%);
 }
@@ -155,6 +159,13 @@
   padding: 0 var(--sp-2);
   list-style: none;
 }
+/* Passo de 40 para 44px. O irmão é o <li>, NÃO o `.member`: o ui/members.ts
+   põe um <button class="member"> DENTRO de cada <li>, então `.member + .member`
+   não casaria com nada e o espaço nunca apareceria — parecia funcionar porque
+   um seletor morto não dá erro. */
+.member-list li + li {
+  margin-top: var(--sp-1);
+}
 
 /* A linha inteira é o botão (o alvo de clique é a linha, não o nome). */
 .member {
@@ -175,7 +186,7 @@
    existe (M10) a linha é `disabled`, e acender uma linha que não abre nada é
    prometer um clique que não acontece. */
 .member:not(:disabled):hover {
-  background: var(--bg-elevated);
+  background: var(--bg-hover);
   color: var(--int-hover);
 }
 .member:disabled {
@@ -201,11 +212,16 @@
 }
 
 /* Selo: fundo TINGIDO com texto em --text-strong, e não a cor cheia com texto
-   por cima. O selo do M7 era --brand sólido, e #f2f3f5 sobre #5865f2 dá 4.1:1
-   — reprova no AA, e a 12px não vale a exceção de "texto grande". Tingido, o
-   mesmo par dá ~9:1 em todas as variantes, e a cor continua fazendo o trabalho
-   dela, que é dizer QUAL selo é sem precisar ler. É o mesmo truque do
-   .av-initial ali em cima. */
+   por cima. O selo do M7 era --brand sólido, e o --text-strong sobre o blurple
+   de então dava 4,1:1 — reprovava no AA, e a 12px não vale a exceção de "texto
+   grande". Tingido, o mesmo par dá ~9:1 em todas as variantes, e a cor
+   continua fazendo o trabalho dela, que é dizer QUAL selo é sem precisar ler.
+   É o mesmo truque do .av-initial ali em cima.
+
+   O vermelho do Danjomar (M13) passaria cheio, com 4,78:1 — mas o tingimento
+   FICA: ele não existe só pelo contraste do --brand, existe para as três
+   variantes (marca, --warn, --danger) terem o mesmo peso na lista. Voltar a
+   cor cheia aqui deixaria o selo de dono e o de silenciado reprovando. */
 .member-badge {
   flex: none;
   padding: 0 var(--sp-1);

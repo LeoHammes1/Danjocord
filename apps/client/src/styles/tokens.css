@@ -5,14 +5,53 @@
 
    O antigo --accent (coral) significava três coisas ao mesmo tempo (ação
    primária, erro e mute ligado); ele morreu. Ação primária é --brand,
-   erro/destrutivo/mute-ligado é --danger. */
+   erro/destrutivo/mute-ligado é --danger.
+
+   M13 — A IDENTIDADE VIRA DO DANJOMAR. A marca deixa de ser o blurple do
+   Discord e passa a ser o vermelho do time (#d41824, do site em
+   E:/Work/DanjomarFront). Isso força a segunda metade da mudança: com a marca
+   vermelha, "vermelho = perigo" deixa de significar alguma coisa. O --danger
+   foi para o âmbar e o --warn saiu de perto dele. O layout não mudou nada. */
+
+/* --- a fonte de display --------------------------------------------------
+   Orbitron, a mesma do site do time. Vem EMPACOTADA (não do Google Fonts):
+   as três CSPs do projeto não declaram font-src e herdam `default-src 'self'`,
+   então host externo não carregaria — e no desktop, que roda offline num
+   scheme app://, nem faria sentido. É a variável (400..900) no subset latin:
+   11,8 kB para todos os pesos.
+
+   O `swap` é deliberado: sem ele, um trecho da UI ficaria invisível enquanto
+   a fonte carrega. Com ele, o texto nasce na Segoe UI e troca — pior de
+   layout, melhor de percepção, e a fonte vem do próprio bundle (é rápido). */
+@font-face {
+  font-family: "Orbitron";
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url("../../assets/fonts/orbitron-latin.woff2") format("woff2");
+}
+
 :root {
   /* superfícies, do mais escuro ao mais claro — a profundidade é o contrário
-     do que a intuição diz: quanto mais "ao fundo" a coluna, mais escura */
-  --bg-guilds: #1e1f22;
+     do que a intuição diz: quanto mais "ao fundo" a região, mais escura.
+
+     O --bg-deepest chamava-se --bg-guilds e valia #1e1f22. Mudaram as duas
+     coisas no M13, por motivos diferentes: o VALOR desceu para quase-preto
+     porque é o fundo do site do time; o NOME mudou porque a coluna de guilds
+     deixou de existir e, dos 22 usos do token, exatamente UM era dela. Os
+     outros sempre foram "a superfície ou a tinta mais escura da paleta" — a
+     tela de login, que nunca teve coluna nenhuma, é a prova. Um token que
+     nomeia uma região morta é como se apaga um token por engano. */
+  --bg-deepest: #0c0c0d;
   --bg-sidebar: #2b2d31;
   --bg-chat: #313338;
   --bg-elevated: #383a40;
+  /* O hover das LISTAS (canal, membro, mensagem, botão de ícone). É o
+     --bg-elevated com um véu da marca: o app inteiro esquenta um grau quando o
+     cursor passa, em vez de acender cinza. É a superfície mais tocada do
+     produto e a personalidade mais barata que existe — a mesma pintura que já
+     acontecia, noutra cor. Desfazer é uma linha: `--bg-hover: var(--bg-elevated)`. */
+  --bg-hover: color-mix(in srgb, var(--brand) 8%, var(--bg-elevated));
   --bg-input: #383a40;
   --bg-overlay: rgba(0, 0, 0, 0.6);
 
@@ -29,13 +68,65 @@
   --int-hover: #dbdee1;
   --int-active: #f2f3f5;
 
-  /* marcas */
-  --brand: #5865f2;
-  --brand-hover: #4752c4;
+  /* --- marca: o vermelho do Danjomar --------------------------------------
+
+     SÃO TRÊS TOKENS, e não um, por uma razão física e não estética: num tema
+     escuro, a mesma cor não pode ser boa como PREENCHIMENTO (com texto claro
+     por cima) e como TINTA (texto/traço sobre a superfície escura). Preencher
+     exige cor escura; escrever exige cor clara. #d41824 escreve a 2,38:1 sobre
+     o --bg-chat, menos da metade do mínimo de 4,5:1.
+
+     E não adianta "usar um vermelho mais forte": nenhum vermelho puro chega
+     lá. O #ff0000 tem luminância 0,213 e dá 3,16:1 sobre o --bg-chat — para
+     passar em 4,5:1 é preciso luminância ≥ 0,324, que só se alcança somando
+     verde e azul, ou seja, clareando na direção do coral. O --brand-bright é
+     o vermelho MAIS saturado que ainda passa (52%); acima disso é escolher
+     entre a cor certa e o texto legível. */
+  --brand: #d41824; /* preenchimento: botão, pill, badge — 4,78:1 com --text-strong */
+  --brand-hover: #b4141c; /* o mesmo, escurecido: é o hover que preserva o texto (6,19:1) */
+  --brand-bright: #ff7a83; /* tinta e marca sobre fundo escuro — 5,03:1 no --bg-chat */
+
+  /* Halo da marca. Não é decoração solta: existe num lugar SÓ, o brasão do
+     cartão de login, onde o vermelho é identidade e não ação. Espalhá-lo pelos
+     botões transformaria a marca em ruído.
+
+     Eram dois tokens até o M13 — o irmão `--glow-brand` era um `box-shadow`
+     para a caixa retangular do pill da guild. Com a coluna removida ele ficou
+     sem consumidor e foi apagado junto: token órfão é dívida que se paga
+     depois, procurando quem usava.
+
+     `drop-shadow` e não `box-shadow` porque este halo é de um DESENHO: ele
+     segue o alfa do escudo, enquanto o box-shadow desenharia um borrão
+     retangular atrás dele. */
+  --glow-brand-drop: drop-shadow(0 0 14px rgba(212, 24, 36, 0.5));
+
+  /* --- estado -------------------------------------------------------------
+
+     O --danger sofre do MESMO problema do --brand, e agora sem saída: em
+     vermelho ele já era ruim como preenchimento (#f23f42 dava 3,40:1 com o
+     --text-strong — reprovava, e ninguém tinha medido). Em âmbar, que é mais
+     claro, seria pior: 2,30:1. Por isso o token se divide, e a regra de qual
+     usar é mecânica:
+
+       color:/border:/box-shadow:  → --danger        (claro, sobre o escuro)
+       background: com texto claro → --danger-bg     (escuro, sob o claro)
+       background: com texto ESCURO (--bg-deepest)    → --danger, e está certo
+
+     São 26 usos de tinta contra 6 de preenchimento, então o nome curto ficou
+     com a maioria. */
   --ok: #23a559;
-  --warn: #f0b232;
-  --danger: #f23f42;
+  --warn: #ecd45a;
+  --danger: #f2964a; /* âmbar: tinta, ícone, borda — 5,00:1 no pior fundo */
+  --danger-bg: #9d5010; /* âmbar escuro: preenchimento — 5,27:1 com --text-strong */
+  --danger-hover: #81420e; /* o hover do preenchimento, mesma lógica do --brand-hover */
   --line: #1f2023;
+
+  /* O --warn TAMBÉM teve de se mexer, e não por capricho: âmbar (27°) e o
+     dourado antigo (#f0b232, 40°) ficam a 13° um do outro — a mesma cor, para
+     quem olha. E eles aparecem LADO A LADO (os selos .uc-flag-voice e
+     .uc-flag-chat no card do membro, as duas faixas de conexão, os dois
+     realces da lista de membros). O #ecd45a está a 23° e com 1,59× a
+     luminância do --danger: separa por matiz e por brilho ao mesmo tempo. */
 
   /* espaço: escala de 4 — só estes valores aparecem em padding/gap/margin */
   --sp-1: 4px;
@@ -53,6 +144,11 @@
 
   /* tipografia (px, não rem: o app é uma janela de tamanho fixo, não um site
      que precisa acompanhar o zoom de fonte do navegador) */
+  --font-ui: "Segoe UI", system-ui, sans-serif;
+  /* display: só título e marca. Orbitron é larga e maiúscula-por-natureza —
+     em texto corrido ela cansa, e em nome de canal come a largura da coluna.
+     Quem a usa está listado no styles/display.css, num lugar só */
+  --font-display: "Orbitron", var(--font-ui);
   --fs-xs: 12px;
   --fs-sm: 14px;
   --fs-md: 16px;

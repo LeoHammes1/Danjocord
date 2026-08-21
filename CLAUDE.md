@@ -392,6 +392,184 @@ isso que este é o `EROFS` que não aparece no boot.
 stream). Antes só fazia `set image`, e mudar `securityContext`, volume ou env
 era passo manual fora do laço — um pod que diverge do manifest em silêncio é
 pior que um deploy que não roda.
+## Identidade do Danjomar (M13)
+
+O app é do time de e-sports Danjomar, e passou a parecer. **O layout do Discord
+não mudou** — grid de 4 colunas, densidade, agrupamento de mensagens,
+componentes: tudo intocado. Mudou cor, tipografia de título e o brasão.
+Referência: o site em `E:\Work\DanjomarFront` (Next/Tailwind, `#d41824`,
+Orbitron, fundo quase-preto).
+
+- **A marca virou vermelha, e isso forçou a segunda metade da mudança.** Com
+  `--brand` vermelho, "vermelho = perigo" deixa de significar algo: o `--danger`
+  foi para o âmbar (`#f2964a`) e o `--warn` saiu de perto dele (`#ecd45a`) —
+  âmbar e o dourado antigo ficavam a 13° no círculo de matiz, e os dois
+  aparecem **lado a lado** (os selos do card do membro, os da lista).
+- **`--danger` virou DOIS tokens, por física e não por gosto.** Num tema escuro
+  a mesma cor não serve como preenchimento (texto claro por cima → precisa ser
+  escura) e como tinta (sobre a superfície escura → precisa ser clara). Regra
+  mecânica: `color:`/`border:` → `--danger`; `background:` com texto claro →
+  `--danger-bg`. Isso consertou de passagem um defeito que já existia: o
+  vermelho antigo cheio com `--text-strong` dava 3,4:1 e reprovava o AA.
+- **Pelo mesmo motivo existe `--brand-bright`** (`#ff7a83`), para o vermelho
+  usado como tinta ou marca fina (trilho do canal, anel de foco, linha de não
+  lidas, ponto de "não perturbe"). E não adianta "usar um vermelho mais forte":
+  `#ff0000` tem luminância 0,213 e dá 3,16:1 sobre o `--bg-chat` — **nenhum**
+  vermelho puro chega aos 4,5:1, só clareando na direção do coral.
+- **Vermelho que é CONVENÇÃO não virou âmbar.** "AO VIVO", badge de menção,
+  linha de novas mensagens e o ponto de não-perturbe apontam para a marca, não
+  para o `--danger`: o `ui/sidebar.ts` já dizia "não é 'perigo', é 'no ar'".
+- **Três `color-mix` medidos à mão sumiram do `unread.css`** e isso é ganho, não
+  perda de rigor: eles existiam para corrigir o contraste do blurple e do
+  vermelho antigo. O vermelho do Danjomar é escuro o bastante para receber texto
+  claro (4,78:1) e o `--brand-bright` já é a versão clareada. O rigor subiu para
+  o `tokens.css`.
+- **O brasão é gerado, não desenhado**: `apps/client/scripts/trace-logo.mjs`
+  vetoriza `assets/brand/danjomar-logo-fonte.png` (PNG → contornos →
+  Douglas-Peucker → path). Node puro, sem dependência — o mesmo espírito do
+  `gen-sounds.mjs`. Duas descobertas que valem saber: a logo tem **uma cor só**
+  (o "branco" é transparência), então é UM path com `fill-rule="evenodd"` que
+  herda `currentColor` como qualquer ícone; e a tolerância (1.6) foi **medida**
+  rasterizando o path de volta e comparando pixel a pixel — 726 B com 0,63% de
+  divergência, que é a borda de antialiasing do PNG.
+- O mesmo script gera `apps/desktop/assets/icon.png` (512×512), que alimenta
+  janela, bandeja e instalador NSIS. Cruza a fronteira do pacote de propósito:
+  as duas saídas vêm da mesma origem e **não podem divergir**. O
+  `test/brand-asset.test.ts` amarra tudo por sha256 e refaz a vetorização para
+  conferir — ao contrário dos sons, aqui dá para refazer o trabalho em Node.
+- **O brasão NÃO está no `ui/icons.ts`**, e não é arrumação: aquele arquivo
+  declara no topo que seus desenhos são geometria feita à mão, sem licença
+  presa. O brasão é gerado, é mancha (não traço), tem proporção própria e é a
+  identidade de um time — mora em `ui/brasao.ts`.
+- **Orbitron é empacotada** (`assets/fonts/`, 11,8 kB, variável, subset latin).
+  Google Fonts não é opção: nenhuma das três CSPs declara `font-src`, todas
+  herdam `default-src 'self'`. O `vite.config.ts` ganhou as extensões de fonte
+  na trava de inline — hoje a fonte passa longe dos 4 kB, mas um subset menor
+  viraria `data:` URI e sumiria **só em produção**, exatamente como os
+  `ptt-*.mp3` de 1,6 kB. **A forma da regra importa**: uma literal de regex só,
+  porque o `sound-assets.test.ts` lê o arquivo como texto.
+- **Onde a Orbitron pode aparecer é uma lista fechada**, em `styles/display.css`
+  — e ele é o ÚLTIMO `@import`, porque todos os seus seletores pertencem a
+  outros arquivos e `.dialog-head h2` empata em especificidade (0,1,1). A regra
+  para acrescentar: é o nome de uma COISA (servidor, canal, diálogo), nunca o
+  conteúdo dela. São **três** cabeças de diálogo copiadas no projeto
+  (`.dialog-head`, `.settings-head`, `.sb-dialog-head`) — esquecer uma dá fonte
+  errada num diálogo só.
+- Superfícies que quase ficaram para trás, porque não passam pelo `tokens.css`:
+  o favicon (era blurple literal no `index.html`; hoje o `main.ts` o gera do
+  próprio `--brand`), o `backgroundColor` da janela do Electron (o que pisca
+  antes do renderer pintar) e o badge da landing de convite — a única tela que
+  alguém de fora vê antes de ter conta.
+
+### A coluna de guilds saiu (e o que ela levou junto)
+
+O grid tem **três** colunas agora. A de guilds existe no Discord para trocar de
+servidor; aqui há um só, e eram 72px de moldura para um botão que não levava a
+lugar nenhum. Dos 72 devolvidos, **24 foram para a sidebar** (é lá que estavam
+os apertos) e 48 para as mensagens.
+
+- **O brasão perdeu a casa e ganhou outra**: `#sidebar-head`, à esquerda do
+  nome, com `prepend` — nunca `replaceChildren`. Quando o `mountBrand()` roda,
+  aquele botão já tem o texto do HTML **e** o chevron que o `ui/sidebar.ts`
+  pendurou; `replaceChildren` apagaria os dois, e o chevron não voltaria (o
+  `mountSidebar` tem guarda de "já montei").
+- **O chevron precisou de classe ANTES do brasão entrar.** O `sidebar.css` o
+  alcançava por `#sidebar-head svg`, e agora há dois SVG ali: o brasão herdaria
+  o `margin-left: auto` e **giraria 90°** a cada recolhimento das categorias.
+- **20px de brasão, não 24.** "DANJOCORD" em Orbitron come ~111px dos 208 úteis;
+  a 24px sobrava 0,6px quando a media query encolhe a sidebar para 200 — e o
+  texto é uma palavra só, sem ellipsis, então ele não cede, vaza. Com 20px
+  sobram 4,6px. Foi medido no navegador, não estimado.
+- **`.conn-bar` era a mina.** O `left` dela era
+  `calc(var(--col-guilds) + var(--col-side))`: apagar o token sem tocar ali
+  deixaria um `var()` indefinido, e custom property indefinida **invalida a
+  declaração inteira** em tempo de valor computado. O `left` cairia para `auto`
+  e a faixa sairia do lugar — sem erro no console, e justamente na hora em que
+  a rede cai.
+- **`--bg-guilds` virou `--bg-deepest`.** Dos 22 usos, exatamente UM era da
+  coluna; o resto sempre foi "a superfície mais escura da paleta" (a tela de
+  login, que nunca teve coluna, é a prova). Token que nomeia uma região morta é
+  como se apaga um token por engano.
+- **`--glow-brand` foi apagado junto**: era o `box-shadow` do pill, e ficou sem
+  consumidor. Sobrou o `--glow-brand-drop`, do brasão no login.
+
+### Respiro e personalidade (mesma passada)
+
+- O que estava apertado estava quase todo na **sidebar**, não no chat: o painel
+  do usuário fechava em 42px (o Discord usa 52), o rodapé de voz tinha 4px de
+  respiro embaixo, e o rótulo de categoria ficava 4px mais à esquerda que os
+  canais que ele encabeça.
+- **Dois `padding-top` de bloco de mensagem sobem juntos, sempre**: o
+  `.msg:not(.msg--cont)` do `chat.css` e o `.msg:has(.unread-line)` do
+  `unread.css` empatam em especificidade e têm a mesma função. Se um subir
+  sozinho, o bloco que abre as não lidas fica com menos respiro que os vizinhos.
+- **`.member + .member` não casa com nada** — o `ui/members.ts` põe o
+  `<button class="member">` DENTRO de um `<li>`. O passo da lista é
+  `.member-list li + li`. Um seletor morto não dá erro: parece que funcionou.
+- **O rodapé de voz tem SEIS botões de 32px** (o sexto é o do soundboard,
+  criado em JS): 212px numa faixa de 184 quando a sidebar encolhe. Era bug
+  antes do M13, e o `flex-wrap` o fecha sem tirar botão de ninguém.
+- **`--bg-hover`** é o `--bg-elevated` com 8% da marca: o app esquenta um grau
+  no hover em vez de acender cinza. É a superfície mais tocada do produto e a
+  personalidade mais barata que existe. Desfazer é uma linha.
+- **A régua da marca** (um fio de 1px em gradiente sob as duas barras de 48px)
+  é `position: absolute` — não vira flex item, não move um pixel, não anima.
+### Onde mora cada controle de voz
+
+O microfone e os fones ficam **só no painel do usuário**, no rodapé da sidebar.
+O rodapé de VOZ tem só o que é da chamada: câmera, transmissão, soundboard e
+desconectar.
+
+Até o M13 os dois primeiros existiam nos **dois** lugares, ligados no MESMO
+`toggleMute`/`toggleDeafen` e pintados por duas funções diferentes — dois
+botões idênticos, um logo acima do outro, mudando de estado juntos. A divisão
+certa não é "dentro/fora da chamada": mute e ensurdecer são **preferência de
+quem usa o app** (valem fora da voz — é o "mutado ao entrar"), e por isso vivem
+no painel que está sempre visível. Câmera e tela só existem em chamada.
+
+De quebra o rodapé caiu de seis botões para quatro, o que resolveu de verdade o
+aperto que o `flex-wrap` estava remediando.
+
+### Mídia: onde dá para tirar a cara de navegador, e onde não dá
+
+- **O seletor de fonte do `getDisplayMedia` no NAVEGADOR é intocável.** É UI do
+  próprio Chrome, não do documento: não existe CSS, API nem truque que o
+  alcance. Quem pedir "deixa esse diálogo bonito" está pedindo o impossível, e
+  vale saber disso antes de tentar.
+- **No app empacotado ele é NOSSO** — o `setDisplayMediaRequestHandler` devolve
+  o controle e quem aparece é o `apps/desktop/src/picker.html`. Por isso ele
+  ganhou a identidade do time no M13: é o único lugar onde essa tela pode
+  deixar de parecer navegador. O brasão dele é **injetado pelo
+  `copy-static.mjs`**, lido do mesmo `brasao-path.ts` gerado que o cliente usa
+  — um path colado à mão ali ficaria velho sem ninguém notar, numa janela que
+  abre por três segundos. Se o caminho quebrar, o build FALHA em vez de
+  publicar um picker sem marca.
+- **O picker não tem Orbitron, e é decisão**: o `font-src` dele herda
+  `default-src 'none'`, então nem a fonte do bundle nem uma em `data:` carregam.
+  Relaxar a CSP e colar ~16 kB de base64 por causa de duas palavras de título
+  não vale — a identidade ali vem da cor, do brasão e das maiúsculas espaçadas.
+  A paleta é copiada em literais porque aquela janela não carrega o bundle: ao
+  mexer no `tokens.css`, mexer lá junto (é a segunda exceção do projeto, ao
+  lado do `backgroundColor` da janela do Electron).
+- **`color-scheme: dark` no `:root`** conserta o que o CSS não alcança: a lista
+  suspensa do `<select>`, o preenchimento automático, os menus de campo. Sem
+  ela o Chrome desenhava tudo isso no tema CLARO do sistema — a lista de
+  microfones abria **branca** no meio de um app preto. Não é estilo, é a
+  declaração de qual tema o documento tem.
+- **O `<select>` continua nativo por dentro** (a lista do sistema já é
+  acessível por teclado, leitor de tela e digitação — reimplementá-la é o
+  componente que quase todo mundo erra). O que mudou é a casca: `appearance:
+  none` tira a moldura e a setinha do Windows, e a seta volta como desenho
+  nosso num `data:` URI (passa na CSP porque `background-image` é governado por
+  `img-src`, que já traz `data:`).
+- **O que foi recusado, e por quê**: fundo hexagonal (o do site é um `<canvas>`
+  com `requestAnimationFrame` eterno — numa janela que mora semanas na bandeja
+  é exatamente o defeito que o `base.css` já teve de consertar uma vez);
+  `backdrop-filter` (os menus flutuam sobre cor chapada, então o blur devolve a
+  mesma cor); Orbitron nos rótulos de categoria e nos dígitos das badges (mede
+  +6,1px numa badge cuja largura o nome do canal paga); e glow espalhado pelos
+  botões — a política escrita no `chrome.css` é que o halo existe onde o
+  vermelho é identidade, não onde é ação.
 
 ## Convenções
 

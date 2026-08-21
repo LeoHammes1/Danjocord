@@ -27,10 +27,29 @@ import { defineConfig } from "vite";
  *
  * A forma de FUNÇÃO (em vez de zerar o número) é de propósito: `undefined`
  * devolve a decisão ao default do Vite, então SVG e PNG pequenos continuam
- * inlinando — o que é bom, é uma requisição a menos. Só o áudio fica de fora.
+ * inlinando — o que é bom, é uma requisição a menos. Só áudio e fonte ficam
+ * de fora.
+ *
+ * POR QUE A FONTE ENTROU NA LISTA (M13). A Orbitron do bundle tem 11.800 B e
+ * hoje passa longe do limite — ela NÃO precisaria estar aqui. Está porque o
+ * modo de falha é idêntico ao dos `ptt-*.mp3`, e pior de diagnosticar: um
+ * subset menor (um peso só, ou sem acentuação) cai abaixo de 4 KB sem aviso,
+ * vira `data:font/woff2;base64,…` e é barrado pelas TRÊS CSPs do projeto —
+ * nenhuma declara `font-src`, então todas herdam `default-src 'self'`, e
+ * nenhuma tem `data:` ali (só o `img-src` tem). O sintoma seria a tipografia
+ * voltando à Segoe UI **só em produção**, com um erro de CSP no console que
+ * ninguém liga a fonte. O `url()` do `@font-face` não escapa por outro
+ * caminho: ele passa pelo mesmo `shouldInline` do Vite.
+ *
+ * A FORMA IMPORTA: tem de continuar sendo UMA literal de regex seguida de
+ * `.test(filePath) ? false`. O `test/sound-assets.test.ts` lê este arquivo
+ * como texto e casa exatamente esse formato para conferir que a regra cobre
+ * todo clipe pequeno — quebrar em duas regexes nomeadas reprovaria o teste
+ * sem que nada estivesse errado de fato.
  */
 export default defineConfig({
   build: {
-    assetsInlineLimit: (filePath) => (/\.(ogg|oga|opus|mp3|wav|m4a|flac)$/i.test(filePath) ? false : undefined),
+    assetsInlineLimit: (filePath) =>
+      /\.(ogg|oga|opus|mp3|wav|m4a|flac|woff2|woff|ttf|otf)$/i.test(filePath) ? false : undefined,
   },
 });

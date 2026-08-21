@@ -1,34 +1,35 @@
-/* Esqueleto do app: quatro colunas fixas + a coluna de conteúdo elástica.
+/* Esqueleto do app: duas colunas fixas + a coluna de conteúdo elástica.
    Este arquivo só POSICIONA as regiões e diz quem rola; o visual de cada
    região mora no arquivo do seu dono (chrome.css, sidebar.css, members.css,
-   chat.css, media.css). */
+   chat.css, media.css).
+
+   M13: eram QUATRO colunas. A de guilds (72px) saiu porque no Discord ela
+   serve para trocar de servidor, e aqui só existe um — ver o comentário no
+   index.html. Dos 72px devolvidos, 24 foram para a sidebar (é lá que estavam
+   os apertos reais: o rodapé de voz tem seis botões numa faixa que não os
+   comportava) e 48 sobraram para a coluna de mensagens. */
 
 #app {
   /* as larguras são variáveis para a responsividade poder zerar uma coluna
      sem reescrever o grid-template-columns inteiro em cada media query */
-  --col-guilds: 72px;
-  --col-side: 240px;
+  --col-side: 264px;
   --col-members: 240px;
 
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--col-guilds) var(--col-side) 1fr var(--col-members);
+  grid-template-columns: var(--col-side) 1fr var(--col-members);
   /* as linhas "stream" (M5) e "video" (M4) colapsam a zero quando os painéis
      estão [hidden] — é o que mantém a área de mensagens ocupando o resto.
      O header atravessa até a borda direita (como no Discord): a lista de
      membros começa ABAIXO dele. */
   grid-template-rows: 48px auto auto 1fr auto auto;
   grid-template-areas:
-    "guilds side head   head"
-    "guilds side stream members"
-    "guilds side video  members"
-    "guilds side msgs   members"
-    "guilds side typing members"
-    "guilds side form   members";
-}
-
-#guilds {
-  grid-area: guilds;
+    "side head   head"
+    "side stream members"
+    "side video  members"
+    "side msgs   members"
+    "side typing members"
+    "side form   members";
 }
 
 #sidebar {
@@ -108,10 +109,13 @@
 
 /* ARMADILHA DE CASCATA (achado da verificação do M7): media query NÃO soma
    especificidade. As colunas são desenhadas em chrome.css e members.css, que
-   entram DEPOIS deste arquivo no index.css — um `#guilds { display: none }`
-   solto aqui perdia para o `#guilds { display: flex }` de lá, e a coluna
-   colapsava para 0px SEM sumir: o pill de 48px vazava por cima da sidebar.
-   Os seletores abaixo são escopados em #app justamente para vencer. */
+   entram DEPOIS deste arquivo no index.css — um `#members-panel { display:
+   none }` solto aqui perde para o `#members-panel { … }` de lá, e a coluna
+   colapsa para 0px SEM sumir: o conteúdo vaza por cima do vizinho. Os
+   seletores abaixo são escopados em #app justamente para vencer.
+
+   (O exemplo original desta nota era o #guilds, que o M13 removeu. A regra
+   continua valendo — só perdeu a vítima mais famosa.) */
 @media (max-width: 1100px) {
   #app {
     --col-members: 0px;
@@ -121,12 +125,12 @@
   }
 }
 
+/* 820px e não menos: a janela do desktop tem minWidth 760 (apps/desktop/src/
+   main.ts), então um breakpoint abaixo disso nunca dispararia no app
+   instalado — a sidebar ficaria larga para sempre justamente onde o espaço é
+   mais escasso. */
 @media (max-width: 820px) {
   #app {
-    --col-guilds: 0px;
     --col-side: 200px;
-  }
-  #app #guilds {
-    display: none;
   }
 }

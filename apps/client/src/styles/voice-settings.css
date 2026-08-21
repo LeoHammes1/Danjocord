@@ -113,17 +113,40 @@
   font-weight: var(--fw-medium);
 }
 
-/* O <select> fica NATIVO (só repintado): a lista suspensa do sistema já é
+/* O <select> continua NATIVO por dentro: a lista suspensa do sistema já é
    acessível por teclado, por leitor de tela e por digitação — reimplementar
-   isso numa <div> custaria mais linhas do que todo o resto deste arquivo. */
+   isso numa <div> custaria mais linhas do que todo o resto deste arquivo, e
+   é o tipo de componente que quase todo mundo reimplementa errado.
+
+   O que muda no M13 é a CASCA. `appearance: none` tira a moldura e a setinha
+   que o Windows desenha (era o que mais denunciava "formulário de navegador"
+   no meio do app), e a seta volta como desenho nosso, na cor do tema. O
+   `data:` URI passa na CSP: `background-image` é governado por `img-src`, que
+   já traz `data:` por causa dos anexos.
+
+   A LISTA suspensa continua sendo do sistema, e continua sem CSS possível —
+   quem a deixa escura é o `color-scheme: dark` do base.css, não daqui. */
 .vs-select {
   width: 100%;
   padding: var(--sp-2) var(--sp-3);
+  padding-right: var(--sp-6);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--bg-input);
   color: var(--text-strong);
   cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23949ba4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--sp-3) center;
+  background-size: 16px 16px;
+  transition:
+    border-color var(--t-fast),
+    background-color var(--t-fast);
+}
+.vs-select:hover:not(:disabled) {
+  border-color: var(--brand);
+  background-color: var(--bg-elevated);
 }
 .vs-select:disabled {
   opacity: 0.5;
@@ -170,7 +193,7 @@
 .vs-meter {
   height: 8px;
   border-radius: var(--r-full);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   overflow: hidden;
 }
 .vs-meter-fill {
@@ -218,7 +241,7 @@
   max-width: 280px;
   aspect-ratio: 16 / 9;
   border-radius: var(--r-sm);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   object-fit: cover;
   /* espelhada como todo preview de webcam: a pessoa se vê como no espelho, e
      é assim que ela consegue se centralizar sem pensar ao contrário */

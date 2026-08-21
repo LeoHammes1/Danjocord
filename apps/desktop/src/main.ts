@@ -116,8 +116,13 @@ function createWindow(): void {
     height: 800,
     minWidth: 760,
     minHeight: 480,
-    // frame nativo NESTE milestone (contrato); dark para não piscar branco
-    backgroundColor: "#14181e",
+    // frame nativo NESTE milestone (contrato); dark para não piscar branco.
+    // O valor acompanha o --bg-deepest do cliente (M13: #0c0c0d), que é o fundo
+    // da TELA DE LOGIN — a primeira coisa que o renderer pinta, e a única que
+    // aparece antes de haver sessão. Não há como ler um token CSS daqui: o main
+    // roda antes de existir documento, então este literal é a única cópia
+    // legítima da paleta fora do tokens.css.
+    backgroundColor: "#0c0c0d",
     icon: nativeImage.createFromPath(ICON_PATH),
     autoHideMenuBar: true,
     show: false,

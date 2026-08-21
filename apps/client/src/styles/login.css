@@ -5,7 +5,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
 }
 
 .login-card {
@@ -18,6 +18,19 @@
   flex-direction: column;
   gap: var(--sp-4);
   text-align: center;
+}
+
+/* O brasão do time, acima do nome. Vazio no HTML — o SVG vem do main.ts.
+
+   Aqui ele fica na cor CHEIA da marca (e não no --brand-bright do trilho e do
+   ponto de DND): é um desenho de 64px, não um traço de 4px, e forma grande a
+   gente enxerga com contraste que reprovaria em texto. O halo faz o resto —
+   é ele que separa o vermelho escuro do cinza do cartão. */
+.login-mark {
+  align-self: center;
+  display: flex;
+  color: var(--brand);
+  filter: var(--glow-brand-drop);
 }
 
 .login-card h1 {
@@ -37,7 +50,11 @@
   font-size: var(--fs-sm);
 }
 
-/* o botão é literalmente o Discord — blurple é a ação primária aqui */
+/* Este botão era blurple porque é literalmente o Discord. No M13 ele passa a
+   ser o vermelho do Danjomar, e a troca é deliberada: o botão não é a marca do
+   Discord, é a ação primária DESTE app — e a única ação da tela. Quem entra
+   está entrando no servidor do time; o Discord é o meio, e o nome dele
+   continua escrito no rótulo. */
 #login-discord {
   background: var(--brand);
   color: var(--text-strong);

@@ -13,7 +13,9 @@
    campo, não flutuar no meio quando a textarea cresce */
 .emoji-btn {
   align-self: flex-end;
-  margin-bottom: 5px;
+  /* gêmeo do resto óptico do botão de enviar (chrome.css): os dois se apoiam na
+     mesma altura fechada do #composer */
+  margin-bottom: 6px;
 }
 
 /* --- o seletor ----------------------------------------------------------- */
@@ -122,7 +124,7 @@
    ativo precisa de um contorno próprio — é ele que faz o papel do anel de
    foco para quem navega com as setas */
 .ep-emoji.is-active {
-  outline: 2px solid var(--text-link);
+  outline: 2px solid var(--brand-bright);
   outline-offset: -2px;
 }
 

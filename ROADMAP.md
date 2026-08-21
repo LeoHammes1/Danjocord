@@ -101,7 +101,10 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 
 58. ✅ `M` Extrair o CSS do `index.html` para módulos + tokens semânticos. **Sem isso todo item abaixo vira remendo.**
 59. ✅ `P` Repaginar a paleta e separar `--accent` de `--danger` (o coral significa hoje enviar, erro e mute ligado).
-60. ✅ `P` Coluna de guilds de 72px.
+60. ✅ `P` Coluna de guilds de 72px. **Removida no M13**: ela existe no Discord
+    para trocar de servidor, e este projeto tem um só — 72px de moldura para um
+    botão que não levava a lugar nenhum. O brasão que morava nela foi para o
+    cabeçalho da sidebar.
 61. ✅ `M` Painel do usuário fixo no rodapé da sidebar — hoje o "eu" está no header e mic/fone só existem dentro da call.
 62. ✅ `P` Header de canal com `#` + nome + ações.
 63. ✅ `M` Lista de membros em coluna direita, agrupada online/offline, com avatar e badge de admin.

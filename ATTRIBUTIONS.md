@@ -157,3 +157,52 @@ Duas sutilezas que a troca pelos arquivos do Discord obrigou a acertar:
 
 Ganho maior que 1.0 não é erro — quer dizer só que o clipe é mais frio que o
 alvo. Metade dos do Discord está aí.
+
+---
+
+## Marca do Danjomar (M13) — brasão e ícone do app
+
+**Não é asset de terceiro.** É a logo do próprio time, trazida do site
+(`E:/Work/DanjomarFront/public/logo.png`) por decisão do Leonardo. Fica aqui
+porque a pergunta "de onde veio este arquivo" é a mesma, e porque a resposta
+importa se algum dia este repositório for aberto ou o instalador sair do grupo.
+
+| arquivo | o que é |
+|---|---|
+| `apps/client/assets/brand/danjomar-logo-fonte.png` | a origem, 1048×944 RGBA. **Não entra no bundle**: nada em `src/` a importa. Existe para o gerador e para o teste. |
+| `apps/client/src/ui/brasao-path.ts` | **gerado** — o path SVG (726 B) que a UI desenha |
+| `apps/desktop/assets/icon.png` | **gerado** — 512×512, o ícone da janela, da bandeja e do instalador |
+
+Os dois gerados saem de `apps/client/scripts/trace-logo.mjs`, do MESMO arquivo
+de origem, e o `test/brand-asset.test.ts` reprova se a origem mudar sem alguém
+regerar (sha256, igual ao que o `sound-assets.test.ts` faz com os clipes).
+
+Refazer, depois de trocar o PNG de origem:
+
+```bash
+node scripts/trace-logo.mjs   # de apps/client
+```
+
+O antigo `apps/desktop/assets/icon.png` (quadrado azul com barras de
+equalizador, 1332 B) não tinha procedência registrada e foi substituído.
+
+## Orbitron — a fonte de display (M13)
+
+- **Fonte**: Google Fonts, subset latin, peso variável 400..900 — o arquivo é
+  `apps/client/assets/fonts/orbitron-latin.woff2` (11.800 B).
+- **Autor**: Matt McInerney.
+- **Licença**: SIL Open Font License 1.1.
+
+A OFL permite empacotar e redistribuir a fonte com o aplicativo, inclusive
+comercialmente, e **não** contamina o resto do projeto. As duas condições que
+valem para nós: a fonte não pode ser vendida por si só, e um arquivo modificado
+não pode manter o nome "Orbitron" (não modificamos — o arquivo é o que o
+Google serve).
+
+É a mesma fonte do site do time, e por isso ela está aqui.
+
+**Ela é EMPACOTADA, e isso não é preferência.** O site faz
+`@import url('https://fonts.googleapis.com/…')`; aqui isso não funcionaria:
+nenhuma das três CSPs do projeto declara `font-src`, então todas herdam
+`default-src 'self'` e host externo é barrado. No desktop seria pior — o app
+roda offline, servido pelo scheme `app://`.

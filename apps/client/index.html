@@ -13,10 +13,17 @@
     />
     <title>Danjocord</title>
     <!-- favicon inline: um arquivo a menos para o app:// do desktop servir
-         (img-src já permite data:, a CSP não muda por causa disto) -->
+         (img-src já permite data:, a CSP não muda por causa disto).
+
+         Este href é um MARCADOR DE LUGAR, não o ícone final: o main.ts o troca
+         no boot pelo brasão do Danjomar, gerado de ui/brasao.ts na cor que o
+         --brand tiver. É o que evita uma segunda cópia do path do brasão (726
+         bytes) vivendo aqui e divergindo da do TypeScript no dia em que o time
+         trocar a logo. O desenho abaixo é só o escudo, sem as letras, para o
+         placeholder não ficar feio caso o JS demore. -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%235865f2'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='Segoe UI,sans-serif' font-size='20' font-weight='700' fill='%23ffffff'%3ED%3C/text%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23d41824' d='M5 2h22l3 5v4c0 8-6 15-14 19C8 26 2 19 2 11V7z'/%3E%3C/svg%3E"
     />
     <!-- o CSS vem do main.ts (src/styles/index.css): um bundle só, com os
          tokens resolvidos pelo vite -->
@@ -25,6 +32,9 @@
     <!-- as duas views começam ocultas; main.ts decide qual mostrar no boot -->
     <div id="login" hidden>
       <div class="login-card">
+        <!-- o brasão nasce vazio: quem o cria é o main.ts (ui/brasao.ts), como
+             todo SVG do cliente — nada de innerHTML em lugar nenhum -->
+        <span id="login-mark" class="login-mark"></span>
         <h1>Danjocord</h1>
         <p class="login-sub">uma guild, os amigos, self-hosted</p>
         <p id="login-error" hidden></p>
@@ -42,16 +52,17 @@
       </div>
     </div>
 
-    <!-- O app é um grid de 4 colunas (guilds | canais | conteúdo | membros);
-         quem monta o grid é styles/layout.css. Os ids abaixo são o contrato
-         com o main.ts e com os módulos de ui/ — não renomear. -->
-    <div id="app" hidden>
-      <nav id="guilds" aria-label="Servidores">
-        <!-- uma guild só, por desenho do projeto: o pill é decorativo hoje e
-             existe para a coluna não nascer vazia -->
-        <button id="guild-home" type="button" aria-current="true" aria-label="Danjocord">D</button>
-      </nav>
+    <!-- O app é um grid de 3 colunas (canais | conteúdo | membros); quem monta
+         o grid é styles/layout.css. Os ids abaixo são o contrato com o main.ts
+         e com os módulos de ui/ — não renomear.
 
+         A coluna de guilds (72px, com um pill só) foi embora no M13: ela existe
+         no Discord para trocar de SERVIDOR, e este projeto tem um só por
+         desenho. Uma coluna inteira para um botão que não leva a lugar nenhum
+         era 72px de moldura cobrando aluguel. O brasão do time, que morava
+         nela, passou para o cabeçalho da sidebar — ao lado do nome, que é onde
+         uma marca costuma ficar. -->
+    <div id="app" hidden>
       <aside id="sidebar">
         <button id="sidebar-head" type="button" aria-expanded="false">Danjocord</button>
         <div id="channels"></div>
@@ -61,11 +72,15 @@
             <span id="voice-footer-status">Voz conectada</span>
             <span id="voice-footer-channel"></span>
           </div>
+          <!-- Só o que é da CHAMADA. Microfone e fones ficam no painel do
+               usuário, embaixo, e não aqui: eles não são controle de chamada,
+               são preferência de quem está usando o app — valem fora da voz
+               também ("mutado ao entrar"). Até o M13 existiam nos DOIS lugares,
+               ligados no MESMO toggleMute/toggleDeafen: duas cópias do mesmo
+               botão, uma em cima da outra, mudando de estado juntas. -->
           <div class="voice-footer-actions">
             <button id="voice-camera" type="button" title="Ligar câmera">📷</button>
             <button id="voice-stream" type="button" title="Transmitir tela">🖥️</button>
-            <button id="voice-mute" type="button" title="Mutar">🎙️</button>
-            <button id="voice-deafen" type="button" title="Ensurdecer">🎧</button>
             <button id="voice-leave" type="button" title="Desconectar">Sair</button>
           </div>
           <!-- push-to-talk (M6): só no desktop — main.ts revela quando a ponte existe -->

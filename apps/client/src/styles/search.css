@@ -197,7 +197,7 @@
    que numa UI escura parece um erro de render */
 .sr-hit-text mark {
   background: none;
-  color: var(--text-link);
+  color: var(--brand-bright);
   font-weight: var(--fw-semibold);
 }
 

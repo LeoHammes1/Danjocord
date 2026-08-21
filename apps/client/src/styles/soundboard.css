@@ -19,7 +19,7 @@
   margin-top: var(--sp-1);
   padding: var(--sp-2);
   border-radius: var(--r-md);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
 }
 
 /* arrastar um arquivo em cima do pad abre o diálogo já com ele */
@@ -152,7 +152,7 @@
   width: 20px;
   height: 20px;
   border-radius: var(--r-sm);
-  background: var(--bg-guilds);
+  background: var(--bg-deepest);
   opacity: 0;
   transition: opacity var(--t-fast);
 }
@@ -282,12 +282,12 @@
     color var(--t-fast);
 }
 .sb-remove:hover:not(:disabled) {
-  background: var(--danger);
+  background: var(--danger-bg);
   color: var(--text-strong);
 }
 /* segundo toque: o botão já está armado, e isso precisa ser óbvio */
 .sb-remove.is-confirming {
-  background: var(--danger);
+  background: var(--danger-bg);
   color: var(--text-strong);
   font-weight: var(--fw-medium);
 }
