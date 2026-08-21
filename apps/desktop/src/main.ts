@@ -1,5 +1,4 @@
 import { BrowserWindow, Menu, Tray, app, ipcMain, nativeImage, net, protocol, shell } from "electron";
-import { autoUpdater } from "electron-updater";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +7,7 @@ import { oauthLogin } from "./oauth-loopback";
 import { registerScreenPicker } from "./picker";
 import { labelForKeycode, pttCaptureNextKey, pttSetKey, pttShutdown, setPttEmitter } from "./ptt";
 import { secretGet, secretSet, secretSetMany } from "./secrets";
+import { checarAtualizacao, configurarUpdater, instalarAtualizacao, versaoBaixada } from "./updater";
 
 /**
  * Processo main do Electron (M6, doc §7): casca fina — TODA a UI/mídia vive no
@@ -296,7 +296,41 @@ function registerIpc(): void {
     return pttCaptureNextKey();
   });
 
-  console.log("[ipc] canais registrados: secret:get/set, oauth:login, ptt:set-key/capture-next");
+  // --- auto-update (M14) ---
+  // Quem manda checar é o RENDERER, porque só ele sabe se há sessão e só ele
+  // consegue trocar o access token por um tíquete de download. O main não vê
+  // token nenhum aqui: recebe o tíquete já pronto e o põe na URL do feed.
+  ipcMain.handle("update:check", async (ev, ticket: unknown) => {
+    assertMainSender(ev);
+    // o tíquete é base64url de 32 bytes (43 chars); a faixa é folgada para o
+    // dia em que o tamanho mudar, e barra lixo antes de virar URL
+    if (typeof ticket !== "string" || !/^[A-Za-z0-9_-]{16,512}$/.test(ticket)) {
+      throw new Error("update:check — tíquete inválido");
+    }
+    if (!app.isPackaged) {
+      // sem app-update.yml não há o que checar, e o electron-updater lança em
+      // vez de responder — dizer isso é mais útil que um erro sobre um arquivo
+      console.log("[updater] pulado — app não empacotado");
+      return null;
+    }
+    return checarAtualizacao(serverUrl, ticket);
+  });
+
+  // O estado é CONSULTÁVEL, e não só um evento. A janela pode ser recriada (o
+  // tray reabre depois de um `closed`) e um renderer novo assinaria o evento
+  // `update-ready` depois de ele já ter passado — a faixa de "reiniciar" nunca
+  // apareceria, com a atualização baixada ali do lado.
+  ipcMain.handle("update:pending", (ev) => {
+    assertMainSender(ev);
+    return versaoBaixada();
+  });
+
+  ipcMain.handle("update:install", (ev) => {
+    assertMainSender(ev);
+    return instalarAtualizacao();
+  });
+
+  console.log("[ipc] canais registrados: secret:get/set, oauth:login, ptt:set-key/capture-next, update:check/install");
 }
 
 // ---------------------------------------------------------------------------
@@ -330,15 +364,10 @@ void app.whenReady().then(() => {
   createTray();
   createWindow();
 
-  // auto-update (electron-updater): checa no boot e notifica; o publish
-  // (GitHub LeoHammes1/Danjocord) já está no package.json. Só empacotado —
-  // em dev não existe app-update.yml e a chamada só suja o log.
-  if (app.isPackaged) {
-    autoUpdater.checkForUpdatesAndNotify().then(
-      (r) => console.log("[updater] checagem concluída", r?.updateInfo?.version ?? "(sem update)"),
-      (err: unknown) => console.warn("[updater] checagem falhou (sem rede? release sem artefatos?)", err),
-    );
-  } else {
-    console.log("[updater] pulado — app não empacotado");
-  }
+  // Auto-update (M14): aqui só ficam os LISTENERS. A checagem em si é disparada
+  // pelo renderer (canal `update:check`), depois do login — o feed é privado e
+  // o tíquete que o abre precisa de sessão. Ver o cabeçalho do updater.ts.
+  configurarUpdater((versao) => {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) mainWindow.webContents.send("update-ready", versao);
+  });
 });

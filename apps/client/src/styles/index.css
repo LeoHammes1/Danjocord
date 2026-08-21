@@ -74,6 +74,13 @@
    Sem a ordem, seria preciso inventar especificidade para o mesmo efeito. */
 @import "./search.css";
 
+/* download e auto-update (M14): a página de `/download` é uma tela INTEIRA
+   (como a landing do convite) e a faixa de atualização flutua sobre o app.
+   Nenhuma das duas disputa especificidade com nada — ficam no fim porque é
+   onde a ordem do documento garante o empilhamento sem z-index inventado, a
+   mesma razão do invites.css. */
+@import "./download.css";
+
 /* tipografia de display (M13) é o ÚLTIMO de todos, e por um motivo mecânico:
    cada seletor dele pertence a outro arquivo (`#sidebar-head` ao sidebar.css,
    `.dialog-head h2` ao voice-settings.css, `.settings-head h2` ao settings.css,

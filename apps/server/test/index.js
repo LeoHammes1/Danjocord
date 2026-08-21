@@ -47,6 +47,12 @@ import "./security-m12.test.ts";
 // rate limit geral do REST (M12, roadmap 117). Agrupa com as suites de freio;
 // banco :memory: proprio, sem relogio mockado e sem mexer em config
 import "./rate-limit.test.ts";
+// distribuição do app desktop (M14): tíquete, catálogo de releases e as rotas.
+// `fetch` falso no lugar da API do GitHub — nenhuma rede. Define
+// DANJOCORD_RELEASE_REPO no topo do arquivo, então vem DEPOIS das suítes que
+// dependem do env congelado no primeiro import do config (a `oauth-loopback`);
+// banco :memory: próprio e nenhum relógio mockado.
+import "./updates.test.ts";
 // tetos e freios do gateway (M12 rodada 2). Sobe um http.Server próprio na
 // porta 0 e clientes ws de verdade — os tetos só se manifestam no socket.
 import "./gateway-limits.test.ts";

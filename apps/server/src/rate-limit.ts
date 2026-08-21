@@ -94,6 +94,15 @@ const TABELA: Record<string, LimitClass> = {
   "DELETE /api/channels/:channelId/messages/:messageId/reactions/:emoji/@me": "isento",
 
   // --- rotas com limitador próprio ---
+  // As duas do feed de atualização (M14) NÃO trazem Bearer: a credencial delas
+  // é um tíquete na query, porque quem as chama é uma NAVEGAÇÃO do navegador
+  // (que não sabe do localStorage) e o electron-updater (cujo executor HTTP
+  // repassaria um Authorization ao seguir o nosso 302 para o CDN do GitHub).
+  // Deixá-las na classe `leitura` faria o hook geral responder 401 antes de
+  // qualquer uma funcionar. A janela delas está em `updates/routes.ts` e chaveia
+  // pelo usuário DONO do tíquete — a mesma chave honesta que o hook usaria.
+  "GET /api/updates/download": "proprio",
+  "GET /api/updates/feed/:file": "proprio",
   "POST /api/attachments": "proprio",
   "POST /api/sounds": "proprio",
   "POST /api/voice/soundboard": "proprio",
@@ -115,6 +124,12 @@ const TABELA: Record<string, LimitClass> = {
   "GET /api/bans": "leitura",
   "GET /api/mod-log": "leitura",
   "POST /api/channels/:channelId/ack": "leitura",
+  // M14. As duas são baratas (uma leitura de cache e um `randomBytes`) e a
+  // frequência legítima é ridícula — uma por login e uma a cada 6 h de app
+  // aberto. Ficam na `leitura` por serem o que são, não por precisarem de um
+  // orçamento próprio.
+  "GET /api/updates/latest": "leitura",
+  "POST /api/updates/ticket": "leitura",
 
   // --- mídia (bytes de BLOB) ---
   // Separadas da `leitura` porque o download de anexo NÃO é lazy: ele sai no

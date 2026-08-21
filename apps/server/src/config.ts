@@ -117,4 +117,22 @@ export const config = {
    * levaria o servidor junto.
    */
   ownerDiscordId: env.DANJOCORD_OWNER_DISCORD_ID ?? "",
+
+  // --- distribuição do app desktop (M14, roadmap 126/127) ---
+  /**
+   * De onde saem o instalador e o feed de atualização: `owner/repo` do GitHub.
+   * Os bytes NÃO passam por este servidor — ele só valida quem pediu e devolve
+   * um 302 para a URL pré-assinada do GitHub. O porquê está em
+   * `updates/github.ts`, e o resumo é que este pod também carrega a mídia.
+   */
+  releaseRepo: env.DANJOCORD_RELEASE_REPO ?? "LeoHammes1/Danjocord",
+  /**
+   * Token de leitura dos releases. OPCIONAL na forma, obrigatório na prática:
+   * o repo é privado (é o que sustenta a advertência do ATTRIBUTIONS.md sobre
+   * os sons), e a API do GitHub responde **404** — não 401 — a repo privado sem
+   * credencial. Sem ele, `/api/updates/*` devolve 503 com a frase explicando.
+   *
+   * PAT de escopo fino, só `Contents: read-only`, só neste repositório.
+   */
+  releaseToken: env.GITHUB_RELEASES_TOKEN ?? "",
 } as const;

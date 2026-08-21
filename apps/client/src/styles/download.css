@@ -1,0 +1,235 @@
+/* Página de download (M14) — `ui/download-page.ts`, e a faixa de "atualização
+   pronta" do `ui/updates.ts`.
+
+   Os dois moram aqui porque são a mesma feature vista dos dois lados: como o
+   app CHEGA na máquina e como ele se ATUALIZA nela. O prefixo separa (`.dl-`
+   para a página, `.upd-` para a faixa), a mesma regra do invites.css.
+
+   A página é irmã da landing do convite e reusa a MESMA geometria de propósito
+   — tela cheia, cartão de 440px, brasão em cima. Elas são as duas antessalas do
+   app, e quem vier a mexer numa deve ver a outra do lado. As classes não são
+   compartilhadas: um seletor comum amarraria duas telas que mudam por motivos
+   diferentes, e o CSS aqui é curto o bastante para a duplicação sair mais
+   barata que o acoplamento.
+
+   Nenhuma cor literal — só var(--…) de tokens.css. */
+
+/* --------------------------------------------------------------------------
+   A página
+   -------------------------------------------------------------------------- */
+
+#download-page {
+  position: fixed;
+  inset: 0;
+  /* mesmo 100 da landing do convite: não disputa empilhamento com nada — ela
+     SUBSTITUI a tela enquanto existe */
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: var(--bg-deepest);
+  overflow-y: auto;
+}
+
+.dl-card {
+  width: min(440px, 100%);
+  background: var(--bg-chat);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-high);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  text-align: center;
+}
+/* o cartão recebe o foco a cada troca de estado (tabindex -1) — o anel ali
+   seria enorme e sem informação; quem precisa dele é o controle */
+.dl-card:focus {
+  outline: none;
+}
+
+/* o brasão sem a caixa vermelha da landing: aqui ele é a MARCA do produto que
+   está sendo baixado, e não um selo de "convite". O halo é o mesmo do login. */
+.dl-mark {
+  color: var(--brand-bright);
+  filter: var(--glow-brand-drop);
+  display: flex;
+}
+
+.dl-kicker {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.dl-card h1 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-bold);
+  color: var(--text-strong);
+  line-height: 1.2;
+}
+
+.dl-lead {
+  color: var(--text-normal);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.dl-cta {
+  width: 100%;
+  margin-top: var(--sp-2);
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.dl-cta:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+.dl-cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* versão · tamanho · requisito — a linha que responde "é isto mesmo?" */
+.dl-meta {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dl-fine {
+  font-size: var(--fs-xs);
+  color: var(--text-faint);
+  line-height: 1.4;
+  /* mensagem técnica do servidor: pode ser longa e sem espaços */
+  overflow-wrap: anywhere;
+}
+
+/* O aviso do SmartScreen. É `--warn` e não `--danger` de propósito: a tela azul
+   do Windows não é um problema deste app, é uma etapa esperada — pintar de
+   "perigo" confirmaria justamente o medo que o texto existe para desfazer. */
+.dl-note {
+  width: 100%;
+  margin-top: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-sm);
+  border-left: 3px solid var(--warn);
+  background: var(--bg-elevated);
+  text-align: left;
+  font-size: var(--fs-xs);
+  color: var(--text-normal);
+  line-height: 1.5;
+}
+.dl-note-title {
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+  margin-bottom: var(--sp-1);
+}
+
+/* o que já deu errado, no topo do cartão */
+.dl-alert {
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--danger-bg);
+  color: var(--text-strong);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-align: left;
+}
+
+/* saída discreta, como o "já tenho conta" da landing: existe sempre e nunca
+   compete com o CTA */
+.dl-skip {
+  margin-top: var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  transition: color var(--t-fast);
+}
+.dl-skip:hover {
+  color: var(--text-normal);
+}
+
+/* --------------------------------------------------------------------------
+   Faixa de "atualização pronta" (só no app desktop)
+   --------------------------------------------------------------------------
+
+   Canto inferior direito, e não uma barra no topo: o topo já é da `.conn-bar`
+   (queda de conexão), e as duas podem valer ao mesmo tempo — quem está numa
+   chamada durante um deploy vê as duas coisas. Um aviso que TAPA outro aviso é
+   pior que não avisar.
+
+   `position: fixed` a mantém fora do grid do #app, mesma razão da .conn-bar. */
+
+.upd-toast {
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: 30; /* acima dos diálogos (20), abaixo da landing/download (100) */
+  max-width: min(360px, calc(100vw - var(--sp-6)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-high);
+  /* o fio da marca, igual ao das barras de 48px: o halo existe onde o vermelho
+     é identidade, e "versão nova do Danjocord" é identidade */
+  border-left: 3px solid var(--brand-bright);
+}
+
+.upd-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-strong);
+}
+
+.upd-body {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.upd-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.upd-now {
+  background: var(--brand);
+  color: var(--text-strong);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  transition: background-color var(--t-fast);
+}
+.upd-now:hover:not(:disabled) {
+  background: var(--brand-hover);
+}
+.upd-now:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.upd-later {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
+  transition: color var(--t-fast);
+}
+.upd-later:hover {
+  color: var(--text-normal);
+}

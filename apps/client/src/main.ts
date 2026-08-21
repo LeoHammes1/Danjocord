@@ -61,6 +61,9 @@ import {
 import { closeVoiceSettings, restoreVoicePrefs, voiceSettingsMenuItem } from "./ui/voice-settings.js";
 import { closeInvites, refreshInvitesMenu } from "./ui/invites.js";
 import { inviteCodeFromLocation, renderInviteLanding } from "./ui/invite-landing.js";
+import { consumirVoltaParaDownload, isDownloadRoute } from "./download-route.js";
+import { renderDownloadPage } from "./ui/download-page.js";
+import { mountUpdates } from "./ui/updates.js";
 import { memberRemoved } from "./ui/members.js";
 import { mountPresence, myStatus, syncPresence } from "./ui/presence.js";
 import { closeSettings } from "./ui/settings.js";
@@ -287,6 +290,10 @@ function startApp(): void {
   renderUserPanel(ui);
   setConnectionStatus("connecting");
   startGateway();
+  // Auto-update (M14): AQUI e não no boot, porque o feed é privado e o tíquete
+  // que o abre precisa de sessão. No navegador é no-op — a página já é sempre a
+  // última versão. Tem guarda de "já montei": logout + login não duplica o timer.
+  mountUpdates({ ctx: ui, api });
 }
 
 function resetState(): void {
@@ -1906,6 +1913,17 @@ async function boot(): Promise<void> {
   // nada — limpa a barra de endereço e segue para o app
   if (inviteCode !== null) history.replaceState(null, "", "/");
 
+  // M14 (item 126): /download. Depois do convite e antes da sessão, porque ela
+  // atende os dois casos — quem já está logado vê o botão, quem não está vê o
+  // "Entrar com Discord" e volta para cá depois. O `desktop === undefined` não
+  // é defensivo à toa: no app empacotado o renderer é `app://bundle/index.html`
+  // e este caminho nunca casa, mas quem estiver DENTRO do app não tem o que
+  // fazer numa tela que existe para instalá-lo.
+  if (isDownloadRoute() && desktop === undefined) {
+    abrirDownload();
+    return;
+  }
+
   const params = new URLSearchParams(location.search);
   // o OTC chega no FRAGMENT (#otc=) de propósito: fragment não é enviado ao
   // servidor, então a credencial nunca aparece em access log nem em Referer
@@ -1948,7 +1966,39 @@ async function boot(): Promise<void> {
     showLogin();
     return;
   }
+  // Quem chegou aqui vindo de "Entrar com Discord" na página de download volta
+  // para ela, e não cai no chat. O OAuth traz o navegador para a RAIZ (APP_URL),
+  // então o caminho se perde no meio do caminho — a intenção fica no
+  // sessionStorage, que é por ABA, não atravessa origem e não é credencial
+  // (o código de convite, que É credencial, continua indo no `state` assinado).
+  if (consumirVoltaParaDownload()) {
+    history.replaceState(null, "", "/download");
+    abrirDownload();
+    return;
+  }
   startApp();
+}
+
+/**
+ * A página de download como TELA — ela cobre login e app enquanto existe.
+ * "Abrir no navegador" a fecha e devolve quem clicou ao lugar certo: o app se
+ * há sessão, o login se não há.
+ */
+function abrirDownload(): void {
+  renderDownloadPage({
+    onEnter: () => {
+      // web: o backend inicia o fluxo (state + PKCE ficam server-side). Mesma
+      // linha do botão de login — não há caminho desktop aqui, pelo motivo
+      // escrito na guarda do boot.
+      location.href = API + "/auth/discord/start";
+    },
+    // a página já se removeu antes de chamar (mesmo contrato da landing de
+    // convite) — aqui só se decide para onde ir
+    onDismiss: () => {
+      if (getAccessToken() === null) showLogin();
+      else startApp();
+    },
+  });
 }
 
 void boot();

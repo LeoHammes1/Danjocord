@@ -41,3 +41,5 @@ await import("./messages-core.test.ts");
 await import("./pagination.test.ts");
 // o que o usuario le quando uma chamada REST falha (M12)
 await import("./api-error.test.ts");
+// o roteamento de /download (M14): modulo puro, sem DOM e sem rede
+await import("./download-route.test.ts");

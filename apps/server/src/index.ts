@@ -20,6 +20,7 @@ import { registerLinkRoutes } from "./links/routes.js";
 import { registerReactionRoutes } from "./reactions.js";
 import { registerSearchRoutes } from "./search.js";
 import { registerSoundRoutes } from "./sounds/routes.js";
+import { registerUpdateRoutes } from "./updates/routes.js";
 import { seedSounds } from "./sounds/seed.js";
 import { announce } from "./system.js";
 import { Voice } from "./voice.js";
@@ -236,6 +237,11 @@ registerSoundRoutes(app, store, gateway, { voiceChannelOf: (userId) => voice.cha
 registerModerationRoutes(app, store, gateway, guild, {
   disconnectFromVoice: (userId) => voice.removeUserFromVoice(userId),
 });
+// M14: a página de download e o feed do electron-updater. O pod NÃO serve os
+// bytes do instalador — este é o nó que carrega a mídia, e ~100 MB × dez
+// amigos competiriam com a chamada. Ele valida quem pediu e devolve 302 para a
+// URL pré-assinada do GitHub. O porquê inteiro está em updates/github.ts.
+registerUpdateRoutes(app, store);
 registerAuthRoutes(app, store, sessions);
 // o callback de MEMBER_UPDATE só dispara no primeiro login do dono configurado
 // (bootstrap): o cargo muda depois do MEMBER_ADD, e sem o aviso a sidebar de

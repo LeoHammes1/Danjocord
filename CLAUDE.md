@@ -571,6 +571,101 @@ aperto que o `flex-wrap` estava remediando.
   botões — a política escrita no `chrome.css` é que o halo existe onde o
   vermelho é identidade, não onde é ação.
 
+## Como o app chega e como se atualiza (M14)
+
+Até aqui não havia caminho: o instalador nasce num Release de um repo PRIVADO,
+e o `electron-updater` apontava para a API do GitHub — que responde **404, e não
+401**, a repo privado sem credencial. Ou seja: o auto-update do M6 nunca
+funcionou, e ninguém tinha como descobrir isso sem tagear um release.
+
+- **A saída óbvia está descartada**: embutir um token do GitHub no instalador é
+  entregá-lo a quem tiver o `.exe`. O feed é o NOSSO servidor
+  (`/api/updates/feed/`), o token de leitura fica no Secret do cluster, e a
+  credencial que abre o feed é um **tíquete** de 30 min emitido para quem tem
+  sessão.
+- **O pod é PORTEIRO, não servidor de arquivo.** Ele valida quem pediu e devolve
+  um **302 para a URL pré-assinada** que a própria API do GitHub emite. O motivo
+  não é elegância: é o MESMO nó que carrega a mídia (mediasoup, hostPort
+  40000/UDP), e o pior caso já documentado de um Go Live 4K com os nove amigos é
+  ~108 Mbps de uplink dali. Um release novo põe dez `electron-updater` baixando
+  ~100 MB ao mesmo tempo — 1 GB pela placa que carrega a voz. Zero byte de
+  instalador atravessa o nó.
+- **O tíquete vai na QUERY, e isso é decisão, não preguiça.** Dois motivos, um
+  por cliente: o navegador não manda header numa NAVEGAÇÃO (a sessão vive no
+  localStorage, não em cookie), e o executor HTTP do electron-updater **repassa
+  os headers ao seguir um redirect** — um `Authorization` chegaria a
+  `githubusercontent.com`. Funciona porque o `newUrlFromBase` do
+  electron-updater propaga a query da base para cada arquivo que resolve; é o
+  mecanismo documentado para feed privado. O preço está declarado: o tíquete
+  entra no log do Fastify, e a mitigação é o ESCOPO — ele só abre os arquivos do
+  release, não vira sessão (roadmap 129).
+- **A barra final da URL do feed não é estilo.** O electron-updater resolve com
+  `new URL(nome, base)`: sem ela, `/api/updates/feed?t=x` vira
+  `/api/updates/latest.yml`, que cai no fallback de SPA e volta index.html com
+  content-type de HTML — relatado como "YAML inválido". Tem teste.
+- **Download diferencial DESLIGADO.** O blockmap faria dezenas de requisições de
+  RANGE, e no nosso feed cada requisição vira uma ida à API do GitHub para
+  emitir uma URL pré-assinada nova. Trocar ~100 MB de CDN por dezenas de
+  chamadas de API é pior nos dois eixos.
+- **Quem manda checar é o RENDERER**, não o main: o feed precisa de sessão, e no
+  `ready` do Electron ainda não houve login. O main virou executor
+  (`update:check`). Checagem no login e a cada 6 h.
+- **Baixar é automático; instalar não.** Instalar fecha o app, e fechar o app no
+  meio de uma chamada de voz é a pior coisa que um atualizador pode fazer com
+  ESTE projeto. Baixou → faixa com "Reiniciar agora" (a frase muda se a pessoa
+  está em chamada, porque a consequência muda); ninguém clicou → o
+  `autoInstallOnAppQuit` instala quando ela sair pelo tray.
+- **A lista de nomes do feed é o próprio catálogo**: `:file` só existe se casar,
+  por igualdade exata, o nome de um asset publicado — não há concatenação de
+  caminho em lugar nenhum. E o mapa cobre os ÚLTIMOS releases, não só o mais
+  novo: entre ler o `latest.yml` e baixar o `.exe` passam minutos, e um release
+  publicado nesse intervalo faria o arquivo pedido sumir do catálogo.
+- **O 302 só pode ir para o GitHub.** Não é SSRF (nós nunca buscamos a URL) — é
+  redirect aberto. Medido contra a API real: hoje o `Location` aponta para
+  `release-assets.githubusercontent.com`, e um allowlist com o antigo
+  `objects.githubusercontent.com` teria quebrado todo download.
+
+### A página `/download`
+
+Irmã da landing de convite (`ui/download-page.ts`), e a segunda tela que alguém
+de fora vê deste servidor.
+
+- **A página é pública, os BYTES não.** O `.exe` leva os sons proprietários
+  dentro, e a condição escrita no ATTRIBUTIONS.md é "sem instalador para fora".
+  Quem não está logado vê o mesmo cartão com "Entrar com Discord" no lugar do
+  botão — e isso não exclui ninguém, porque para USAR o app é preciso estar na
+  allowlist de qualquer jeito.
+- **O caminho volta depois do OAuth.** O login traz o navegador para a RAIZ
+  (`APP_URL`), então `/download` se perde no meio; a intenção fica no
+  `sessionStorage` (por aba, não atravessa origem, não é credencial — o código
+  de convite, que É credencial, continua no `state` assinado).
+- **`location.assign`, nunca `fetch` + Blob**: 100 MB num `createObjectURL` fica
+  inteiro na memória da aba e tira do navegador a barra de progresso, o retomar
+  e a escolha de pasta. A página NÃO é abandonada no caminho feliz — a resposta
+  do CDN vem com `Content-Disposition: attachment` (medido). No caminho de erro
+  o servidor **redireciona de volta** para `/download?erro=…` em vez de devolver
+  JSON: quem está ali é uma navegação, e um corpo JSON deixaria a pessoa numa
+  aba branca sem botão de tentar de novo.
+- **O aviso do SmartScreen vem ANTES do clique** (roadmap 112 segue aberto — o
+  app continua sem assinatura). O Windows esconde o "Executar assim mesmo" atrás
+  de "Mais informações", e quem não foi avisado lê aquilo como vírus e desiste.
+  É `--warn` e não `--danger` de propósito: a tela azul é etapa esperada, e
+  pintá-la de perigo confirmaria o medo que o texto existe para desfazer.
+
+### A trava de distribuição mudou de forma
+
+O `desktop-release.yml` reprovava o build enquanto houvesse `.mp3` no catálogo
+de sons. Aquilo era um PROXY da condição do ATTRIBUTIONS.md, e o proxy passou a
+estar errado: com `/api/updates` exigindo sessão, o instalador não vai "para
+fora" nenhum. A trava agora é a condição em si — **o repositório tem de ser
+privado** (`gh api repos/$GITHUB_REPOSITORY --jq .private`), e ela é mais forte
+que a antiga: cobre também o código-fonte dos sons, e não só o binário.
+
+O release também deixou de nascer como **rascunho** (`releaseType: release`): o
+checkpoint humano deste processo é o `git tag`, e um rascunho a mais só cria o
+modo de falha em que tudo "deu certo" e a atualização silenciosamente não
+acontece porque ninguém clicou em Publish.
+
 ## Convenções
 
 - TypeScript estrito (base em `tsconfig.base.json`); ESM em tudo.

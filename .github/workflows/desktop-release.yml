@@ -1,5 +1,5 @@
-# Release do app desktop (M6): tag v* → instalador Windows no GitHub Release
-# da tag → os apps instalados dos amigos se atualizam sozinhos.
+# Release do app desktop (M6, refeito no M14): tag v* → instalador Windows no
+# Release da tag → os apps instalados dos amigos se atualizam sozinhos.
 #
 # O fluxo, ponta a ponta:
 #   1. git tag v0.1.0 && git push origin v0.1.0
@@ -8,14 +8,26 @@
 #      renderer (build do apps/client com VITE_API_BASE de produção via
 #      scripts/bundle-renderer.mjs), compila o main e chama o electron-builder,
 #      que gera o instalador e PUBLICA os artefatos (Setup.exe + latest.yml)
-#      no Release da tag — o "publish" do apps/desktop/package.json já aponta
-#      para LeoHammes1/Danjocord.
-#   3. o electron-updater dos apps instalados (checkForUpdatesAndNotify no
-#      ready, só quando empacotado) lê o latest.yml do último Release
-#      publicado e baixa/instala a versão nova em segundo plano.
+#      no Release da tag.
+#   3. os apps instalados atualizam. Mas NÃO lendo o GitHub direto — este repo é
+#      privado, e um `electron-updater` apontado para cá levaria 404 (a API do
+#      GitHub responde 404, e não 401, a repo privado sem credencial). A saída
+#      óbvia seria embutir um token no instalador, o que é entregá-lo a quem
+#      tiver o `.exe`.
 #
-# Atenção: o electron-builder cria o Release como DRAFT por padrão — depois do
-# workflow, publicar o release no GitHub para os updaters enxergarem.
+#      Em vez disso o FEED é o próprio servidor: `https://danjocord.leohammes.dev
+#      /api/updates/feed/`. Ele valida a sessão de quem pede e devolve um 302
+#      para a URL pré-assinada que a API do GitHub emite — o token de leitura
+#      fica no Secret do cluster e nenhum byte de instalador atravessa o nó que
+#      carrega a voz. Ver apps/server/src/updates/github.ts.
+#
+# `releaseType: release` no package.json (e não o `draft` que é o default do
+# electron-builder): o release nasce PUBLICADO. O checkpoint humano deste
+# processo é o `git tag` — um rascunho a mais só cria o modo de falha em que
+# tudo "deu certo" e a atualização silenciosamente não acontece porque alguém
+# esqueceu de clicar em Publish. O repo é privado, então publicar aqui não
+# torna nada público.
+#
 # GH_TOKEN: o GITHUB_TOKEN do próprio job basta (permissions.contents: write).
 name: desktop-release
 on:
@@ -40,25 +52,44 @@ jobs:
       # o build do cliente (dentro do dist, via bundle-renderer) importa o
       # dist do protocol — compilar antes
       - run: pnpm --filter @danjocord/protocol build
-      # TRAVA DE DISTRIBUIÇÃO (M12). 12 dos 14 sons de UI são assets
-      # proprietários do Discord (ATTRIBUTIONS.md), e ESTE workflow é o momento
-      # exato em que o app sai daqui — instalador publicado num Release. A
-      # advertência do ATTRIBUTIONS.md não pode depender de alguém lembrar dela
-      # na hora de rodar `git tag`.
-      # Para destravar: `pnpm --filter @danjocord/client sounds --all` repõe os
-      # 14 sintetizados; troque as extensões no catalog.ts/assets.ts e re-meça.
-      - name: sem asset nao-redistribuivel no catalogo de sons
+      # TRAVA DE DISTRIBUIÇÃO (M12, reescrita no M14).
+      #
+      # 12 dos 14 sons de UI são assets proprietários do Discord
+      # (ATTRIBUTIONS.md), e a condição que o Leonardo escreveu para usá-los é
+      # literal: "repo privado, sem instalador para fora, instância fechada".
+      # Este workflow é o momento exato em que o app sai daqui, e a advertência
+      # não pode depender de alguém lembrar dela na hora de rodar `git tag`.
+      #
+      # A trava ANTERIOR checava se `catalog.ts` aponta para `.mp3`. Ela era um
+      # PROXY da condição, e o proxy passou a estar errado: o instalador não vai
+      # mais "para fora" nenhum — o Release é privado e o download passa por
+      # `/api/updates`, que exige sessão no servidor. A trava certa é a condição
+      # em si, e ela é verificável: **o repositório tem de ser privado**.
+      #
+      # É uma trava MAIS FORTE que a antiga, não mais fraca: se um dia alguém
+      # tornar este repo público, o build de release para de funcionar — mesmo
+      # que os sons continuem exatamente como estão. E ela cobre o que a antiga
+      # não cobria (o código-fonte dos sons no repo, não só o binário).
+      #
+      # Para distribuir de verdade, para fora: `pnpm --filter @danjocord/client
+      # sounds --all` repõe os 14 sintetizados; troque as extensões no
+      # catalog.ts/assets.ts, re-meça, e só então torne o repo público.
+      - name: o repositorio precisa continuar privado
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if grep -q '\.mp3"' apps/client/src/sound/catalog.ts; then
-            echo "::error::catalog.ts aponta para .mp3 — os sons do Discord (ATTRIBUTIONS.md)."
-            echo "Instalador nao pode ser gerado com eles. Rode: pnpm --filter @danjocord/client sounds --all"
+          PRIVADO=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
+          echo "repos/$GITHUB_REPOSITORY private=$PRIVADO"
+          if [ "$PRIVADO" != "true" ]; then
+            echo "::error::este repositorio esta PUBLICO e o instalador leva os sons do Discord dentro (ATTRIBUTIONS.md)."
+            echo "Reponha os sons sinteticos antes de qualquer distribuicao: pnpm --filter @danjocord/client sounds --all"
             exit 1
           fi
-      # VERSÃO VEM DA TAG (roadmap 106). O `apps/desktop/package.json` tem
-      # `"version": "0.0.1"` fixo, e é DELE que o electron-builder tira a versão
-      # do instalador e do `latest.yml`. Sem este passo, tagear `v0.2.0` geraria
-      # um instalador ainda marcado 0.0.1 — e o `electron-updater` compara
+      # VERSÃO VEM DA TAG (roadmap 106). O `apps/desktop/package.json` tem uma
+      # versão fixa, e é DELE que o electron-builder tira a versão do instalador
+      # e do `latest.yml`. Sem este passo, tagear `v0.2.0` geraria um instalador
+      # ainda marcado com a versão antiga — e o `electron-updater` compara
       # versões, então os apps instalados NUNCA veriam a atualização. O bug é
       # silencioso: o release sai, o arquivo existe, e a atualização
       # simplesmente não acontece.

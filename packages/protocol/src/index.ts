@@ -1103,3 +1103,37 @@ export const UpdateMeBody = z.object({
   avatar_override: HTTPS_URL.nullable().optional(),
 });
 export type UpdateMeBody = z.infer<typeof UpdateMeBody>;
+
+// ---------------------------------------------------------------------------
+// Distribuição do app desktop (M14)
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /api/updates/latest` — o que a página de download mostra antes do
+ * clique. Nomes de arquivo e tamanho vêm de um release do GitHub, ou seja: de
+ * FORA. Por isso passam por schema como todo payload que entra, mesmo sendo o
+ * nosso próprio servidor quem responde — ele é intermediário aqui, não fonte.
+ *
+ * `size` em bytes; `published_at` em epoch ms (a convenção de tempo do
+ * projeto — nada de ISO no fio).
+ */
+export const DesktopRelease = z.object({
+  version: z.string().min(1).max(64),
+  file: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  published_at: z.number().int().nonnegative(),
+});
+export type DesktopRelease = z.infer<typeof DesktopRelease>;
+
+/**
+ * `POST /api/updates/ticket` — a credencial que cabe numa URL. Ver
+ * `apps/server/src/updates/tickets.ts` para os dois motivos de ela existir (o
+ * navegador não manda header numa navegação; o electron-updater vazaria um
+ * Authorization ao seguir o nosso 302).
+ */
+export const DownloadTicket = z.object({
+  ticket: z.string().min(1).max(256),
+  /** segundos */
+  expires_in: z.number().int().positive(),
+});
+export type DownloadTicket = z.infer<typeof DownloadTicket>;

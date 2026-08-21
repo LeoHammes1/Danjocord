@@ -37,7 +37,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "artifactName": "Danjocord-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": true,
@@ -46,7 +47,8 @@
     "publish": {
       "provider": "github",
       "owner": "LeoHammes1",
-      "repo": "Danjocord"
+      "repo": "Danjocord",
+      "releaseType": "release"
     }
   }
 }

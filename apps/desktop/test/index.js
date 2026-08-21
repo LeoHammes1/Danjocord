@@ -10,3 +10,4 @@
  * ele existe e está fresco.
  */
 require("./csp.test.js");
+require("./updater.test.js");

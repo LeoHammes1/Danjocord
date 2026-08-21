@@ -159,12 +159,12 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 104. `M` UI de administração de canais (criar, renomear, apagar, reordenar).
 105. `M` Onboarding + tela "Sobre" com versão.
 106. ✅ `P` **Sincronizar a versão do `apps/desktop/package.json` com a tag** — está em `0.0.1` e o workflow não bumpa: o electron-updater nunca enxerga atualização.
-107. `P` Checagem periódica de update + aviso de reiniciar.
+107. ✅ `P` Checagem periódica de update + aviso de reiniciar. (M14: quem dispara é o RENDERER, a cada 6 h e no login — o feed é privado e o tíquete que o abre precisa de sessão, que o main não tem. Baixou → faixa com "Reiniciar agora"; ninguém clicou → o `autoInstallOnAppQuit` instala quando a pessoa sair pelo tray. Instalar à força fecharia o app no meio de uma chamada.)
 108. `P` Iniciar com o Windows, minimizado na bandeja.
 109. `P` Persistir tamanho/posição da janela.
 110. `P` Log em arquivo + "Abrir logs" no tray.
 111. `P` Sons de PTT press/release.
-112. `P` Decidir o que fazer com o SmartScreen (app não assinado).
+112. `P` Decidir o que fazer com o SmartScreen (app não assinado). (M14: **não** resolvido — assinar continua fora. O que existe é o aviso ANTES do clique na página de download, dizendo o que a tela azul é e onde fica o "Executar assim mesmo". É paliativo, e o item continua aberto.)
 113. ✅ `P` Levar os assets de som para o `app://` e o `client-dist` + criar `vite.config.ts`: asset < 4 KB vira `data:` URI e **as duas CSPs bloqueiam `data:` em mídia**.
 
 ## 9. Buracos reais encontrados no levantamento
@@ -181,6 +181,10 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 123. `M` `mediasoup-client` inteiro carrega antes da tela de login.
 124. `P` Runbook de operação (restart, restore, logs, rollback).
 125. `P` O limite da classe `midia` conta REQUISIÇÕES, não bytes: 900 GETs podem ser 900 arquivos de 8 MB. Cobrar por MB exige um `onResponse` (a checagem é antes, a cobrança depois, então uma rajada única passa inteira). Hoje o que segura é o teto de 512 MB de anexos da guild e a exigência de credencial de membro.
+126. ✅ `M` **Não havia como um amigo instalar o app** — o instalador nasce num Release de um repo PRIVADO, e nem o link nem a instrução existiam. (M14: `/download`, irmã da landing de convite. A página é pública, os BYTES não: exigem sessão, porque o `.exe` leva os sons proprietários dentro. Traz versão, tamanho e o aviso do SmartScreen antes do clique.)
+127. ✅ `M` **O auto-update nunca funcionou** — o `electron-updater` apontava para a API do GitHub num repo privado, que responde 404, e a única saída "óbvia" seria embutir um token no instalador. (M14: o feed virou `/api/updates/feed/`, autenticado por tíquete na query; o token de leitura fica no Secret do cluster. O pod não serve os bytes — devolve 302 para a URL pré-assinada do GitHub, porque é o mesmo nó que carrega a mídia.)
+128. `P` A página de download só oferece Windows, e diz isso — mas quem abrir o link no celular vê um botão que não serve para ele. Detectar plataforma e trocar a chamada por "abrir no navegador" é meia hora.
+129. `P` O tíquete de download vai na QUERY e entra no log do Fastify. É aceito (escopo mínimo, 30 min, não vira sessão), mas redigir `?ticket=` no serializador de log do Fastify é barato.
 
 ## 10. Fora de escopo
 
