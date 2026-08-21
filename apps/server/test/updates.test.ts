@@ -1,32 +1,39 @@
 /**
- * Distribuição do app desktop (M14): tíquete, catálogo de releases e as rotas.
+ * Distribuição do app desktop (M14): tíquete, artefatos no PVC e as rotas.
  *
  * O que estes testes protegem, em ordem de importância:
  *
  *   1. **O feed funciona SEM Bearer.** Ele é autenticado por tíquete na query,
  *      porque quem o chama é uma navegação do navegador e o electron-updater.
- *      Se alguém "arrumar" a classe dessas duas rotas para `leitura`, o hook
- *      geral do rate limit responde 401 antes delas e o auto-update morre EM
+ *      Se alguém "arrumar" a classe dessas rotas para `leitura`, o hook geral
+ *      do rate limit responde 401 antes delas e o auto-update morre EM
  *      SILÊNCIO — o app continua abrindo, só nunca mais atualiza.
- *   2. **A lista de nomes é o próprio catálogo.** `:file` só existe se casar,
- *      por igualdade exata, um asset publicado — não há concatenação de
- *      caminho em lugar nenhum.
- *   3. **O 302 só vai para o GitHub.** Não é SSRF (nós nunca buscamos a URL) —
- *      é redirect aberto: sem a checagem, a nossa origem mandaria o navegador
- *      de um amigo para onde a resposta da API mandasse.
- *   4. Rascunho e prerelease não contam como versão publicada.
+ *   2. **Um POST sem token não deixa arquivo nenhum.** O que o teste prova é o
+ *      observável: 401 e diretório vazio. A guarda estar num `onRequest` de
+ *      ROTA (e não dentro do handler) é o que garante que ela roda antes de
+ *      qualquer leitura do corpo; isso o teste não consegue distinguir, porque
+ *      o parser deste upload é de FLUXO e só escreve quando o handler puxa —
+ *      está escrito no código, e é por isso que fica escrito aqui também.
+ *   3. **O commit é o que publica.** Os artefatos podem chegar pela metade (o
+ *      job cai, a rede corta); o que os amigos baixam só muda quando o servidor
+ *      confere que o `.exe` E o `latest.yml` estão no disco.
+ *   4. **O nome do artefato é uma allowlist**, e o caminho nunca é concatenado
+ *      a partir do pedido.
  *
- * Banco ":memory:", Fastify de verdade por `app.inject()`, e um `fetch` falso
- * no lugar da API do GitHub — nenhuma rede.
+ * Banco ":memory:", Fastify de verdade por `app.inject()`, diretório de
+ * artefatos num tmpdir por teste — nenhuma rede e nenhum arquivo do repo.
  */
 import assert from "node:assert/strict";
+import { mkdtemp, readdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import { register } from "tsx/esm/api";
 
 register();
 
 process.env.DANJOCORD_DEV_AUTH = "1";
-process.env.DANJOCORD_RELEASE_REPO = "dono/repo";
 
 const { default: Fastify } = await import("fastify");
 const { openDb } = await import("../src/db/index.js");
@@ -34,62 +41,88 @@ const { Store } = await import("../src/store.js");
 const { registerRateLimit } = await import("../src/rate-limit.js");
 const { registerUpdateRoutes } = await import("../src/updates/routes.js");
 const { TicketStore, TICKET_TTL_MS } = await import("../src/updates/tickets.js");
-const { catalogoDeReleases, instalador, limparCacheDeReleases, urlDeDownload } = await import("../src/updates/github.js");
+const { MAX_ARTEFATO_BYTES, TIPO_RELEASE, gravarArtefato, nomeDeArtefatoValido, podar, versaoValida } = await import(
+  "../src/updates/store.js"
+);
+
+const TOKEN = "token-de-publicacao-do-ci-1234567890";
+const EXE = "Danjocord-Setup-0.1.0.exe";
+const AUTH = { authorization: "Bearer dev.leo" };
+const PUB = { authorization: `Bearer ${TOKEN}`, "content-type": TIPO_RELEASE };
+
+async function tmp(): Promise<string> {
+  return mkdtemp(join(tmpdir(), "danjocord-releases-"));
+}
 
 // ---------------------------------------------------------------------------
-// A API do GitHub, de mentira
+// Nome de artefato e versão — puros, e é aqui que mora a allowlist
 // ---------------------------------------------------------------------------
 
-const EXE = "Danjocord-Setup-1.2.0.exe";
+test("nome de artefato: só o que a gente publica entra", () => {
+  for (const bom of [EXE, `${EXE}.blockmap`, "latest.yml"]) {
+    assert.equal(nomeDeArtefatoValido(bom), true, bom);
+  }
+  for (const mau of [
+    "../danjocord.db", // subir um nível
+    "sub/dir.exe", // barra
+    "..exe", // começa com ponto
+    ".env", // idem, e sem extensão nossa
+    "release.json", // metadado NOSSO, não é artefato — nem entra nem sai
+    "danjocord.db", // extensão fora da lista
+    "x".repeat(200) + ".exe", // nome absurdo
+    "", // vazio
+  ]) {
+    assert.equal(nomeDeArtefatoValido(mau), false, mau);
+  }
+});
 
-/** Um release como a API devolve, com só o que o nosso código lê. */
-function release(tag: string, extras: Record<string, unknown> = {}, assetId = 1): unknown {
-  return {
-    tag_name: tag,
-    draft: false,
-    prerelease: false,
-    published_at: `2026-0${assetId}-01T00:00:00Z`,
-    assets: [
-      { id: assetId * 10, name: `Danjocord-Setup-${tag.slice(1)}.exe`, size: 120_000_000 },
-      { id: assetId * 10 + 1, name: "latest.yml", size: 400 },
-    ],
-    ...extras,
-  };
-}
+test("versão: semver simples, como a tag produz", () => {
+  assert.equal(versaoValida("0.1.0"), true);
+  assert.equal(versaoValida("1.20.3-beta.1"), true);
+  assert.equal(versaoValida("v1.2.3"), false, "o `v` sai no workflow, não chega aqui");
+  assert.equal(versaoValida("1.2"), false);
+  assert.equal(versaoValida("../1.2.3"), false);
+});
 
-interface Chamada {
-  url: string;
-  redirect?: string;
-}
+// ---------------------------------------------------------------------------
+// Gravação e poda
+// ---------------------------------------------------------------------------
 
-/**
- * `fetch` falso. `releases` responde à listagem; `locationDoAsset` responde ao
- * pedido de download com um 302 (ou o que o teste quiser).
- */
-function fakeFetch(opts: {
-  releases?: unknown;
-  status?: number;
-  location?: string | null;
-  chamadas?: Chamada[];
-}): typeof fetch {
-  return (async (url: string | URL, init?: RequestInit) => {
-    const s = String(url);
-    opts.chamadas?.push({ url: s, ...(init?.redirect === undefined ? {} : { redirect: init.redirect }) });
-    if (s.includes("/releases?")) {
-      const status = opts.status ?? 200;
-      return new Response(status === 200 ? JSON.stringify(opts.releases ?? []) : "{}", {
-        status,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    // pedido de asset: a API responde 302 e NÓS não seguimos
-    const headers = new Headers();
-    if (opts.location != null) headers.set("location", opts.location);
-    return new Response(null, { status: 302, headers });
-  }) as unknown as typeof fetch;
-}
+test("gravar artefato: passa do teto, nada fica no disco", async () => {
+  const dir = await tmp();
+  // um fluxo maior que o teto, gerado sem alocar tudo de uma vez
+  const pedaco = Buffer.alloc(1024 * 1024);
+  const fluxo = Readable.from(
+    (function* () {
+      for (let i = 0; i <= MAX_ARTEFATO_BYTES / pedaco.length; i++) yield pedaco;
+    })(),
+  );
+  await assert.rejects(() => gravarArtefato(dir, EXE, fluxo), /passou de/);
+  assert.deepEqual(await readdir(dir), [], "nem o arquivo final nem o temporário sobram");
+});
 
-const CDN = "https://release-assets.githubusercontent.com/abc?token=xyz";
+test("poda: guarda os dois instaladores mais novos e o resto vai junto do blockmap", async () => {
+  const dir = await tmp();
+  const versoes = ["0.1.0", "0.2.0", "0.3.0"];
+  for (const [i, v] of versoes.entries()) {
+    const exe = `Danjocord-Setup-${v}.exe`;
+    await writeFile(join(dir, exe), "x");
+    await writeFile(join(dir, `${exe}.blockmap`), "x");
+    // mtime crescente: a ordem de CHEGADA é a ordem certa por construção
+    const quando = new Date(1_700_000_000_000 + i * 60_000);
+    await utimes(join(dir, exe), quando, quando);
+  }
+  await writeFile(join(dir, "latest.yml"), "version: 0.3.0");
+  await writeFile(join(dir, "release.json"), "{}");
+
+  const apagados = await podar(dir, 2);
+  const restou = (await readdir(dir)).sort();
+  assert.deepEqual(apagados.sort(), ["Danjocord-Setup-0.1.0.exe", "Danjocord-Setup-0.1.0.exe.blockmap"]);
+  assert.ok(restou.includes("latest.yml"), "o manifesto é substituído, nunca podado");
+  assert.ok(restou.includes("release.json"), "o metadado também não");
+  assert.ok(restou.includes("Danjocord-Setup-0.3.0.exe") && restou.includes("Danjocord-Setup-0.2.0.exe"));
+  assert.ok(!restou.includes("Danjocord-Setup-0.1.0.exe"));
+});
 
 // ---------------------------------------------------------------------------
 // O tíquete
@@ -119,190 +152,222 @@ test("tíquete: qualquer coisa que não foi emitida não vale", () => {
 });
 
 // ---------------------------------------------------------------------------
-// O catálogo
-// ---------------------------------------------------------------------------
-
-test("catálogo: rascunho e prerelease não são a versão publicada", async () => {
-  limparCacheDeReleases();
-  const c = await catalogoDeReleases(
-    fakeFetch({
-      releases: [
-        release("v2.0.0", { draft: true }, 9),
-        release("v1.9.0", { prerelease: true }, 8),
-        release("v1.2.0", {}, 1),
-      ],
-    }),
-    0,
-  );
-  assert.equal(c.latest?.version, "1.2.0", "o `v` sai — o electron-updater compara semver");
-  assert.equal(c.latest?.tag, "v1.2.0");
-  assert.equal(instalador(c.latest!)?.name, EXE);
-});
-
-test("catálogo: o mapa de nomes cobre releases anteriores, não só o mais novo", async () => {
-  limparCacheDeReleases();
-  const c = await catalogoDeReleases(fakeFetch({ releases: [release("v1.2.0", {}, 1), release("v1.1.0", {}, 2)] }), 0);
-  // entre ler o latest.yml e baixar o .exe passam minutos; um release publicado
-  // nesse intervalo faria o arquivo pedido sumir do catálogo — 404 no meio da
-  // atualização de alguém
-  assert.ok(c.porNome.has("Danjocord-Setup-1.1.0.exe"), "o instalador anterior continua resolvível");
-  assert.ok(c.porNome.has(EXE));
-});
-
-test("catálogo: repo privado sem token responde 404, e a frase diz isso", async () => {
-  limparCacheDeReleases();
-  await assert.rejects(
-    () => catalogoDeReleases(fakeFetch({ status: 404 }), 0),
-    (err: Error) => {
-      assert.match(err.message, /privado|permissão/i);
-      return true;
-    },
-  );
-});
-
-test("catálogo: o erro é cacheado, senão cada cliente paga 8 s de timeout", async () => {
-  limparCacheDeReleases();
-  const chamadas: Chamada[] = [];
-  const f = fakeFetch({ status: 500, chamadas });
-  await assert.rejects(() => catalogoDeReleases(f, 0));
-  await assert.rejects(() => catalogoDeReleases(f, 1_000));
-  assert.equal(chamadas.length, 1, "a segunda saiu do cache negativo");
-});
-
-// ---------------------------------------------------------------------------
-// O 302
-// ---------------------------------------------------------------------------
-
-test("download: pede sem seguir o redirect — o pod NÃO baixa os 100 MB", async () => {
-  const chamadas: Chamada[] = [];
-  const url = await urlDeDownload(10, fakeFetch({ location: CDN, chamadas }));
-  assert.equal(url, CDN);
-  assert.equal(chamadas[0]?.redirect, "manual", "seguir aqui faria o pod carregar o instalador inteiro");
-});
-
-test("download: Location fora do GitHub é recusado (redirect aberto)", async () => {
-  await assert.rejects(
-    () => urlDeDownload(10, fakeFetch({ location: "https://exemplo.invalido/malware.exe" })),
-    /host inesperado/,
-  );
-  // http puro também não: a página que redireciona é https
-  await assert.rejects(() => urlDeDownload(10, fakeFetch({ location: "http://github.com/x" })), /host inesperado/);
-  await assert.rejects(() => urlDeDownload(10, fakeFetch({ location: null })), /não redirecionou/);
-});
-
-// ---------------------------------------------------------------------------
 // As rotas
 // ---------------------------------------------------------------------------
 
-function montar(fetchImpl: typeof fetch): ReturnType<typeof Fastify> {
-  limparCacheDeReleases();
+async function montar(opts: { publishToken?: string } = {}): Promise<{ app: ReturnType<typeof Fastify>; dir: string }> {
+  const dir = await tmp();
   const store = new Store(openDb(":memory:"));
   const app = Fastify();
   // a ordem do index.ts: o hook do rate limit ANTES das rotas, senão o onRoute
   // não as vê e o limite vira no-op
   registerRateLimit(app, store);
-  registerUpdateRoutes(app, store, { fetchImpl });
-  return app;
+  await registerUpdateRoutes(app, store, { releasesDir: dir, publishToken: opts.publishToken ?? TOKEN });
+  await app.ready();
+  return { app, dir };
 }
 
-const AUTH = { authorization: "Bearer dev.leo" };
+/** Sobe o `.exe` e o `latest.yml` e vira a chave — o caminho do workflow. */
+async function publicar(app: ReturnType<typeof Fastify>, versao = "0.1.0"): Promise<string> {
+  const exe = `Danjocord-Setup-${versao}.exe`;
+  await app.inject({ method: "POST", url: `/api/updates/publish?file=${exe}`, headers: PUB, payload: "instalador" });
+  await app.inject({
+    method: "POST",
+    url: "/api/updates/publish?file=latest.yml",
+    headers: PUB,
+    payload: `version: ${versao}\npath: ${exe}\n`,
+  });
+  const r = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish/commit",
+    headers: { authorization: `Bearer ${TOKEN}` },
+    payload: { version: versao, file: exe },
+  });
+  assert.equal(r.statusCode, 200, r.body);
+  return exe;
+}
+
+async function ticket(app: ReturnType<typeof Fastify>): Promise<string> {
+  const r = await app.inject({ method: "POST", url: "/api/updates/ticket", headers: AUTH });
+  assert.equal(r.statusCode, 200, r.body);
+  return (r.json() as { ticket: string }).ticket;
+}
 
 test("o feed passa SEM Bearer — a credencial dele é o tíquete", async () => {
-  const app = montar(fakeFetch({ releases: [release("v1.2.0", {}, 1)], location: CDN }));
+  const { app } = await montar();
+  await publicar(app);
+  const t = await ticket(app);
 
-  const t = await app.inject({ method: "POST", url: "/api/updates/ticket", headers: AUTH });
-  assert.equal(t.statusCode, 200);
-  const { ticket } = t.json() as { ticket: string };
-
-  // ESTE é o teste que importa: nenhum header de autorização, e ainda assim 302.
+  // ESTE é o teste que importa: nenhum header de autorização, e ainda assim 200.
   // Com a classe trocada para `leitura`, o hook geral responde 401 aqui e o
   // auto-update morre sem um erro que aponte para a causa.
-  const res = await app.inject({
-    method: "GET",
-    url: `/api/updates/feed/latest.yml?ticket=${encodeURIComponent(ticket)}`,
-  });
-  assert.equal(res.statusCode, 302);
-  assert.equal(res.headers["location"], CDN);
+  const res = await app.inject({ method: "GET", url: `/api/updates/feed/latest.yml?ticket=${encodeURIComponent(t)}` });
+  assert.equal(res.statusCode, 200);
+  assert.match(res.body, /version: 0\.1\.0/);
+  assert.match(String(res.headers["content-disposition"]), /attachment/);
   await app.close();
 });
 
 test("o feed sem tíquete (ou com um inventado) é 401", async () => {
-  const app = montar(fakeFetch({ releases: [release("v1.2.0", {}, 1)], location: CDN }));
-  const semNada = await app.inject({ method: "GET", url: "/api/updates/feed/latest.yml" });
-  assert.equal(semNada.statusCode, 401);
-  const inventado = await app.inject({ method: "GET", url: "/api/updates/feed/latest.yml?ticket=abc" });
-  assert.equal(inventado.statusCode, 401);
+  const { app } = await montar();
+  await publicar(app);
+  for (const url of ["/api/updates/feed/latest.yml", "/api/updates/feed/latest.yml?ticket=abc"]) {
+    assert.equal((await app.inject({ method: "GET", url })).statusCode, 401, url);
+  }
   // e um Bearer válido NÃO substitui o tíquete: quem chama isto é o updater
   const comBearer = await app.inject({ method: "GET", url: "/api/updates/feed/latest.yml", headers: AUTH });
   assert.equal(comBearer.statusCode, 401);
   await app.close();
 });
 
-test("o tíquete exige sessão", async () => {
-  const app = montar(fakeFetch({ releases: [] }));
-  const res = await app.inject({ method: "POST", url: "/api/updates/ticket" });
-  assert.equal(res.statusCode, 401);
-  await app.close();
-});
-
-test("o nome do arquivo é o catálogo, e nada mais", async () => {
-  const app = montar(fakeFetch({ releases: [release("v1.2.0", {}, 1)], location: CDN }));
-  const { ticket } = (
-    await app.inject({ method: "POST", url: "/api/updates/ticket", headers: AUTH })
-  ).json() as { ticket: string };
-
-  for (const nome of ["nao-existe.exe", "..%2f..%2fetc%2fpasswd", "LATEST.YML"]) {
-    const res = await app.inject({ method: "GET", url: `/api/updates/feed/${nome}?ticket=${ticket}` });
-    assert.equal(res.statusCode, 404, `${nome} não é asset publicado`);
+test("o nome do arquivo é uma allowlist, e o caminho nunca é concatenado", async () => {
+  const { app, dir } = await montar();
+  await publicar(app);
+  await writeFile(join(dir, "..", "vizinho.txt"), "segredo");
+  const t = await ticket(app);
+  for (const nome of ["nao-existe.exe", "release.json", "..%2fvizinho.txt", "LATEST.YML"]) {
+    const res = await app.inject({ method: "GET", url: `/api/updates/feed/${nome}?ticket=${t}` });
+    assert.ok(res.statusCode === 404 || res.statusCode === 400, `${nome} → ${res.statusCode}`);
   }
   await app.close();
 });
 
-test("GET /api/updates/latest descreve o que existe para baixar", async () => {
-  const app = montar(fakeFetch({ releases: [release("v1.2.0", {}, 1)] }));
-  const res = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
-  assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.json(), {
-    version: "1.2.0",
-    file: EXE,
-    size: 120_000_000,
-    published_at: Date.parse("2026-01-01T00:00:00Z"),
-  });
+test("GET /api/updates/latest: 404 antes, e o tamanho REAL do disco depois", async () => {
+  const { app, dir } = await montar();
+  const antes = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
+  assert.equal(antes.statusCode, 404);
+  assert.match((antes.json() as { error: string }).error, /nenhum instalador/i);
+
+  const exe = await publicar(app);
+  const depois = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
+  assert.equal(depois.statusCode, 200);
+  const corpo = depois.json() as { version: string; file: string; size: number };
+  assert.equal(corpo.version, "0.1.0");
+  assert.equal(corpo.file, exe);
+  // o `size` do commit é zero de propósito — quem manda é o arquivo
+  assert.equal(corpo.size, (await stat(join(dir, exe))).size);
   await app.close();
 });
 
-test("sem release publicado é 404 (o servidor está bem), não 503", async () => {
-  const app = montar(fakeFetch({ releases: [] }));
+test("o release some quando o arquivo some, mesmo com o metadado intacto", async () => {
+  const { app, dir } = await montar();
+  const exe = await publicar(app);
+  await (await import("node:fs/promises")).rm(join(dir, exe));
   const res = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
+  // um botão "Baixar" que dá 404 é pior que a mensagem honesta de "não há versão"
   assert.equal(res.statusCode, 404);
-  assert.match((res.json() as { error: string }).error, /nenhum release/i);
+  await app.close();
+});
+
+test("o tíquete exige sessão", async () => {
+  const { app } = await montar();
+  assert.equal((await app.inject({ method: "POST", url: "/api/updates/ticket" })).statusCode, 401);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// A porta do CI
+// ---------------------------------------------------------------------------
+
+test("publish sem token é 401 e não deixa arquivo nenhum", async () => {
+  const { app, dir } = await montar();
+  const grande = "A".repeat(2 * 1024 * 1024);
+
+  const semNada = await app.inject({
+    method: "POST",
+    url: `/api/updates/publish?file=${EXE}`,
+    headers: { "content-type": TIPO_RELEASE },
+    payload: grande,
+  });
+  assert.equal(semNada.statusCode, 401);
+
+  const errado = await app.inject({
+    method: "POST",
+    url: `/api/updates/publish?file=${EXE}`,
+    headers: { authorization: "Bearer quase-certo", "content-type": TIPO_RELEASE },
+    payload: grande,
+  });
+  assert.equal(errado.statusCode, 401);
+
+  assert.deepEqual(await readdir(dir), [], "nenhum arquivo, nenhum temporário");
+  await app.close();
+});
+
+test("publish desligado responde 503 dizendo o que falta", async () => {
+  const { app } = await montar({ publishToken: "" });
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/updates/publish?file=${EXE}`,
+    headers: PUB,
+    payload: "x",
+  });
+  assert.equal(res.statusCode, 503);
+  assert.match((res.json() as { error: string }).error, /DANJOCORD_PUBLISH_TOKEN/);
+  await app.close();
+});
+
+test("publish recusa nome inválido antes de tocar no disco", async () => {
+  const { app, dir } = await montar();
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish?file=../danjocord.db",
+    headers: PUB,
+    payload: "x",
+  });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(await readdir(dir), []);
+  await app.close();
+});
+
+test("o COMMIT é o que publica: sem o latest.yml, 409 e nada muda", async () => {
+  const { app } = await montar();
+  await app.inject({ method: "POST", url: `/api/updates/publish?file=${EXE}`, headers: PUB, payload: "instalador" });
+
+  const semManifesto = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish/commit",
+    headers: { authorization: `Bearer ${TOKEN}` },
+    payload: { version: "0.1.0", file: EXE },
+  });
+  assert.equal(semManifesto.statusCode, 409);
+  assert.match((semManifesto.json() as { error: string }).error, /latest\.yml/);
+
+  // e a página continua dizendo "não há versão", em vez de anunciar meia release
+  const latest = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
+  assert.equal(latest.statusCode, 404);
+  await app.close();
+});
+
+test("o commit poda o que passou de dois instaladores", async () => {
+  const { app, dir } = await montar();
+  for (const v of ["0.1.0", "0.2.0", "0.3.0"]) await publicar(app, v);
+  const restou = (await readdir(dir)).filter((n) => n.endsWith(".exe")).sort();
+  assert.deepEqual(restou, ["Danjocord-Setup-0.2.0.exe", "Danjocord-Setup-0.3.0.exe"]);
+  assert.equal(JSON.parse(await readFile(join(dir, "release.json"), "utf8")).version, "0.3.0");
+  await app.close();
+});
+
+test("o download do navegador leva ao feed, com o tíquete junto", async () => {
+  const { app } = await montar();
+  const exe = await publicar(app);
+  const t = await ticket(app);
+  const res = await app.inject({ method: "GET", url: `/api/updates/download?ticket=${encodeURIComponent(t)}` });
+  assert.equal(res.statusCode, 302);
+  assert.equal(res.headers["location"], `/api/updates/feed/${encodeURIComponent(exe)}?ticket=${encodeURIComponent(t)}`);
   await app.close();
 });
 
 test("o download do navegador erra VOLTANDO para a página, não com JSON", async () => {
-  const app = montar(fakeFetch({ releases: [], location: CDN }));
+  const { app } = await montar();
   // tíquete inválido: quem está aqui é uma NAVEGAÇÃO, e um corpo JSON deixaria
-  // a pessoa numa aba branca com `{"error":...}` e sem botão para tentar de novo
+  // a pessoa numa aba branca com `{"error":...}` e sem botão de tentar de novo
   const mau = await app.inject({ method: "GET", url: "/api/updates/download?ticket=nao-existe" });
   assert.equal(mau.statusCode, 302);
   assert.equal(mau.headers["location"], "/download?erro=ticket");
 
-  const { ticket } = (
-    await app.inject({ method: "POST", url: "/api/updates/ticket", headers: AUTH })
-  ).json() as { ticket: string };
-  const semRelease = await app.inject({ method: "GET", url: `/api/updates/download?ticket=${ticket}` });
+  const t = await ticket(app);
+  const semRelease = await app.inject({ method: "GET", url: `/api/updates/download?ticket=${t}` });
   assert.equal(semRelease.statusCode, 302);
   assert.equal(semRelease.headers["location"], "/download?erro=sem-release");
-  await app.close();
-});
-
-test("o download do navegador leva ao instalador", async () => {
-  const app = montar(fakeFetch({ releases: [release("v1.2.0", {}, 1)], location: CDN }));
-  const { ticket } = (
-    await app.inject({ method: "POST", url: "/api/updates/ticket", headers: AUTH })
-  ).json() as { ticket: string };
-  const res = await app.inject({ method: "GET", url: `/api/updates/download?ticket=${ticket}` });
-  assert.equal(res.statusCode, 302);
-  assert.equal(res.headers["location"], CDN);
   await app.close();
 });

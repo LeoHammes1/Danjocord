@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+
 // .env da raiz do monorepo, quando existe. Só o `docker compose` lê esse
 // arquivo sozinho; `pnpm dev` (tsx, fora do Docker) não — e o sintoma é um 503
 // em /auth/discord/start com o .env preenchido ali do lado, o que não sugere
@@ -120,19 +122,20 @@ export const config = {
 
   // --- distribuição do app desktop (M14, roadmap 126/127) ---
   /**
-   * De onde saem o instalador e o feed de atualização: `owner/repo` do GitHub.
-   * Os bytes NÃO passam por este servidor — ele só valida quem pediu e devolve
-   * um 302 para a URL pré-assinada do GitHub. O porquê está em
-   * `updates/github.ts`, e o resumo é que este pod também carrega a mídia.
-   */
-  releaseRepo: env.DANJOCORD_RELEASE_REPO ?? "LeoHammes1/Danjocord",
-  /**
-   * Token de leitura dos releases. OPCIONAL na forma, obrigatório na prática:
-   * o repo é privado (é o que sustenta a advertência do ATTRIBUTIONS.md sobre
-   * os sons), e a API do GitHub responde **404** — não 401 — a repo privado sem
-   * credencial. Sem ele, `/api/updates/*` devolve 503 com a frase explicando.
+   * Onde ficam o instalador e o `latest.yml`. Derivado do DB_PATH de propósito:
+   * os dois têm que morar no MESMO volume (o PVC), e uma env separada é uma
+   * env a mais para alguém esquecer num deploy — o sintoma seria a página de
+   * download vazia num pod perfeitamente saudável.
    *
-   * PAT de escopo fino, só `Contents: read-only`, só neste repositório.
+   * O binário NÃO vai para um Release do GitHub (decisão do Leonardo): o CI
+   * compila e faz POST aqui. O custo está escrito em `updates/store.ts` — este
+   * pod passa a servir os bytes, e é o mesmo nó que carrega a mídia.
    */
-  releaseToken: env.GITHUB_RELEASES_TOKEN ?? "",
+  releasesDir: env.RELEASES_DIR ?? join(dirname(env.DB_PATH ?? "./data/danjocord.db"), "releases"),
+  /**
+   * Credencial de MÁQUINA do `POST /api/updates/publish` — é o CI que a usa.
+   * Vazia = publicação desligada (a rota responde 503 dizendo isso), que é o
+   * estado normal em dev.
+   */
+  publishToken: env.DANJOCORD_PUBLISH_TOKEN ?? "",
 } as const;

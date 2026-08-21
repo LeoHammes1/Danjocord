@@ -103,6 +103,11 @@ const TABELA: Record<string, LimitClass> = {
   // pelo usuário DONO do tíquete — a mesma chave honesta que o hook usaria.
   "GET /api/updates/download": "proprio",
   "GET /api/updates/feed/:file": "proprio",
+  // As duas do CI: autenticadas por um token de MÁQUINA, num `onRequest` de
+  // rota que roda antes do parser de corpo — um POST sem token não escreve um
+  // byte no disco. Janela própria, chaveada em "publish" (não há usuário).
+  "POST /api/updates/publish": "proprio",
+  "POST /api/updates/publish/commit": "proprio",
   "POST /api/attachments": "proprio",
   "POST /api/sounds": "proprio",
   "POST /api/voice/soundboard": "proprio",

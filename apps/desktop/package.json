@@ -45,10 +45,8 @@
       "deleteAppDataOnUninstall": false
     },
     "publish": {
-      "provider": "github",
-      "owner": "LeoHammes1",
-      "repo": "Danjocord",
-      "releaseType": "release"
+      "provider": "generic",
+      "url": "https://danjocord.leohammes.dev/api/updates/feed/"
     }
   }
 }

@@ -10,13 +10,13 @@ import { autoUpdater } from "electron-updater";
  * Até aqui o main chamava `checkForUpdatesAndNotify()` no `ready` e pronto.
  * Duas coisas nesse desenho não funcionam neste projeto:
  *
- * 1. **O feed é PRIVADO.** O `publish` do package.json aponta para
- *    `LeoHammes1/Danjocord`, que é um repo privado — o electron-updater bateria
- *    em `api.github.com` sem credencial e levaria 404 para sempre. A alternativa
- *    óbvia (embutir um token do GitHub no instalador) é entregar a credencial a
- *    quem tiver o `.exe`. Por isso o feed é o NOSSO servidor
- *    (`/api/updates/feed/`), autenticado por tíquete: o token do GitHub fica no
- *    Secret do cluster e nunca sai de lá.
+ * 1. **O feed é o NOSSO servidor, e é PRIVADO.** O instalador não fica num
+ *    Release do GitHub (decisão do Leonardo): o CI compila e entrega os
+ *    artefatos ao servidor, que os guarda no PVC. O `publish` do package.json é
+ *    `generic` apontando para `/api/updates/feed/` — é isso que faz o
+ *    electron-builder gerar o `latest.yml` e carimbar o `app-update.yml` de
+ *    dentro do app. E esse feed exige tíquete, porque o `.exe` leva os sons
+ *    proprietários dentro (ATTRIBUTIONS.md).
  *
  * 2. **Checar no `ready` é cedo demais.** O tíquete precisa de sessão, e no
  *    `ready` ainda não houve login. Quem dispara a checagem agora é o RENDERER,
@@ -28,13 +28,15 @@ import { autoUpdater } from "electron-updater";
  * ---------------------------------------------------------------------------
  *
  * O `blockmap` do electron-updater baixa só os pedaços que mudaram — em geral
- * uma boa ideia, e aqui uma má. Ele o faz com muitas requisições de RANGE, e no
- * nosso feed CADA requisição vira uma ida à API do GitHub para emitir uma URL
- * pré-assinada nova (`updates/routes.ts`). Trocar ~100 MB de CDN por dezenas de
- * chamadas de API — com o rate limit do GitHub no meio e o pod pagando a
- * latência de cada uma — é pior nos dois eixos que importam: tempo até
- * atualizar e superfície que pode falhar. Uma release nova acontece raramente e
- * os bytes vêm do CDN do GitHub, não do nó da mídia.
+ * uma boa ideia, e aqui uma má. Ele o faz com muitas requisições de RANGE, e
+ * cada uma delas passa pela janela de rate limit do feed e por uma abertura de
+ * arquivo no pod. O ganho seria em BANDA, que é justamente o eixo em que este
+ * projeto tem folga (dez amigos, um release de vez em quando); o custo seria em
+ * requisições e em superfície que pode falhar no meio, que é o eixo apertado.
+ *
+ * Um instalador de Electron também é quase todo `app.asar` recomprimido: o
+ * delta entre duas versões que só mudam código nosso raramente é pequeno o
+ * bastante para pagar a complexidade.
  */
 
 /**

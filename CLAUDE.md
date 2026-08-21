@@ -573,40 +573,76 @@ aperto que o `flex-wrap` estava remediando.
 
 ## Como o app chega e como se atualiza (M14)
 
-Até aqui não havia caminho: o instalador nasce num Release de um repo PRIVADO,
-e o `electron-updater` apontava para a API do GitHub — que responde **404, e não
+Até aqui não havia caminho: o instalador nascia num Release do GitHub e o
+`electron-updater` apontava para a API do GitHub — que responde **404, e não
 401**, a repo privado sem credencial. Ou seja: o auto-update do M6 nunca
 funcionou, e ninguém tinha como descobrir isso sem tagear um release.
 
-- **A saída óbvia está descartada**: embutir um token do GitHub no instalador é
-  entregá-lo a quem tiver o `.exe`. O feed é o NOSSO servidor
-  (`/api/updates/feed/`), o token de leitura fica no Secret do cluster, e a
-  credencial que abre o feed é um **tíquete** de 30 min emitido para quem tem
-  sessão.
-- **O pod é PORTEIRO, não servidor de arquivo.** Ele valida quem pediu e devolve
-  um **302 para a URL pré-assinada** que a própria API do GitHub emite. O motivo
-  não é elegância: é o MESMO nó que carrega a mídia (mediasoup, hostPort
-  40000/UDP), e o pior caso já documentado de um Go Live 4K com os nove amigos é
-  ~108 Mbps de uplink dali. Um release novo põe dez `electron-updater` baixando
-  ~100 MB ao mesmo tempo — 1 GB pela placa que carrega a voz. Zero byte de
-  instalador atravessa o nó.
-- **O tíquete vai na QUERY, e isso é decisão, não preguiça.** Dois motivos, um
-  por cliente: o navegador não manda header numa NAVEGAÇÃO (a sessão vive no
-  localStorage, não em cookie), e o executor HTTP do electron-updater **repassa
-  os headers ao seguir um redirect** — um `Authorization` chegaria a
-  `githubusercontent.com`. Funciona porque o `newUrlFromBase` do
-  electron-updater propaga a query da base para cada arquivo que resolve; é o
-  mecanismo documentado para feed privado. O preço está declarado: o tíquete
-  entra no log do Fastify, e a mitigação é o ESCOPO — ele só abre os arquivos do
-  release, não vira sessão (roadmap 129).
-- **A barra final da URL do feed não é estilo.** O electron-updater resolve com
-  `new URL(nome, base)`: sem ela, `/api/updates/feed?t=x` vira
+**O binário não fica no GitHub** (decisão do Leonardo). O CI continua
+compilando — NSIS e os módulos nativos precisam de Windows — mas em vez de
+publicar um Release ele faz POST dos artefatos no próprio servidor, e eles moram
+no PVC, ao lado do SQLite.
+
+- **O custo está declarado, não escondido: o pod SERVE os bytes.** Este é o
+  mesmo nó que carrega a mídia (mediasoup, hostPort 40000/UDP), e o pior caso já
+  documentado de um Go Live 4K com os nove amigos é ~108 Mbps de uplink dali. Um
+  release novo são ~100 MB por amigo — ~1 GB se os dez atualizarem. Na prática
+  isso se espalha por horas (a checagem é no login e a cada 6 h, nunca
+  simultânea) e para dez amigos é aceitável. Se doer, os remédios são cobrar por
+  MB no `onResponse` ou capar downloads simultâneos; nenhum foi feito.
+  **Espaço não é a restrição**: medido no nó, o disco do `local-path` tem 74 GB
+  livres contra 396 kB de banco. Banda é.
+- **O layout é PLANO, e é exigência do electron-updater**: `latest.yml` e o
+  `.exe` no mesmo nível, porque ele resolve cada arquivo com
+  `new URL(nome, base)`. Nada de subpasta por versão.
+- **O `release.json` é NOSSO, e existe para o servidor não ler YAML.** O projeto
+  não instala dependência, e um parser de YAML à mão para ler metadado é
+  exatamente o tipo de coisa que quebra calada. O `latest.yml` do
+  electron-builder é servido tal e qual, sem ninguém interpretá-lo.
+- **O publish tem DOIS passos, e o segundo é o que publica.** Os artefatos sobem
+  um a um (`POST /api/updates/publish?file=`) e só o `commit` — que confere que
+  o `.exe` **e** o `latest.yml` estão no disco — decide qual release os amigos
+  baixam. Um job que cai no meio deixa um artefato órfão, nunca meia versão no
+  ar. Cada arquivo em si é atômico (temporário + `rename`).
+- **A ordem do upload importa e está no workflow**: `.exe` primeiro, `latest.yml`
+  depois. Um manifesto novo apontando para um instalador que ainda não chegou
+  seria uma atualização quebrada para quem checasse naquele minuto.
+- **O upload tem content-type PRÓPRIO** (`application/vnd.danjocord.release`) e
+  parser de FLUXO. O `raw-body.ts` bufferiza com chão de 64 kB — certo para
+  anexo e som; um instalador de 100 MB por ali viraria ~200 MB de pico
+  (`Buffer.concat` dobra) num pod com limite de 1 GiB.
+- **A guarda do publish é um `onRequest` de ROTA**, que roda antes do parser de
+  corpo: um POST sem token não chega a escrever um byte no PVC onde mora o
+  banco. Comparação do token em tempo constante.
+- **A poda guarda DOIS instaladores, por mtime.** Ordenar semver à mão é o tipo
+  de código que erra `1.10.0` vs `1.9.0`, e a ordem de chegada já é a ordem
+  certa por construção. Dois e não um porque entre ler o `latest.yml` e baixar o
+  `.exe` passam minutos — um release publicado nesse intervalo apagaria o
+  arquivo que alguém está buscando.
+- **`artefatoExiste` compara com o `readdir`, não só com o `stat`.** O NTFS é
+  insensível a maiúsculas e o ext4 do pod não é: `LATEST.YML` abre o arquivo na
+  máquina de quem desenvolve e dá 404 em produção. E quem COMPILA é um runner
+  Windows enquanto quem serve é Linux — é a fronteira exata onde isso vira
+  "publiquei e o pod não acha". O teste pegou isso.
+- **`sendFile` do `@fastify/static`, e não um stream à mão**: traz Range, ETag e
+  Last-Modified de graça. Range importa de verdade — são ~100 MB numa conexão
+  doméstica, e sem ele um download cortado em 90% recomeça do zero.
+- **O tíquete vai na QUERY, e isso é decisão.** Dois motivos, um por cliente: o
+  navegador não manda header numa NAVEGAÇÃO (a sessão vive no localStorage, não
+  em cookie), e o executor HTTP do electron-updater **repassa os headers ao
+  seguir um redirect**. Funciona porque o `newUrlFromBase` do electron-updater
+  propaga a query da base para cada arquivo que resolve; é o mecanismo
+  documentado para feed privado. O preço está declarado: o tíquete entra no log
+  do Fastify, e a mitigação é o ESCOPO — ele só abre os arquivos do release, não
+  vira sessão (roadmap 129).
+- **A barra final da URL do feed não é estilo.** Sem ela,
+  `new URL("latest.yml", ".../feed?t=x")` SUBSTITUI o último segmento e vira
   `/api/updates/latest.yml`, que cai no fallback de SPA e volta index.html com
   content-type de HTML — relatado como "YAML inválido". Tem teste.
-- **Download diferencial DESLIGADO.** O blockmap faria dezenas de requisições de
-  RANGE, e no nosso feed cada requisição vira uma ida à API do GitHub para
-  emitir uma URL pré-assinada nova. Trocar ~100 MB de CDN por dezenas de
-  chamadas de API é pior nos dois eixos.
+- **Download diferencial DESLIGADO.** O blockmap troca banda (o eixo em que este
+  projeto tem folga) por muitas requisições de RANGE e superfície que pode
+  falhar no meio (o eixo apertado). E um instalador de Electron é quase todo
+  `app.asar` recomprimido — o delta raramente compensa.
 - **Quem manda checar é o RENDERER**, não o main: o feed precisa de sessão, e no
   `ready` do Electron ainda não houve login. O main virou executor
   (`update:check`). Checagem no login e a cada 6 h.
@@ -615,15 +651,13 @@ funcionou, e ninguém tinha como descobrir isso sem tagear um release.
   ESTE projeto. Baixou → faixa com "Reiniciar agora" (a frase muda se a pessoa
   está em chamada, porque a consequência muda); ninguém clicou → o
   `autoInstallOnAppQuit` instala quando ela sair pelo tray.
-- **A lista de nomes do feed é o próprio catálogo**: `:file` só existe se casar,
-  por igualdade exata, o nome de um asset publicado — não há concatenação de
-  caminho em lugar nenhum. E o mapa cobre os ÚLTIMOS releases, não só o mais
-  novo: entre ler o `latest.yml` e baixar o `.exe` passam minutos, e um release
-  publicado nesse intervalo faria o arquivo pedido sumir do catálogo.
-- **O 302 só pode ir para o GitHub.** Não é SSRF (nós nunca buscamos a URL) — é
-  redirect aberto. Medido contra a API real: hoje o `Location` aponta para
-  `release-assets.githubusercontent.com`, e um allowlist com o antigo
-  `objects.githubusercontent.com` teria quebrado todo download.
+
+O `publish` do `apps/desktop/package.json` é `generic` apontando para o nosso
+feed — é isso que faz o electron-builder **gerar o `latest.yml`** e carimbar o
+`app-update.yml` de dentro do app. O `--publish never` do CI só impede o upload;
+quem entrega é o `curl` do workflow. Verificado compilando de verdade: um
+instalador de 96 MB, `latest.yml` correto ao lado, e `app-update.yml` apontando
+para `/api/updates/feed/`.
 
 ### A página `/download`
 
@@ -631,10 +665,10 @@ Irmã da landing de convite (`ui/download-page.ts`), e a segunda tela que algué
 de fora vê deste servidor.
 
 - **A página é pública, os BYTES não.** O `.exe` leva os sons proprietários
-  dentro, e a condição escrita no ATTRIBUTIONS.md é "sem instalador para fora".
-  Quem não está logado vê o mesmo cartão com "Entrar com Discord" no lugar do
-  botão — e isso não exclui ninguém, porque para USAR o app é preciso estar na
-  allowlist de qualquer jeito.
+  dentro, e a condição escrita no ATTRIBUTIONS.md é "instância fechada". Quem
+  não está logado vê o mesmo cartão com "Entrar com Discord" no lugar do botão —
+  e isso não exclui ninguém, porque para USAR o app é preciso estar na allowlist
+  de qualquer jeito.
 - **O caminho volta depois do OAuth.** O login traz o navegador para a RAIZ
   (`APP_URL`), então `/download` se perde no meio; a intenção fica no
   `sessionStorage` (por aba, não atravessa origem, não é credencial — o código
@@ -642,8 +676,9 @@ de fora vê deste servidor.
 - **`location.assign`, nunca `fetch` + Blob**: 100 MB num `createObjectURL` fica
   inteiro na memória da aba e tira do navegador a barra de progresso, o retomar
   e a escolha de pasta. A página NÃO é abandonada no caminho feliz — a resposta
-  do CDN vem com `Content-Disposition: attachment` (medido). No caminho de erro
-  o servidor **redireciona de volta** para `/download?erro=…` em vez de devolver
+  vem com `Content-Disposition: attachment` (medido, com o instalador real: o
+  clique dispara o GET e a página continua montada). No caminho de erro o
+  servidor **redireciona de volta** para `/download?erro=…` em vez de devolver
   JSON: quem está ali é uma navegação, e um corpo JSON deixaria a pessoa numa
   aba branca sem botão de tentar de novo.
 - **O aviso do SmartScreen vem ANTES do clique** (roadmap 112 segue aberto — o
@@ -652,19 +687,14 @@ de fora vê deste servidor.
   É `--warn` e não `--danger` de propósito: a tela azul é etapa esperada, e
   pintá-la de perigo confirmaria o medo que o texto existe para desfazer.
 
-### A trava de distribuição mudou de forma
+### A trava de distribuição saiu
 
 O `desktop-release.yml` reprovava o build enquanto houvesse `.mp3` no catálogo
-de sons. Aquilo era um PROXY da condição do ATTRIBUTIONS.md, e o proxy passou a
-estar errado: com `/api/updates` exigindo sessão, o instalador não vai "para
-fora" nenhum. A trava agora é a condição em si — **o repositório tem de ser
-privado** (`gh api repos/$GITHUB_REPOSITORY --jq .private`), e ela é mais forte
-que a antiga: cobre também o código-fonte dos sons, e não só o binário.
-
-O release também deixou de nascer como **rascunho** (`releaseType: release`): o
-checkpoint humano deste processo é o `git tag`, e um rascunho a mais só cria o
-modo de falha em que tudo "deu certo" e a atualização silenciosamente não
-acontece porque ninguém clicou em Publish.
+de sons. Ela foi **retirada a pedido do Leonardo** — não substituída. O que
+segura hoje é o desenho: o `.exe` só sai por `/api/updates`, que exige sessão de
+membro, e não existe mais artefato hospedado fora daqui. Não há mais nada
+mecânico impedindo uma distribuição aberta; a advertência do ATTRIBUTIONS.md
+passou a valer por leitura, e não por trava.
 
 ## Convenções
 

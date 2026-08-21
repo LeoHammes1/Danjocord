@@ -237,11 +237,14 @@ registerSoundRoutes(app, store, gateway, { voiceChannelOf: (userId) => voice.cha
 registerModerationRoutes(app, store, gateway, guild, {
   disconnectFromVoice: (userId) => voice.removeUserFromVoice(userId),
 });
-// M14: a página de download e o feed do electron-updater. O pod NÃO serve os
-// bytes do instalador — este é o nó que carrega a mídia, e ~100 MB × dez
-// amigos competiriam com a chamada. Ele valida quem pediu e devolve 302 para a
-// URL pré-assinada do GitHub. O porquê inteiro está em updates/github.ts.
-registerUpdateRoutes(app, store);
+// M14: a página de download, o feed do electron-updater e a porta por onde o
+// CI entrega o instalador. O binário mora no PVC (nada de Release no GitHub) e
+// é o pod que serve os bytes — o custo disso, no nó que também carrega a mídia,
+// está escrito em updates/store.ts. É `await` porque o módulo se registra como
+// plugin ENCAPSULADO: ele precisa de um segundo root do @fastify/static (o
+// decorator sendFile colidiria com o do cliente estático) e de um parser de
+// corpo próprio, que não pode vazar para o resto do app.
+await registerUpdateRoutes(app, store);
 registerAuthRoutes(app, store, sessions);
 // o callback de MEMBER_UPDATE só dispara no primeiro login do dono configurado
 // (bootstrap): o cargo muda depois do MEMBER_ADD, e sem o aviso a sidebar de

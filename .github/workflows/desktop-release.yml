@@ -1,41 +1,49 @@
-# Release do app desktop (M6, refeito no M14): tag v* → instalador Windows no
-# Release da tag → os apps instalados dos amigos se atualizam sozinhos.
+# Release do app desktop (M6, refeito no M14): tag v* → instalador Windows
+# entregue ao PRÓPRIO SERVIDOR → os apps instalados dos amigos se atualizam.
+#
+# O que mudou no M14: o instalador NÃO fica num Release do GitHub. Este job
+# continua sendo quem compila — NSIS e os módulos nativos precisam de Windows —
+# mas em vez de publicar um Release ele faz POST dos artefatos em
+# `https://danjocord.leohammes.dev/api/updates/publish`, e eles passam a morar
+# no PVC do pod, ao lado do SQLite.
 #
 # O fluxo, ponta a ponta:
 #   1. git tag v0.1.0 && git push origin v0.1.0
-#   2. este workflow (windows-latest — NSIS e os módulos nativos precisam do
-#      SO alvo) roda `pnpm --filter @danjocord/desktop dist`: bundla o
-#      renderer (build do apps/client com VITE_API_BASE de produção via
-#      scripts/bundle-renderer.mjs), compila o main e chama o electron-builder,
-#      que gera o instalador e PUBLICA os artefatos (Setup.exe + latest.yml)
-#      no Release da tag.
-#   3. os apps instalados atualizam. Mas NÃO lendo o GitHub direto — este repo é
-#      privado, e um `electron-updater` apontado para cá levaria 404 (a API do
-#      GitHub responde 404, e não 401, a repo privado sem credencial). A saída
-#      óbvia seria embutir um token no instalador, o que é entregá-lo a quem
-#      tiver o `.exe`.
+#   2. este job roda `pnpm --filter @danjocord/desktop dist --publish never`:
+#      bundla o renderer (build do apps/client com VITE_API_BASE de produção),
+#      compila o main e chama o electron-builder. O `publish` do package.json é
+#      `generic` apontando para o nosso feed — é ISSO que faz o electron-builder
+#      gerar o `latest.yml` e carimbar o `app-update.yml` de dentro do app; o
+#      `--publish never` só impede o upload, que quem faz é o passo abaixo.
+#   3. o job sobe os artefatos NESTA ORDEM: o `.exe` (e o `.blockmap`) primeiro,
+#      o `latest.yml` depois, e o commit por último. A ordem importa: um
+#      `latest.yml` novo apontando para um `.exe` que ainda não chegou seria uma
+#      atualização quebrada para quem checasse naquele minuto. O commit é o que
+#      vira a chave — antes dele, o servidor continua servindo o release velho.
+#   4. o electron-updater dos apps instalados lê o `latest.yml` do nosso feed
+#      (autenticado por tíquete) e baixa a versão nova em segundo plano.
 #
-#      Em vez disso o FEED é o próprio servidor: `https://danjocord.leohammes.dev
-#      /api/updates/feed/`. Ele valida a sessão de quem pede e devolve um 302
-#      para a URL pré-assinada que a API do GitHub emite — o token de leitura
-#      fica no Secret do cluster e nenhum byte de instalador atravessa o nó que
-#      carrega a voz. Ver apps/server/src/updates/github.ts.
+# PRÉ-REQUISITO DE UMA VEZ SÓ: um segredo sorteado (`openssl rand -hex 32`) em
+# DOIS lugares — `DANJOCORD_PUBLISH_TOKEN` no Secret danjocord-credentials do
+# cluster, e o MESMO valor nos secrets de Actions deste repo. Sem ele o passo de
+# publicação leva 503 e o job falha alto, que é o que se quer.
 #
-# `releaseType: release` no package.json (e não o `draft` que é o default do
-# electron-builder): o release nasce PUBLICADO. O checkpoint humano deste
-# processo é o `git tag` — um rascunho a mais só cria o modo de falha em que
-# tudo "deu certo" e a atualização silenciosamente não acontece porque alguém
-# esqueceu de clicar em Publish. O repo é privado, então publicar aqui não
-# torna nada público.
-#
-# GH_TOKEN: o GITHUB_TOKEN do próprio job basta (permissions.contents: write).
+# NOTA SOBRE OS SONS: 12 dos 14 clipes de UI são assets proprietários do Discord
+# (ATTRIBUTIONS.md) e vão dentro deste instalador. Até o M14 havia aqui uma
+# trava reprovando o build enquanto eles estivessem no catálogo; ela foi
+# retirada a pedido do Leonardo. O que segura hoje é o desenho: o `.exe` só sai
+# por `/api/updates`, que exige sessão de membro. Ler a advertência do
+# ATTRIBUTIONS.md antes de qualquer coisa que seja distribuição aberta.
 name: desktop-release
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  SERVIDOR: https://danjocord.leohammes.dev
 
 jobs:
   installer:
@@ -52,52 +60,18 @@ jobs:
       # o build do cliente (dentro do dist, via bundle-renderer) importa o
       # dist do protocol — compilar antes
       - run: pnpm --filter @danjocord/protocol build
-      # TRAVA DE DISTRIBUIÇÃO (M12, reescrita no M14).
-      #
-      # 12 dos 14 sons de UI são assets proprietários do Discord
-      # (ATTRIBUTIONS.md), e a condição que o Leonardo escreveu para usá-los é
-      # literal: "repo privado, sem instalador para fora, instância fechada".
-      # Este workflow é o momento exato em que o app sai daqui, e a advertência
-      # não pode depender de alguém lembrar dela na hora de rodar `git tag`.
-      #
-      # A trava ANTERIOR checava se `catalog.ts` aponta para `.mp3`. Ela era um
-      # PROXY da condição, e o proxy passou a estar errado: o instalador não vai
-      # mais "para fora" nenhum — o Release é privado e o download passa por
-      # `/api/updates`, que exige sessão no servidor. A trava certa é a condição
-      # em si, e ela é verificável: **o repositório tem de ser privado**.
-      #
-      # É uma trava MAIS FORTE que a antiga, não mais fraca: se um dia alguém
-      # tornar este repo público, o build de release para de funcionar — mesmo
-      # que os sons continuem exatamente como estão. E ela cobre o que a antiga
-      # não cobria (o código-fonte dos sons no repo, não só o binário).
-      #
-      # Para distribuir de verdade, para fora: `pnpm --filter @danjocord/client
-      # sounds --all` repõe os 14 sintetizados; troque as extensões no
-      # catalog.ts/assets.ts, re-meça, e só então torne o repo público.
-      - name: o repositorio precisa continuar privado
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PRIVADO=$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)
-          echo "repos/$GITHUB_REPOSITORY private=$PRIVADO"
-          if [ "$PRIVADO" != "true" ]; then
-            echo "::error::este repositorio esta PUBLICO e o instalador leva os sons do Discord dentro (ATTRIBUTIONS.md)."
-            echo "Reponha os sons sinteticos antes de qualquer distribuicao: pnpm --filter @danjocord/client sounds --all"
-            exit 1
-          fi
       # VERSÃO VEM DA TAG (roadmap 106). O `apps/desktop/package.json` tem uma
       # versão fixa, e é DELE que o electron-builder tira a versão do instalador
       # e do `latest.yml`. Sem este passo, tagear `v0.2.0` geraria um instalador
       # ainda marcado com a versão antiga — e o `electron-updater` compara
       # versões, então os apps instalados NUNCA veriam a atualização. O bug é
-      # silencioso: o release sai, o arquivo existe, e a atualização
-      # simplesmente não acontece.
+      # silencioso: o arquivo existe, e a atualização simplesmente não acontece.
       #
       # Escrito no arquivo em vez de `npm version` para não criar commit nem
       # tag: a fonte da verdade da versão é a TAG do git, e o package.json é só
       # o veículo que o electron-builder lê.
       - name: versão do instalador = a tag
+        id: versao
         shell: bash
         run: |
           VERSAO="${GITHUB_REF_NAME#v}"
@@ -113,9 +87,55 @@ jobs:
             fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
             console.log('versão do instalador:', j.version);
           " "$VERSAO"
-      # --publish always: determinístico, sem depender da detecção de tag do
-      # electron-builder (o pnpm anexa os args extras ao fim do script "dist",
-      # ou seja, na chamada do electron-builder)
-      - run: pnpm --filter @danjocord/desktop dist --publish always
+          echo "versao=$VERSAO" >> "$GITHUB_OUTPUT"
+          echo "exe=Danjocord-Setup-$VERSAO.exe" >> "$GITHUB_OUTPUT"
+      - run: pnpm --filter @danjocord/desktop dist --publish never
+
+      # A ENTREGA. `--fail-with-body` para o corpo do erro aparecer no log do
+      # job: sem ele, um 401 de token errado sai como "exit 22" e nada mais.
+      # O content-type é o `application/vnd.danjocord.release`, que no servidor
+      # cai num parser de FLUXO — o octet-stream comum bufferizaria os ~100 MB
+      # na memória de um pod de 1 GiB.
+      - name: subir os artefatos (o .exe antes do latest.yml)
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.DANJOCORD_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::falta o secret DANJOCORD_PUBLISH_TOKEN nas Actions deste repo (ver deploy/danjocord.yaml)"
+            exit 1
+          fi
+          subir() {
+            local arquivo="$1"
+            local nome
+            nome=$(basename "$arquivo")
+            echo "→ $nome ($(stat -c%s "$arquivo" 2>/dev/null || stat -f%z "$arquivo") bytes)"
+            curl --fail-with-body -sS -X POST \
+              -H "authorization: Bearer $TOKEN" \
+              -H "content-type: application/vnd.danjocord.release" \
+              --data-binary "@$arquivo" \
+              "$SERVIDOR/api/updates/publish?file=$nome"
+            echo
+          }
+          cd apps/desktop/release
+          subir "${{ steps.versao.outputs.exe }}"
+          # o blockmap é opcional (o download diferencial está desligado no
+          # updater.ts), mas sobe junto quando existe: é barato e deixa a porta
+          # aberta caso um dia o diferencial faça sentido
+          [ -f "${{ steps.versao.outputs.exe }}.blockmap" ] && subir "${{ steps.versao.outputs.exe }}.blockmap"
+          subir latest.yml
+
+      # O COMMIT — é ele que decide qual release os amigos baixam. O servidor
+      # confere que o .exe E o latest.yml estão no disco antes de aceitar, então
+      # um upload interrompido nunca vira meia versão publicada.
+      - name: virar a chave
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DANJOCORD_PUBLISH_TOKEN }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            -H "authorization: Bearer $TOKEN" \
+            -H "content-type: application/json" \
+            -d '{"version":"${{ steps.versao.outputs.versao }}","file":"${{ steps.versao.outputs.exe }}"}' \
+            "$SERVIDOR/api/updates/publish/commit"
+          echo

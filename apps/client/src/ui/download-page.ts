@@ -52,7 +52,6 @@ type Estado =
 /** Erros que o `GET /api/updates/download` devolve como `?erro=` na volta. */
 const ERRO_DA_VOLTA: Record<string, string> = {
   ticket: "O link de download venceu antes de o arquivo começar. Clique em baixar de novo.",
-  indisponivel: "Não deu para falar com o GitHub, de onde o instalador vem. Tente daqui a pouco.",
   "sem-release": "Não há instalador publicado neste momento.",
 };
 
@@ -212,7 +211,9 @@ function paint(estado: Estado, opts: DownloadPageOptions, aviso: string | null):
         "dl-lead",
         estado.kind === "sem-release"
           ? "Nenhum instalador foi publicado até agora. Enquanto isso, o Danjocord roda no navegador — é o mesmo app."
-          : "O servidor não conseguiu chegar ao arquivo. Tente daqui a pouco; enquanto isso, o Danjocord roda no navegador.",
+          : // sobra tudo o que não é 404: um 429, um 5xx, o 502 do proxy durante
+            // um deploy. Nenhum é culpa de quem clicou, e todos passam sozinhos.
+            "Deu algum problema no servidor. Tente daqui a pouco; enquanto isso, o Danjocord roda no navegador.",
       ),
     );
     if (estado.detalhe !== "") box.append(el("p", "dl-fine", estado.detalhe));
@@ -261,7 +262,8 @@ function botao(texto: string, onClick: () => void, classe: string): HTMLButtonEl
  * `createObjectURL` fica inteiro na memória da aba e tira do navegador a barra
  * de progresso, o "retomar" e a escolha da pasta. A navegação é o caminho certo
  * — e ela NÃO tira a pessoa desta página, porque a resposta final vem com
- * `Content-Disposition: attachment` (medido contra o CDN do GitHub).
+ * `Content-Disposition: attachment` — medido, com o instalador de verdade: o
+ * clique dispara o GET do `.exe` e a página continua montada em `/download`.
  *
  * Se der errado, o servidor redireciona de volta para `/download?erro=…`, um
  * caminho RELATIVO — o que é certo em produção e no desktop, onde a API e a

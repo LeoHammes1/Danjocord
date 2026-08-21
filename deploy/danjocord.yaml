@@ -14,10 +14,11 @@
 #        http://localhost:8080/auth/discord/callback             (dev)
 #   4. Criar o Secret danjocord-credentials via apply-secrets.sh do KubeCluster
 #      (DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, JWT_SECRET).
-#   5. (M14, para a página de download e o auto-update) Gerar um fine-grained
-#      PAT no GitHub com "Contents: Read-only" SÓ no repo LeoHammes1/Danjocord e
-#      pôr como GITHUB_RELEASES_TOKEN no mesmo Secret. Sem ele o app funciona
-#      inteiro; só /download e o auto-update respondem 503.
+#   5. (M14, para a página de download e o auto-update) Sortear um segredo
+#      (`openssl rand -hex 32`) e pô-lo em DOIS lugares: DANJOCORD_PUBLISH_TOKEN
+#      no Secret acima, e o mesmo valor como secret DANJOCORD_PUBLISH_TOKEN nas
+#      Actions do repo. É com ele que o CI entrega o instalador ao servidor.
+#      Sem ele o app funciona inteiro; só a publicação de release responde 503.
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -164,30 +165,29 @@ spec:
             - name: DANJOCORD_OWNER_DISCORD_ID
               value: "215666123834654720"     # Leonardo
             # --- distribuição do app desktop (M14) ---
-            # De onde saem o instalador e o feed de atualização. Os BYTES não
-            # passam por aqui: o servidor valida quem pediu e devolve um 302
-            # para a URL pré-assinada do GitHub. Este pod é o mesmo que carrega
-            # a mídia (hostPort 40000/UDP), e um release novo põe até dez
-            # electron-updater baixando ~100 MB ao mesmo tempo — 1 GB saindo
-            # pela placa que carrega a voz. Ver updates/github.ts.
-            - name: DANJOCORD_RELEASE_REPO
-              value: "LeoHammes1/Danjocord"
-            # PAT de escopo fino, só `Contents: read-only`, só nesse repo.
+            # O instalador NÃO fica num Release do GitHub: o CI compila (NSIS
+            # precisa de Windows) e faz POST dos artefatos aqui, e eles moram no
+            # PVC, ao lado do SQLite — o `releasesDir` do config é derivado do
+            # DB_PATH justamente para os dois nunca se separarem de volume.
             #
-            # `optional: true` de propósito: sem ele, um deploy feito antes de a
-            # chave existir no Secret trava o pod em CreateContainerConfigError
-            # — o app inteiro fora do ar por causa da página de download. Com
-            # ele, o pod sobe normal e só `/api/updates/*` responde 503, com a
-            # frase dizendo o que falta.
+            # O custo está declarado em updates/store.ts: este pod passa a
+            # SERVIR os bytes, e é o mesmo nó que carrega a mídia (hostPort
+            # 40000/UDP). São ~100 MB por amigo por release, espalhados por
+            # horas (a checagem é no login e a cada 6 h, nunca simultânea).
+            # Medido no nó: 74 GB livres no disco do local-path, contra 396 KB
+            # de banco — espaço não é a restrição, banda é.
             #
-            # A API do GitHub responde 404 (não 401) a repo privado sem
-            # credencial, então "esqueci o token" e "o repo não existe" chegam
-            # com o mesmo status — a mensagem do servidor cita as duas causas.
-            - name: GITHUB_RELEASES_TOKEN
+            # Credencial de MÁQUINA do POST /api/updates/publish (o CI a manda
+            # como Bearer). `optional: true` de propósito: sem ele, um deploy
+            # feito antes de a chave existir no Secret trava o pod em
+            # CreateContainerConfigError — o app inteiro fora por causa de uma
+            # página. Com ele, o pod sobe normal e só a publicação responde 503
+            # dizendo o que falta; o download do que já está publicado continua.
+            - name: DANJOCORD_PUBLISH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: danjocord-credentials
-                  key: GITHUB_RELEASES_TOKEN
+                  key: DANJOCORD_PUBLISH_TOKEN
                   optional: true
           ports:
             - containerPort: 8080           # HTTP + WS → via Traefik
