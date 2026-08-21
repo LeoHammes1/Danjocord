@@ -69,8 +69,29 @@ export const TIPO_RELEASE = "application/vnd.danjocord.release";
 
 /** O manifesto do electron-updater. É por ele que o updater começa. */
 export const ARQUIVO_FEED = "latest.yml";
+/**
+ * Onde o manifesto ESPERA até o commit.
+ *
+ * Isto existe porque a afirmação "o commit é que publica" era falsa para o
+ * cliente que mais importa. O feed serve `latest.yml` direto do disco, então no
+ * instante em que o upload dele terminava os apps instalados já enxergavam a
+ * versão nova — antes do commit, e mesmo que o job morresse em seguida. O
+ * commit governava só a página de download.
+ *
+ * Com o estágio, o upload do manifesto não muda nada para ninguém: quem vira a
+ * chave é o `rename` de UM arquivo dentro do commit, atômico, para os DOIS
+ * clientes. E o nome escolhido é deliberadamente inválido para
+ * `nomeDeArtefatoValido` (a extensão não está na lista), então o feed não
+ * consegue servi-lo nem por engano.
+ */
+const ARQUIVO_FEED_PENDENTE = "latest.yml.pendente";
 /** Nosso metadado — nunca é servido pelo feed. */
 const ARQUIVO_RELEASE = "release.json";
+
+/** O nome sob o qual um artefato é GRAVADO (o manifesto fica em estágio). */
+export function nomeDeGravacao(nome: string): string {
+  return nome === ARQUIVO_FEED ? ARQUIVO_FEED_PENDENTE : nome;
+}
 
 /**
  * Nome de artefato aceito. Pura, e é ela que faz as vezes de allowlist: só
@@ -156,6 +177,46 @@ export async function lerRelease(dir: string): Promise<DesktopRelease | null> {
   }
 }
 
+/** O manifesto desta publicação já chegou e está esperando o commit? */
+export async function manifestoPendente(dir: string): Promise<boolean> {
+  try {
+    return (await readdir(dir)).includes(ARQUIVO_FEED_PENDENTE);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Vira a chave: o manifesto em estágio passa a ser o `latest.yml` que o feed
+ * serve. Um `rename` no mesmo sistema de arquivos é atômico — não existe
+ * instante em que o feed devolva meio arquivo.
+ */
+export async function promoverManifesto(dir: string): Promise<void> {
+  await rename(join(dir, ARQUIVO_FEED_PENDENTE), join(dir, ARQUIVO_FEED));
+}
+
+/**
+ * Faxina dos temporários, no boot.
+ *
+ * O `gravarArtefato` só apaga o `.tmp-` quando o erro chega ao processo. Se o
+ * pod morre no meio de um upload (rollout do deploy, OOM, drain do nó), sobra
+ * um arquivo de até 500 MB no MESMO PVC onde mora o SQLite, e nada nunca o
+ * recolhe. No boot não há upload em voo por definição, então é a hora segura.
+ */
+export async function limparTemporarios(dir: string): Promise<string[]> {
+  const limpos: string[] = [];
+  try {
+    for (const nome of await readdir(dir)) {
+      if (!nome.startsWith(".tmp-")) continue;
+      await rm(join(dir, nome), { force: true });
+      limpos.push(nome);
+    }
+  } catch {
+    // diretório recém-criado ou ilegível: não há o que limpar
+  }
+  return limpos;
+}
+
 export async function gravarRelease(dir: string, info: DesktopRelease): Promise<void> {
   const temporario = join(dir, `.tmp-${randomBytes(8).toString("hex")}`);
   await writeFile(temporario, JSON.stringify(info, null, 2) + "\n", "utf8");
@@ -198,12 +259,23 @@ export async function artefatoExiste(dir: string, nome: string): Promise<boolean
  *
  * `latest.yml` e `release.json` nunca entram na poda: eles são substituídos,
  * não acumulados.
+ *
+ * `protegido` é o instalador que ACABOU de ser publicado, e ele nunca é podado
+ * por mais velho que o mtime o faça parecer. Sem isso existe um caminho real de
+ * apagar o arquivo que está no ar: um job que sobe o `.exe` e morre antes do
+ * commit deixa um órfão MAIS NOVO que o release corrente, e ele ocupa uma das
+ * duas vagas — o commit seguinte apagaria o instalador em uso em vez do lixo.
  */
-export async function podar(dir: string, manter: number = MANTER_RELEASES): Promise<string[]> {
+export async function podar(
+  dir: string,
+  manter: number = MANTER_RELEASES,
+  protegido: string | null = null,
+): Promise<string[]> {
   const nomes = await readdir(dir);
   const instaladores: { nome: string; mtime: number }[] = [];
   for (const nome of nomes) {
     if (!nome.toLowerCase().endsWith(".exe")) continue;
+    if (nome === protegido) continue;
     try {
       instaladores.push({ nome, mtime: (await stat(join(dir, nome))).mtimeMs });
     } catch {
@@ -212,7 +284,10 @@ export async function podar(dir: string, manter: number = MANTER_RELEASES): Prom
   }
   instaladores.sort((a, b) => b.mtime - a.mtime);
   const apagados: string[] = [];
-  for (const { nome } of instaladores.slice(manter)) {
+  // o protegido já está guardado e ficou de fora da lista, então ele ocupa uma
+  // das `manter` vagas — as outras saem daqui
+  const vagas = Math.max(0, manter - (protegido === null ? 0 : 1));
+  for (const { nome } of instaladores.slice(vagas)) {
     for (const alvo of [nome, `${nome}.blockmap`]) {
       try {
         await rm(join(dir, alvo), { force: true });

@@ -41,9 +41,8 @@ const { Store } = await import("../src/store.js");
 const { registerRateLimit } = await import("../src/rate-limit.js");
 const { registerUpdateRoutes } = await import("../src/updates/routes.js");
 const { TicketStore, TICKET_TTL_MS } = await import("../src/updates/tickets.js");
-const { MAX_ARTEFATO_BYTES, TIPO_RELEASE, gravarArtefato, nomeDeArtefatoValido, podar, versaoValida } = await import(
-  "../src/updates/store.js"
-);
+const { MAX_ARTEFATO_BYTES, TIPO_RELEASE, gravarArtefato, limparTemporarios, nomeDeArtefatoValido, podar, versaoValida } =
+  await import("../src/updates/store.js");
 
 const TOKEN = "token-de-publicacao-do-ci-1234567890";
 const EXE = "Danjocord-Setup-0.1.0.exe";
@@ -370,4 +369,112 @@ test("o download do navegador erra VOLTANDO para a página, não com JSON", asyn
   assert.equal(semRelease.statusCode, 302);
   assert.equal(semRelease.headers["location"], "/download?erro=sem-release");
   await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// O estágio do manifesto — o que faz o commit ser a chave DE VERDADE
+// ---------------------------------------------------------------------------
+
+test("subir o latest.yml NÃO publica: antes do commit o feed continua no release velho", async () => {
+  const { app, dir } = await montar();
+  await publicar(app, "0.1.0"); // release corrente, já commitado
+
+  // agora a metade de cima de uma publicação nova, sem o commit
+  const novo = "Danjocord-Setup-0.2.0.exe";
+  await app.inject({ method: "POST", url: `/api/updates/publish?file=${novo}`, headers: PUB, payload: "novo" });
+  await app.inject({
+    method: "POST",
+    url: "/api/updates/publish?file=latest.yml",
+    headers: PUB,
+    payload: `version: 0.2.0\npath: ${novo}\n`,
+  });
+
+  // O feed é o cliente que importa: o electron-updater lê ISTO. Sem o estágio,
+  // o arquivo novo já estaria no lugar e os apps instalados enxergariam a 0.2.0
+  // — mesmo que o job morresse antes do commit.
+  const t = await ticket(app);
+  const feed = await app.inject({ method: "GET", url: `/api/updates/feed/latest.yml?ticket=${t}` });
+  assert.equal(feed.statusCode, 200);
+  assert.match(feed.body, /version: 0\.1\.0/, "o manifesto servido ainda é o do release commitado");
+  assert.ok((await readdir(dir)).includes("latest.yml.pendente"), "o novo está em estágio, não no lugar");
+
+  // e o commit promove
+  const r = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish/commit",
+    headers: { authorization: `Bearer ${TOKEN}` },
+    payload: { version: "0.2.0", file: novo },
+  });
+  assert.equal(r.statusCode, 200, r.body);
+  const depois = await app.inject({ method: "GET", url: `/api/updates/feed/latest.yml?ticket=${t}` });
+  assert.match(depois.body, /version: 0\.2\.0/);
+  assert.ok(!(await readdir(dir)).includes("latest.yml.pendente"), "o estágio some ao virar a chave");
+  await app.close();
+});
+
+test("o commit não aceita sem o manifesto em estágio, mesmo com um latest.yml velho no disco", async () => {
+  const { app } = await montar();
+  await publicar(app, "0.1.0"); // deixa um latest.yml legítimo no disco
+  const novo = "Danjocord-Setup-0.2.0.exe";
+  await app.inject({ method: "POST", url: `/api/updates/publish?file=${novo}`, headers: PUB, payload: "novo" });
+  // sem subir o latest.yml da 0.2.0: o commit não pode se contentar com o velho
+  const r = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish/commit",
+    headers: { authorization: `Bearer ${TOKEN}` },
+    payload: { version: "0.2.0", file: novo },
+  });
+  assert.equal(r.statusCode, 409);
+  assert.match((r.json() as { error: string }).error, /latest\.yml/);
+  await app.close();
+});
+
+test("a poda nunca apaga o instalador do release que acabou de ser publicado", async () => {
+  const { app, dir } = await montar();
+  const atual = await publicar(app, "0.1.0");
+
+  // Dois jobs que subiram o `.exe` e morreram antes do commit. Eles são MAIS
+  // NOVOS por mtime que o instalador no ar.
+  for (const orfa of ["0.8.0", "0.9.0"]) {
+    await app.inject({
+      method: "POST",
+      url: `/api/updates/publish?file=Danjocord-Setup-${orfa}.exe`,
+      headers: PUB,
+      payload: "orfao",
+    });
+  }
+
+  // Agora um commit da MESMA versão que já está no ar — é o caso concreto de
+  // reexecutar um run antigo pela UI do GitHub. Sem a proteção, a poda ordena
+  // por mtime, acha os dois órfãos mais novos e apaga o instalador que o
+  // `release.json` acabou de apontar: a página passa a oferecer um 404.
+  await app.inject({
+    method: "POST",
+    url: "/api/updates/publish?file=latest.yml",
+    headers: PUB,
+    payload: `version: 0.1.0
+path: ${atual}
+`,
+  });
+  const r = await app.inject({
+    method: "POST",
+    url: "/api/updates/publish/commit",
+    headers: { authorization: `Bearer ${TOKEN}` },
+    payload: { version: "0.1.0", file: atual },
+  });
+  assert.equal(r.statusCode, 200, r.body);
+
+  assert.ok((await readdir(dir)).includes(atual), "o instalador do release corrente sobreviveu à própria poda");
+  const latest = await app.inject({ method: "GET", url: "/api/updates/latest", headers: AUTH });
+  assert.equal(latest.statusCode, 200, "e continua baixável — não vira um botão que dá 404");
+});
+
+test("temporário órfão de um pod morto no meio do upload some no boot", async () => {
+  const dir = await tmp();
+  await writeFile(join(dir, ".tmp-deadbeef"), "meio instalador");
+  await writeFile(join(dir, "latest.yml"), "version: 1.0.0");
+  const limpos = await limparTemporarios(dir);
+  assert.deepEqual(limpos, [".tmp-deadbeef"]);
+  const restou = await readdir(dir);
+  assert.deepEqual(restou, ["latest.yml"], "só o temporário some");
 });

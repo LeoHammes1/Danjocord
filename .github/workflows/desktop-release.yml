@@ -42,6 +42,16 @@ on:
 permissions:
   contents: read
 
+# O diretório de releases é PLANO: um único `latest.yml`, um único
+# `release.json`. Duas tags empurradas juntas (`git push origin --tags`) criam
+# DOIS runs, e sem isto eles rodam em paralelo em runners diferentes,
+# escrevendo por cima um do outro — o commit do mais lento publicaria o
+# instalador do mais rápido. `cancel-in-progress: false` porque cancelar no
+# meio de um upload de 96 MB só deixa lixo; a fila resolve sem perder trabalho.
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
 env:
   SERVIDOR: https://danjocord.leohammes.dev
 
@@ -75,8 +85,21 @@ jobs:
         shell: bash
         run: |
           VERSAO="${GITHUB_REF_NAME#v}"
-          if ! printf '%s' "$VERSAO" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-            echo "::error::tag '$GITHUB_REF_NAME' não vira semver — use v1.2.3"
+          # ANCORADA NOS DOIS LADOS, e este `$` final não é detalhe. Sem ele o
+          # teste era de PREFIXO: uma tag `v1.2.3.4` passava aqui, compilava,
+          # subia 96 MB e só então levava 400 no commit — porque o `versaoValida`
+          # do servidor (apps/server/src/updates/store.ts) É ancorado. Quando os
+          # dois portões discordam, o mais frouxo só serve para gastar tempo e
+          # deixar artefato órfão no PVC.
+          #
+          # E PRÉ-LANÇAMENTO NÃO PASSA (`v1.2.3-beta` é recusado), o que é MAIS
+          # estrito que o servidor de propósito: o electron-builder deriva o
+          # CANAL da versão e emitiria `beta.yml` em vez de `latest.yml`. O feed
+          # serve um canal só, e o `app-update.yml` dos apps instalados aponta
+          # para `latest` — um release beta compilaria, subiria e nunca chegaria
+          # a ninguém, falhando no passo que procura o `latest.yml`.
+          if ! printf '%s' "$VERSAO" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag '$GITHUB_REF_NAME' não serve — use vX.Y.Z (sem sufixo de pré-lançamento)"
             exit 1
           fi
           node -e "
@@ -96,10 +119,17 @@ jobs:
       # O content-type é o `application/vnd.danjocord.release`, que no servidor
       # cai num parser de FLUXO — o octet-stream comum bufferizaria os ~100 MB
       # na memória de um pod de 1 GiB.
+      # Os valores derivados da TAG entram por `env:`, e nunca por `${{ }}` no
+      # meio do script. Interpolação do Actions é substituição de TEXTO feita
+      # ANTES de o bash existir: um nome de tag com aspas, crase ou `$(...)`
+      # viraria código rodando no runner. O git aceita todos esses caracteres em
+      # refname. O portão de versão acima já os recusaria, mas as duas defesas
+      # custam uma linha cada e falham por motivos independentes.
       - name: subir os artefatos (o .exe antes do latest.yml)
         shell: bash
         env:
           TOKEN: ${{ secrets.DANJOCORD_PUBLISH_TOKEN }}
+          EXE: ${{ steps.versao.outputs.exe }}
         run: |
           if [ -z "$TOKEN" ]; then
             echo "::error::falta o secret DANJOCORD_PUBLISH_TOKEN nas Actions deste repo (ver deploy/danjocord.yaml)"
@@ -109,8 +139,15 @@ jobs:
             local arquivo="$1"
             local nome
             nome=$(basename "$arquivo")
-            echo "→ $nome ($(stat -c%s "$arquivo" 2>/dev/null || stat -f%z "$arquivo") bytes)"
+            echo "-> $nome ($(stat -c%s "$arquivo") bytes)"
+            # `--retry` porque o alvo é o NOSSO pod, com uma réplica só e
+            # estratégia Recreate: um deploy no meio do job devolve 502 do
+            # Traefik por alguns segundos. Sem retry, um release inteiro morre
+            # por causa de uma janela de reinício. Retentar é seguro porque a
+            # gravação é atômica (temporário + rename) — nunca há meio arquivo.
             curl --fail-with-body -sS -X POST \
+              --retry 4 --retry-connrefused --retry-delay 5 \
+              --connect-timeout 20 \
               -H "authorization: Bearer $TOKEN" \
               -H "content-type: application/vnd.danjocord.release" \
               --data-binary "@$arquivo" \
@@ -118,24 +155,33 @@ jobs:
             echo
           }
           cd apps/desktop/release
-          subir "${{ steps.versao.outputs.exe }}"
+          subir "$EXE"
           # o blockmap é opcional (o download diferencial está desligado no
           # updater.ts), mas sobe junto quando existe: é barato e deixa a porta
           # aberta caso um dia o diferencial faça sentido
-          [ -f "${{ steps.versao.outputs.exe }}.blockmap" ] && subir "${{ steps.versao.outputs.exe }}.blockmap"
+          if [ -f "$EXE.blockmap" ]; then subir "$EXE.blockmap"; fi
+          # o manifesto por último. O servidor o guarda em ESTÁGIO até o commit,
+          # então nem esta linha publica nada — mas a ordem continua sendo a
+          # certa: subir o pequeno depois do grande é o que faz uma falha de
+          # rede custar o barato, não o caro.
           subir latest.yml
 
-      # O COMMIT — é ele que decide qual release os amigos baixam. O servidor
-      # confere que o .exe E o latest.yml estão no disco antes de aceitar, então
-      # um upload interrompido nunca vira meia versão publicada.
+      # O COMMIT — é ele que publica, e agora isso é literal: o servidor promove
+      # o manifesto em estágio para `latest.yml` com um `rename` atômico, depois
+      # de conferir que o `.exe` está no disco. Antes desta chamada, nenhum dos
+      # dois clientes (updater e página) enxerga a versão nova.
       - name: virar a chave
         shell: bash
         env:
           TOKEN: ${{ secrets.DANJOCORD_PUBLISH_TOKEN }}
+          VERSAO: ${{ steps.versao.outputs.versao }}
+          EXE: ${{ steps.versao.outputs.exe }}
         run: |
           curl --fail-with-body -sS -X POST \
+            --retry 4 --retry-connrefused --retry-delay 5 \
+            --connect-timeout 20 \
             -H "authorization: Bearer $TOKEN" \
             -H "content-type: application/json" \
-            -d '{"version":"${{ steps.versao.outputs.versao }}","file":"${{ steps.versao.outputs.exe }}"}' \
+            --data-binary "$(node -e 'process.stdout.write(JSON.stringify({version:process.env.VERSAO,file:process.env.EXE}))')" \
             "$SERVIDOR/api/updates/publish/commit"
           echo

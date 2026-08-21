@@ -599,11 +599,31 @@ no PVC, ao lado do SQLite.
   não instala dependência, e um parser de YAML à mão para ler metadado é
   exatamente o tipo de coisa que quebra calada. O `latest.yml` do
   electron-builder é servido tal e qual, sem ninguém interpretá-lo.
-- **O publish tem DOIS passos, e o segundo é o que publica.** Os artefatos sobem
-  um a um (`POST /api/updates/publish?file=`) e só o `commit` — que confere que
-  o `.exe` **e** o `latest.yml` estão no disco — decide qual release os amigos
-  baixam. Um job que cai no meio deixa um artefato órfão, nunca meia versão no
-  ar. Cada arquivo em si é atômico (temporário + `rename`).
+- **O publish tem DOIS passos, e o segundo é o que publica — mas isso só virou
+  verdade depois de uma revisão.** A primeira versão afirmava que o commit era a
+  chave, e era falso para o cliente que mais importa: o feed serve `latest.yml`
+  direto do disco, então os apps instalados enxergavam a versão nova no instante
+  em que o upload do manifesto terminava, antes do commit e mesmo que o job
+  morresse em seguida. O commit governava só a página de download.
+  Agora o manifesto chega em **estágio** (`latest.yml.pendente`, um nome que
+  `nomeDeArtefatoValido` recusa de propósito, então o feed não o serve nem por
+  engano) e o commit o promove com um `rename` atômico. A chave é uma linha, e
+  vale para os dois clientes.
+- **A poda protege o instalador do release que acabou de ser commitado.** Sem
+  isso existe um caminho real de apagar o arquivo no ar: jobs que sobem o `.exe`
+  e morrem antes do commit deixam órfãos MAIS NOVOS por mtime, e reexecutar um
+  run antigo pela UI do GitHub commita uma versão cujo `.exe` é velho — a poda
+  ordenava por mtime e apagava justamente ele.
+- **`.tmp-*` órfão é recolhido no boot.** O `gravarArtefato` só apaga o
+  temporário quando o erro chega ao processo; pod morto no meio de um upload
+  (rollout, OOM, drain) deixava até 500 MB parados no mesmo PVC do SQLite. No
+  boot não há upload em voo por definição — é a única hora segura.
+- **O portão de versão do workflow espelha o do servidor, e é mais estrito num
+  ponto.** A regex da tag era ancorada só no início: `v1.2.3.4` passava,
+  compilava, subia 96 MB e só então levava 400 no commit. E pré-lançamento é
+  recusado de propósito, embora `versaoValida` o aceite — o electron-builder
+  deriva o CANAL da versão e emitiria `beta.yml` em vez de `latest.yml`, que o
+  feed não serve e o `app-update.yml` dos apps não procura.
 - **A ordem do upload importa e está no workflow**: `.exe` primeiro, `latest.yml`
   depois. Um manifesto novo apontando para um instalador que ainda não chegou
   seria uma atualização quebrada para quem checasse naquele minuto.

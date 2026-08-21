@@ -8,14 +8,17 @@ import { config } from "../config.js";
 import { SlidingWindow, tooManyRequests } from "../limits.js";
 import type { Store } from "../store.js";
 import {
-  ARQUIVO_FEED,
   TIPO_RELEASE,
   artefatoExiste,
   gravarArtefato,
   gravarRelease,
   lerRelease,
+  limparTemporarios,
+  manifestoPendente,
   nomeDeArtefatoValido,
+  nomeDeGravacao,
   podar,
+  promoverManifesto,
   versaoValida,
 } from "./store.js";
 import { TicketStore } from "./tickets.js";
@@ -112,6 +115,12 @@ export async function registerUpdateRoutes(
   // root exista no registro. Criar aqui é uma linha; deixar o boot quebrar por
   // causa de uma pasta ausente seria o app inteiro fora por causa de uma página.
   mkdirSync(releasesDir, { recursive: true });
+  // Faxina dos temporários de uploads que o pod não viveu para terminar. No
+  // boot não há upload em voo por definição — é a única hora em que apagar
+  // `.tmp-*` é seguro sem coordenação.
+  void limparTemporarios(releasesDir).then((limpos) => {
+    if (limpos.length > 0) app.log.warn({ limpos }, "temporários de release órfãos removidos no boot");
+  });
 
   const tickets = new TicketStore();
   const janela = new SlidingWindow(FEED_LIMITE, FEED_JANELA_MS);
@@ -269,8 +278,11 @@ export async function registerUpdateRoutes(
           return reply.code(400).send({ error: "nome de artefato inválido" });
         }
         try {
-          const bytes = await gravarArtefato(releasesDir, nome, req.body as Readable);
-          req.log.info({ file: nome, bytes }, "artefato de release recebido");
+          // o manifesto é gravado em ESTÁGIO: enquanto ele não for promovido
+          // pelo commit, nada muda para o updater nem para a página
+          const destino = nomeDeGravacao(nome);
+          const bytes = await gravarArtefato(releasesDir, destino, req.body as Readable);
+          req.log.info({ file: nome, destino, bytes }, "artefato de release recebido");
           return reply.code(201).send({ file: nome, size: bytes });
         } catch (err) {
           req.log.warn({ file: nome, err }, "upload de artefato falhou");
@@ -295,16 +307,21 @@ export async function registerUpdateRoutes(
       if (!nomeDeArtefatoValido(file) || !file.toLowerCase().endsWith(".exe")) {
         return reply.code(400).send({ error: "o instalador precisa ser um .exe" });
       }
-      for (const necessario of [file, ARQUIVO_FEED]) {
-        if (!(await artefatoExiste(releasesDir, necessario))) {
-          return reply.code(409).send({ error: `"${necessario}" não está no servidor — suba os artefatos antes do commit` });
-        }
+      if (!(await artefatoExiste(releasesDir, file))) {
+        return reply.code(409).send({ error: `"${file}" não está no servidor — suba os artefatos antes do commit` });
       }
+      if (!(await manifestoPendente(releasesDir))) {
+        return reply.code(409).send({ error: "o latest.yml desta publicação não chegou — suba os artefatos antes do commit" });
+      }
+      // AQUI é a chave, e agora ela vale para os DOIS clientes: um `rename`
+      // atômico põe o manifesto no lugar que o feed serve. Antes desta linha,
+      // um job que morresse deixava artefatos órfãos e nada mais.
+      await promoverManifesto(releasesDir);
       // `size` sai daqui zerado de propósito: o `lerRelease` devolve o tamanho
       // REAL do arquivo, e um número declarado que discordasse do disco só
       // serviria para a página mostrar um valor errado.
       await gravarRelease(releasesDir, { version, file, size: 0, published_at: Date.now() });
-      const apagados = await podar(releasesDir);
+      const apagados = await podar(releasesDir, undefined, file);
       req.log.info({ version, file, apagados }, "release publicado");
       return reply.send({ version, file, pruned: apagados });
     });

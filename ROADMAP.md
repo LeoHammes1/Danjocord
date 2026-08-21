@@ -186,6 +186,7 @@ Licenças **verificadas nas páginas oficiais**, não deduzidas.
 128. `P` A página de download só oferece Windows, e diz isso — mas quem abrir o link no celular vê um botão que não serve para ele. Detectar plataforma e trocar a chamada por "abrir no navegador" é meia hora.
 129. `P` O tíquete de download vai na QUERY e entra no log do Fastify. É aceito (escopo mínimo, 30 min, não vira sessão), mas redigir `?ticket=` no serializador de log do Fastify é barato.
 130. `P` A trava que impedia o build de release com os `.mp3` do Discord no catálogo foi RETIRADA no M14 a pedido do Leonardo, e não substituída. Hoje nada mecânico impede uma distribuição aberta — só o desenho (o `.exe` só sai por `/api/updates`, com sessão) e a advertência do ATTRIBUTIONS.md.
+132. `P` "Re-run all jobs" num run ANTIGO do desktop-release republica a versão velha como a atual — é um clique, disponível por 90 dias. A poda já não apaga mais o instalador em uso nesse caso, mas nada impede o downgrade em si; o conserto seria o commit recusar versão menor que a corrente.
 131. `P` A página de download serve os bytes pelo NÓ DA MÍDIA: ~100 MB por amigo por release, ~1 GB se os dez atualizarem. Espalha-se por horas e hoje não incomoda; se incomodar, o remédio é cobrar por MB no `onResponse` ou capar downloads simultâneos.
 
 ## 10. Fora de escopo
